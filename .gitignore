@@ -1,0 +1,63 @@
+# ── Rust / Cargo ─────────────────────────────────────────────────────
+/target
+**/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Build artifacts
+*.pdb
+*.dSYM/
+
+# rust-analyzer / IDE
+.rust-analyzer/
+.idea/
+.vscode/
+*.iml
+.cargo/config.toml.local
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.tox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.python-version
+
+# ── maturin / PyO3 builds ────────────────────────────────────────────
+wheels/
+*.whl
+
+# ── Virtual environments ─────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── OS / editor noise ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ── Secrets / local overrides ────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+config.local.toml
+*.local.toml
+
+# ── Captured event streams (replay material is committed; live drops aren't) ──
+*.ndjson
+!fixtures/**/*.ndjson

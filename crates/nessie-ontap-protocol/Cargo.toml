@@ -1,0 +1,19 @@
+[package]
+name = "nessie-ontap-protocol"
+description = "ONTAP REST wire shapes (HAL, job + error envelopes) and domain->wire mapping for nessie-store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core" }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }

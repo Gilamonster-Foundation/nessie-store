@@ -1,0 +1,66 @@
+# nessie-store — per-PR merge gate.
+#
+# HOOK PARITY: This pipeline is mirrored locally by `.githooks/pre-push` and by
+# `just ci-check`. When editing this file, update BOTH to match (workspace rule:
+# "Push Hook Governance"). The hook/justfile run the same fmt/clippy/test steps.
+#
+# Mirrors a standard per-PR gate (fmt-check + clippy -D warnings + test), with an
+# added Python/wheel leg for the PyO3 client crate (nessie-client, Phase 10).
+# The aggressive supersets (deep-regression, cross-os, security-audit, live-zfs,
+# release) live in their own scheduled workflows and are deliberately NOT mirrored
+# in the hook.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTFLAGS: "-D warnings"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  # A fork sets `vars.NESSIE_CI_RUNNER` to e.g. `ubuntu-24.04`; the maintainer's
+  # self-hosted ARC label is the default.
+  CARGO_HOME: ${{ github.workspace }}/.cargo
+
+jobs:
+  lint:
+    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (zero warnings)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test workspace
+        run: cargo test --workspace --locked
+
+  test-py:
+    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python lint + test (skips until python/ lands — Phase 10)
+        run: |
+          if [ -d python ]; then
+            python3 -m pip install --upgrade pip maturin ruff black mypy pytest pytest-asyncio pytest-xdist
+            ruff check python
+            black --check python
+            maturin build --release --out wheels
+            python3 -m pip install wheels/*.whl
+            mypy python/nessie_store_client python/tests
+            pytest -n auto python/tests
+          else
+            echo "(no python/ yet — skipping the wheel leg until Phase 10)"
+          fi

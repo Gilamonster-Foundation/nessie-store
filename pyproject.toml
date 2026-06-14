@@ -1,0 +1,85 @@
+# pyproject.toml — nessie-store-client Python wheel via maturin.
+#
+# No-code skeleton; the actual PyO3 crate is created later under
+# crates/nessie-client/.
+#
+# Note: the gRPC surface is the primary client interface. Most users
+# will speak it directly via grpcio + the REAPI proto. This Python
+# package wraps the typed Rust client for cases where that ergonomic
+# matters (admin scripts, monty-tui-side adapters, toolchain integration).
+
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nessie-store-client"
+description = "Python client for nessie-store — content-addressable P2P storage"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Shawn Hartsock", email = "hartsock@users.noreply.github.com" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Topic :: System :: Archiving",
+    "Topic :: Software Development :: Build Tools",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/Gilamonster-Foundation/nessie-store"
+Repository = "https://github.com/Gilamonster-Foundation/nessie-store"
+Issues = "https://github.com/Gilamonster-Foundation/nessie-store/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+    "pytest-asyncio>=0.23",
+    "black>=24.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.maturin]
+manifest-path = "crates/nessie-client/Cargo.toml"
+python-source = "python"
+module-name = "nessie_store_client"
+features = ["python-bindings"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["target/", "wheels/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PL", "RUF"]
+ignore = ["PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+"python/tests/*" = ["PLR2004", "S101"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+mypy_path = "python"
+files = ["python/nessie_store_client", "python/tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+asyncio_mode = "auto"
+addopts = ["-q", "--strict-markers"]

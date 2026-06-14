@@ -1,0 +1,122 @@
+# nessie-store — Cargo workspace
+#
+# Skeleton; crate stubs land here as the implementation builds out each surface
+# via the staged sortie plan in ~/.claude/plans/splendid-swimming-shamir.md.
+# See README.md for the planned layout and CLAUDE.md for trait shape.
+
+[workspace]
+resolver = "2"
+members = [
+    # Phase 1 — Foundation:
+    "crates/nessie-backend-core",
+    "crates/nessie-backend-mem",
+    "crates/nessie-backend-conformance",
+
+    # Phase 2 — REST surface:
+    "crates/nessie-ontap-protocol",
+    # "crates/nessie-store",
+
+    # Phase 3 — Substrates (Wave A, then Wave B):
+    # "crates/nessie-backend-zfs",
+    # "crates/nessie-backend-s3",
+    # "crates/nessie-backend-nfs",
+    # "crates/nessie-backend-ontap",
+    # "crates/nessie-backend-p4d",
+    # "crates/nessie-backend-gitlfs",
+
+    # Phase 5 — Client + Python:
+    # "crates/nessie-client",
+]
+
+[workspace.package]
+version = "0.5.20260528"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Shawn Hartsock <hartsock@users.noreply.github.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Gilamonster-Foundation/nessie-store"
+homepage = "https://github.com/Gilamonster-Foundation/nessie-store"
+
+[workspace.dependencies]
+# Pinned at the workspace root so every crate uses the same versions.
+
+# Async + I/O foundation
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+toml = "0.8"
+
+# Errors + logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Identifiers + time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Hashing — BLAKE3 for content-addressed substrates, SHA-256 where ONTAP needs it
+blake3 = { version = "1", features = ["rayon"] }
+sha2 = "0.10"
+
+# Multi-threaded helpers (used where measurement justifies them)
+rayon = "1"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+dashmap = "6"
+
+# HTTP server (ONTAP REST surface)
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+hyper = "1"
+http = "1"
+
+# HTTP client (ontap-passthrough backend; s3 backend uses object_store)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Object store abstraction (s3 backend)
+object_store = { version = "0.14", features = ["aws"] }
+bytes = "1"
+url = { version = "2", features = ["serde"] }
+
+# Subprocess testing (zfs/p4d/gitlfs backends)
+assert_cmd = "2"
+predicates = "3"
+
+# Test arsenal (rigorous). proptest = property/invariant tests; rstest = the
+# exhaustive cross-product matrix engine; insta = snapshot regression. criterion
+# (benches) + cargo-fuzz join per-crate as their surfaces land.
+proptest = "1"
+rstest = "0.23"
+insta = { version = "1", features = ["json", "yaml"] }
+
+# Optional PyO3 bindings. The two PyO3 faces are OPPOSITE linkage models and
+# must NOT share a feature set, so `extension-module` / `auto-initialize` are
+# deliberately NOT declared here — each consuming crate enables the one it needs:
+#   - nessie-client (Face A, external wheel): enables `extension-module`
+#     (the host CPython provides libpython; PyO3 must not link it).
+#   - nessie-pyhooks (Face B, embedded in the daemon): enables `auto-initialize`
+#     (Rust owns the process and links libpython).
+# Declaring `extension-module` at the workspace level would make the daemon
+# binary unable to initialize its own interpreter — the #1 packaging bug here.
+pyo3 = { version = "0.26", default-features = false }
+pyo3-asyncio = { version = "0.26", features = ["tokio-runtime"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 1

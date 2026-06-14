@@ -1,0 +1,16 @@
+[package]
+name = "nessie-backend-mem"
+description = "In-memory reference backend for nessie-store (HashMap; passes full conformance)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core" }
+
+[dev-dependencies]
+nessie-backend-conformance = { path = "../nessie-backend-conformance" }

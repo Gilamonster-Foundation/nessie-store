@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# nessie-store — pre-push hook.
+#
+# PIPELINE PARITY: This hook mirrors the per-PR jobs in .github/workflows/ci.yml
+# (lint: cargo fmt --check + cargo clippy -D warnings; test: cargo test). When
+# editing this file, verify it still matches that pipeline (workspace rule:
+# "Push Hook Governance"). The aggressive supersets (deep-regression, cross-os,
+# security-audit, live-zfs, release) are CI-only and intentionally NOT run here.
+#
+# No `--no-verify` bypass: the hook is the local equivalent of the CI gate.
+set -euo pipefail
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-push: cargo not found — install the pinned toolchain (rust-toolchain.toml)." >&2
+    exit 1
+fi
+
+export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
+export CARGO_INCREMENTAL=0
+
+echo "pre-push: cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "pre-push: cargo clippy --workspace --all-targets --all-features -- -D warnings"
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+echo "pre-push: cargo test --workspace --locked"
+cargo test --workspace --locked
+
+# Python leg mirrors ci.yml's test-py job (no-op until python/ lands, Phase 10).
+if [ -d python ]; then
+    echo "pre-push: ruff + black + mypy + pytest (python/)"
+    ruff check python
+    black --check python
+    mypy python/nessie_store_client python/tests
+    pytest -n auto python/tests
+fi
+
+echo "pre-push: OK"
