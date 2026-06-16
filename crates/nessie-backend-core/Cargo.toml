@@ -9,12 +9,23 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lib]
+# rlib for Rust consumers (the other crates link this); cdylib for the PyO3 wheel.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Opt-in Python bindings. OFF by default so Rust-only consumers never link pyo3.
+python = ["dep:pyo3"]
+
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 url = { workspace = true }
+# Face-A external bindings: the host CPython provides libpython, so PyO3 must NOT
+# link it -> extension-module. Enabled only with the `python` feature.
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -28,16 +28,40 @@ rust-check:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test --workspace --locked
 
-# Python side — ruff + black + mypy + pytest (skipped while no Python yet).
+# Python lint across all crate bindings (fast: ruff + black). Wheel build +
+# pytest is the heavier `just py-test` (and the CI test-py job).
 py-check:
-    @if [ -d python ]; then \
-        ruff check python ; \
-        black --check python ; \
-        mypy python/nessie_store_client python/tests ; \
-        pytest -n auto python/tests ; \
-    else \
-        echo "(no python/ yet, skipping py-check)" ; \
-    fi
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    found=0
+    for p in crates/*/python crates/*/examples; do
+      [ -d "$p" ] || continue
+      ruff check "$p"
+      black --check "$p"
+      found=1
+    done
+    [ "$found" = "1" ] || echo "(no crate python sources yet, skipping py-check)"
+
+# Build each crate's PyO3 wheel, install into the active venv, run its tests.
+# Heavy (compiles every wheel); not part of the pre-push hook — see ci.yml test-py.
+py-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    root="$PWD"
+    rm -rf "$root/wheels" && mkdir -p "$root/wheels"
+    built=0
+    for pp in crates/*/pyproject.toml; do
+      d=$(dirname "$pp")
+      ( cd "$d" && maturin build --release --out "$root/wheels" )
+      built=1
+    done
+    [ "$built" = "1" ] || { echo "(no crate wheels yet)"; exit 0; }
+    pip install --force-reinstall "$root"/wheels/*.whl
+    for t in crates/*/python/tests; do
+      [ -d "$t" ] && pytest -q "$t"
+    done
 
 # Release build of the workspace binaries.
 build:
