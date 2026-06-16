@@ -1,14 +1,15 @@
 # nessie-store — per-PR merge gate.
 #
-# HOOK PARITY: This pipeline is mirrored locally by `.githooks/pre-push` and by
-# `just ci-check`. When editing this file, update BOTH to match (workspace rule:
-# "Push Hook Governance"). The hook/justfile run the same fmt/clippy/test steps.
-#
-# Mirrors a standard per-PR gate (fmt-check + clippy -D warnings + test), with an
-# added Python/wheel leg for the PyO3 client crate (nessie-client, Phase 10).
-# The aggressive supersets (deep-regression, cross-os, security-audit, live-zfs,
-# release) live in their own scheduled workflows and are deliberately NOT mirrored
-# in the hook.
+# HOOK PARITY: The Rust gate (fmt-check + clippy -D warnings + test) is mirrored
+# locally by `.githooks/pre-push` and `just ci-check`. When editing those steps,
+# update BOTH to match (workspace rule: "Push Hook Governance"). NOTE: the
+# `clippy --all-features` step compiles every crate's PyO3 bindings, so binding
+# *compile* errors are caught by the hook. The `test-py` job below (per-crate
+# wheel build + pytest) is CI-only — it needs maturin + per-version Python and is
+# too heavy for a pre-push hook, so it is a documented non-parity (like kyln's
+# live-substrate UAT). The aggressive supersets (deep-regression, cross-os,
+# security-audit, live-zfs, release) likewise live in their own scheduled
+# workflows and are not mirrored in the hook.
 
 name: CI
 
@@ -35,6 +36,11 @@ jobs:
     runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
+      # --all-features compiles the PyO3 bindings, so a Python interpreter must
+      # be on PATH for pyo3's build script (extension-module does not link it).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy (zero warnings)
@@ -47,20 +53,39 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked
 
+  # Per-crate PyO3 wheels: every crate with a pyproject.toml is built into a wheel,
+  # installed, and exercised by its python/tests + linted. CI-only (see header).
   test-py:
     runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Python lint + test (skips until python/ lands — Phase 10)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build + test each crate's PyO3 wheel
         run: |
-          if [ -d python ]; then
-            python3 -m pip install --upgrade pip maturin ruff black mypy pytest pytest-asyncio pytest-xdist
-            ruff check python
-            black --check python
-            maturin build --release --out wheels
-            python3 -m pip install wheels/*.whl
-            mypy python/nessie_store_client python/tests
-            pytest -n auto python/tests
-          else
-            echo "(no python/ yet — skipping the wheel leg until Phase 10)"
+          set -euo pipefail
+          python3 -m pip install --upgrade pip maturin ruff black pytest pytest-asyncio
+          shopt -s nullglob
+          wheels_built=0
+          for pp in crates/*/pyproject.toml; do
+            d=$(dirname "$pp")
+            echo "::group::wheel $d"
+            ( cd "$d" && maturin build --release --out "$GITHUB_WORKSPACE/wheels" )
+            wheels_built=1
+            echo "::endgroup::"
+          done
+          if [ "$wheels_built" = "0" ]; then
+            echo "(no crate pyproject.toml yet — nothing to build)"
+            exit 0
           fi
+          python3 -m pip install "$GITHUB_WORKSPACE"/wheels/*.whl
+          # Lint committed Python sources + examples.
+          for p in crates/*/python crates/*/examples; do
+            [ -d "$p" ] && ruff check "$p"
+            [ -d "$p" ] && black --check "$p"
+          done
+          # Run each crate's Python test suite.
+          for t in crates/*/python/tests; do
+            [ -d "$t" ] && pytest -q "$t"
+          done

@@ -41,6 +41,9 @@ mod ids;
 mod traits;
 mod types;
 
+#[cfg(feature = "python")]
+mod python;
+
 pub use access::AccessHandle;
 pub use capabilities::Capabilities;
 pub use error::BackendError;
