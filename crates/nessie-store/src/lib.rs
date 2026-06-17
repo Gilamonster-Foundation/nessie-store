@@ -12,6 +12,7 @@ pub mod error;
 pub mod identity;
 pub mod routes;
 pub mod state;
+pub mod volumes;
 
 pub use routes::app;
 pub use state::AppState;

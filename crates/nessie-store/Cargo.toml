@@ -41,3 +41,4 @@ axum = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 uuid = { workspace = true }
 nessie-backend-mem = { path = "../nessie-backend-mem" }
+nessie-backend-core = { path = "../nessie-backend-core" }
