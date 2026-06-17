@@ -14,7 +14,7 @@ members = [
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",
-    # "crates/nessie-store",
+    "crates/nessie-store",
 
     # Phase 3 — Substrates (Wave A, then Wave B):
     # "crates/nessie-backend-zfs",
@@ -83,6 +83,9 @@ http = "1"
 
 # HTTP client (ontap-passthrough backend; s3 backend uses object_store)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Base64 (HTTP Basic auth credential decode)
+base64 = "0.22"
 
 # Object store abstraction (s3 backend)
 object_store = { version = "0.14", features = ["aws"] }
