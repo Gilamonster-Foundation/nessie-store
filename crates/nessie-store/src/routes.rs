@@ -138,6 +138,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/storage/aggregates", get(aggregates))
         .route("/api/storage/aggregates/:uuid", get(aggregate_by_uuid))
         .route("/api/network/ip/interfaces", get(interfaces))
+        .merge(crate::volumes::volume_routes())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_basic_auth,
