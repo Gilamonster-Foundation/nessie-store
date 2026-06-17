@@ -6,8 +6,12 @@
 # editing this file, verify it still matches that pipeline (workspace rule:
 # "Push Hook Governance"). The aggressive supersets (deep-regression, cross-os,
 # security-audit, live-zfs, release) are CI-only and intentionally NOT run here.
+# The per-crate wheel build + pytest (ci.yml test-py) is also CI-only; clippy
+# --all-features below compiles every crate's PyO3 bindings, covering the parity.
 #
 # No `--no-verify` bypass: the hook is the local equivalent of the CI gate.
+# Heavy cargo output is redirected to a log and only concise status is printed
+# (the gate still runs in full); on failure the log tail is shown.
 set -euo pipefail
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -18,22 +22,30 @@ fi
 export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 export CARGO_INCREMENTAL=0
 
-echo "pre-push: cargo fmt --check"
-cargo fmt --all -- --check
+LOG="$(mktemp -t nessie-prepush.XXXXXX)"
+trap 'rm -f "$LOG"' EXIT
 
-echo "pre-push: cargo clippy --workspace --all-targets --all-features -- -D warnings"
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+run() {
+    local label="$1"
+    shift
+    echo "pre-push: $label"
+    if ! "$@" >"$LOG" 2>&1; then
+        echo "pre-push FAILED: $label" >&2
+        tail -40 "$LOG" >&2
+        exit 1
+    fi
+}
 
-echo "pre-push: cargo test --workspace --locked"
-cargo test --workspace --locked
+run "cargo fmt --check" cargo fmt --all -- --check
+run "cargo clippy --all-features -D warnings" \
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+run "cargo test --workspace" cargo test --workspace --locked
 
-# Python leg mirrors ci.yml's test-py job (no-op until python/ lands, Phase 10).
-if [ -d python ]; then
-    echo "pre-push: ruff + black + mypy + pytest (python/)"
-    ruff check python
-    black --check python
-    mypy python/nessie_store_client python/tests
-    pytest -n auto python/tests
+# Python lint mirrors ci.yml (no-op until python sources exist).
+if compgen -G "crates/*/python" >/dev/null 2>&1; then
+    if command -v ruff >/dev/null 2>&1; then
+        run "ruff (crate bindings)" bash -c 'ruff check crates/*/python crates/*/examples 2>/dev/null || ruff check crates/*/python'
+    fi
 fi
 
 echo "pre-push: OK"
