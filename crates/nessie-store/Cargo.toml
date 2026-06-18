@@ -10,15 +10,25 @@ repository.workspace = true
 homepage.workspace = true
 default-run = "nessie-store"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [[bin]]
 name = "nessie-store"
 path = "src/main.rs"
+
+[features]
+# PyO3 bindings (the pip wheel). Off by default; maturin enables it. The daemon
+# binary never builds with this on — only the cdylib wheel does.
+python = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
 nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0" }
 nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.0" }
 nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.0" }
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
+pythonize = { workspace = true, optional = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }

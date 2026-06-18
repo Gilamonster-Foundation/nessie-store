@@ -11,6 +11,8 @@ pub mod blocking;
 pub mod config;
 pub mod error;
 pub mod identity;
+#[cfg(feature = "python")]
+mod python;
 pub mod routes;
 pub mod snapmirror;
 pub mod snapshots;
