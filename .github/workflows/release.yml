@@ -58,6 +58,11 @@ jobs:
     permissions:
       id-token: write # PyPI trusted publishing
       contents: read
+    env:
+      # Hoisted to job env so the publish step's `if:` can read it — the
+      # `secrets` context is NOT available in step `if:` conditions (using it
+      # there is a workflow startup error).
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -76,10 +81,10 @@ jobs:
           done
           ls -l dist
       - name: Publish to PyPI (token mode; skipped without a token)
-        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        if: ${{ env.PYPI_API_TOKEN != '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          password: ${{ env.PYPI_API_TOKEN }}
           packages-dir: dist
       - uses: actions/upload-artifact@v4
         with:
