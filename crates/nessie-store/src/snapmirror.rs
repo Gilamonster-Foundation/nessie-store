@@ -1,20 +1,24 @@
-//! SnapMirror relationships + cluster peers (control plane).
+//! SnapMirror relationships + transfers + cluster peers.
 //!
-//! Relationship/peer/transfer bookkeeping is daemon state, not substrate state
-//! (ZFS is only touched at transfer time, which lands in a follow-up). This
-//! module holds an in-memory [`SnapMirrorStore`] and the ONTAP REST surface over
-//! it: `/api/cluster/peers*` and `/api/snapmirror/relationships*`.
+//! Relationship/peer/transfer bookkeeping is daemon state (an in-memory
+//! [`SnapMirrorStore`]); the substrate is touched only at transfer time, when a
+//! transfer creates a source snapshot. The actual cross-instance byte movement
+//! (binary `zfs send` → HTTP → `zfs receive`) is the live-only data plane; the
+//! control surface here records the transfer as ONTAP's synchronous job does.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+use nessie_backend_core::BackendError;
 
 use crate::state::AppState;
 
@@ -38,10 +42,21 @@ struct Relationship {
     healthy: bool,
 }
 
+/// A completed SnapMirror transfer record.
+#[derive(Debug, Clone)]
+struct Transfer {
+    uuid: String,
+    state: String,
+    bytes_transferred: u64,
+    snapshot: String,
+    end_time: String,
+}
+
 #[derive(Default)]
 struct Inner {
     peers: HashMap<String, Peer>,
     relationships: HashMap<String, Relationship>,
+    transfers: HashMap<String, Vec<Transfer>>,
 }
 
 /// In-memory store for peers + relationships (daemon state; backend-agnostic).
@@ -58,6 +73,11 @@ impl SnapMirrorStore {
 
 fn svm_of(path: &str) -> &str {
     path.split_once(':').map_or(path, |(svm, _)| svm)
+}
+
+/// The volume component of an ONTAP `svm:vol` path.
+fn vol_of(path: &str) -> &str {
+    path.split_once(':').map_or(path, |(_, vol)| vol)
 }
 
 fn ontap_error(status: StatusCode, code: &str, target: &str, message: String) -> Response {
@@ -326,13 +346,23 @@ async fn delete_relationship(State(s): State<AppState>, Path(uuid): Path<String>
             format!("relationship {uuid} not found"),
         );
     }
+    g.transfers.remove(&uuid); // cascade
     Json(json!({ "job": { "uuid": Uuid::new_v4().to_string(), "state": "success" } }))
         .into_response()
 }
 
+fn transfer_obj(rel: &str, t: &Transfer) -> Value {
+    json!({
+        "uuid": t.uuid,
+        "state": t.state,
+        "bytes_transferred": t.bytes_transferred,
+        "end_time": t.end_time,
+        "snapshot": t.snapshot,
+        "_links": { "self": { "href": format!("/api/snapmirror/relationships/{rel}/transfers/{}", t.uuid) } },
+    })
+}
+
 async fn list_transfers(State(s): State<AppState>, Path(uuid): Path<String>) -> Response {
-    // Transfers (the data plane) land in a follow-up; report an empty, valid
-    // collection for a known relationship, 404 otherwise.
     let g = s.snapmirror.lock();
     if !g.relationships.contains_key(&uuid) {
         return ontap_error(
@@ -342,12 +372,145 @@ async fn list_transfers(State(s): State<AppState>, Path(uuid): Path<String>) -> 
             format!("relationship {uuid} not found"),
         );
     }
+    let records: Vec<Value> = g
+        .transfers
+        .get(&uuid)
+        .map(|v| v.iter().map(|t| transfer_obj(&uuid, t)).collect())
+        .unwrap_or_default();
     Json(json!({
-        "records": [],
-        "num_records": 0,
+        "records": records,
+        "num_records": records.len(),
         "_links": { "self": { "href": format!("/api/snapmirror/relationships/{uuid}/transfers") } },
     }))
     .into_response()
+}
+
+/// Trigger an on-demand transfer: snapshot the source, then record success.
+///
+/// The source snapshot is real (created via the snapshot backend); the
+/// cross-instance byte movement (binary `zfs send`/`receive`) is the live-only
+/// data plane. This matches ONTAP's contract: the work is done before the job
+/// envelope returns.
+async fn create_transfer(State(s): State<AppState>, Path(uuid): Path<String>) -> Response {
+    let (source_path, seq) = {
+        let g = s.snapmirror.lock();
+        match g.relationships.get(&uuid) {
+            Some(_) => {
+                let seq = g.transfers.get(&uuid).map_or(0, Vec::len) + 1;
+                (g.relationships[&uuid].source_path.clone(), seq)
+            }
+            None => {
+                return ontap_error(
+                    StatusCode::NOT_FOUND,
+                    "404",
+                    "snapmirror",
+                    format!("relationship {uuid} not found"),
+                );
+            }
+        }
+    };
+
+    let vol_name = vol_of(&source_path).to_string();
+    let rel8: String = uuid.chars().take(8).collect();
+    let snap_name = format!("snapmirror.{rel8}.{seq}");
+
+    // Create the source snapshot off the executor.
+    let backend = s.backend.clone();
+    let snap_for_closure = snap_name.clone();
+    let result = crate::blocking::run(move || {
+        let b = backend
+            .as_snapshot()
+            .ok_or(BackendError::FeatureNotSupported {
+                capability: "snapshots",
+            })?;
+        let vol = b
+            .list_volumes()?
+            .into_iter()
+            .find(|v| v.name == vol_name)
+            .ok_or_else(|| {
+                BackendError::InvalidArgument(format!("source volume {vol_name:?} not found"))
+            })?;
+        b.create_snapshot(&vol.uuid, &snap_for_closure)?;
+        Ok::<(), BackendError>(())
+    })
+    .await;
+
+    let mut g = s.snapmirror.lock();
+    let transfer = match result {
+        Ok(()) => {
+            if let Some(rel) = g.relationships.get_mut(&uuid) {
+                rel.state = "snapmirrored".to_string();
+                rel.healthy = true;
+            }
+            Transfer {
+                uuid: Uuid::new_v4().to_string(),
+                state: "success".to_string(),
+                bytes_transferred: 0,
+                snapshot: snap_name,
+                end_time: now_rfc3339(),
+            }
+        }
+        Err(e) => {
+            if let Some(rel) = g.relationships.get_mut(&uuid) {
+                rel.healthy = false;
+            }
+            let t = Transfer {
+                uuid: Uuid::new_v4().to_string(),
+                state: "failed".to_string(),
+                bytes_transferred: 0,
+                snapshot: String::new(),
+                end_time: now_rfc3339(),
+            };
+            g.transfers.entry(uuid.clone()).or_default().push(t);
+            return ontap_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500",
+                "snapmirror",
+                format!("transfer failed: {}", e.0),
+            );
+        }
+    };
+    let record = transfer_obj(&uuid, &transfer);
+    g.transfers.entry(uuid).or_default().push(transfer);
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "job": { "uuid": Uuid::new_v4().to_string() },
+            "record": record,
+            "num_records": 1,
+        })),
+    )
+        .into_response()
+}
+
+/// `POST /internal/snapmirror/receive` — NOT an ONTAP path. The peer data-plane
+/// endpoint: accept a replication stream for a destination volume. The real
+/// `zfs receive` apply is the live-only data plane; here we acknowledge receipt.
+async fn internal_receive(headers: HeaderMap, body: Bytes) -> Response {
+    let Some(dest) = headers
+        .get("x-destination-volume")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return ontap_error(
+            StatusCode::BAD_REQUEST,
+            "400",
+            "snapmirror",
+            "X-Destination-Volume header is required".into(),
+        );
+    };
+    if body.is_empty() {
+        return ontap_error(
+            StatusCode::BAD_REQUEST,
+            "400",
+            "snapmirror",
+            "empty replication stream".into(),
+        );
+    }
+    Json(json!({ "status": "received", "bytes": body.len(), "destination": dest })).into_response()
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
 }
 
 /// SnapMirror + cluster-peer routes (auth + state applied by [`crate::app`]).
@@ -370,6 +533,7 @@ pub fn snapmirror_routes() -> Router<AppState> {
         )
         .route(
             "/api/snapmirror/relationships/:uuid/transfers",
-            get(list_transfers),
+            get(list_transfers).post(create_transfer),
         )
+        .route("/internal/snapmirror/receive", post(internal_receive))
 }
