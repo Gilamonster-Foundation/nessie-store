@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logos/nessie-256.png" alt="nessie-store mascot" width="256" height="256">
+</p>
+
 # nessie-store
 
 **Speaks the ONTAP REST API. Runs on whatever storage you actually have.**
