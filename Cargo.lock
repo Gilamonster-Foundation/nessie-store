@@ -805,6 +805,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nessie-backend-zfs"
+version = "0.5.20260528"
+dependencies = [
+ "chrono",
+ "nessie-backend-conformance",
+ "nessie-backend-core",
+ "tracing",
+]
+
+[[package]]
 name = "nessie-ontap-protocol"
 version = "0.5.20260528"
 dependencies = [

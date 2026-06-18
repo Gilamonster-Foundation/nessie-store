@@ -17,7 +17,7 @@ members = [
     "crates/nessie-store",
 
     # Phase 3 — Substrates (Wave A, then Wave B):
-    # "crates/nessie-backend-zfs",
+    "crates/nessie-backend-zfs",
     # "crates/nessie-backend-s3",
     # "crates/nessie-backend-nfs",
     # "crates/nessie-backend-ontap",
