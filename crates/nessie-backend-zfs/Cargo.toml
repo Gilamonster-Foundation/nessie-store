@@ -23,7 +23,7 @@ python = ["dep:pyo3", "dep:pythonize", "dep:serde"]
 nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
 chrono = { workspace = true }
 tracing = { workspace = true }
-pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
 pythonize = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 

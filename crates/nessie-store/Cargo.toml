@@ -27,7 +27,7 @@ nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0" }
 nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.0" }
 nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.0" }
-pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
 pythonize = { workspace = true, optional = true }
 
 tokio = { workspace = true }

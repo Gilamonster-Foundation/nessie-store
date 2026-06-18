@@ -24,8 +24,9 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 url = { workspace = true }
 # Face-A external bindings: the host CPython provides libpython, so PyO3 must NOT
-# link it -> extension-module. Enabled only with the `python` feature.
-pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
+# link it -> extension-module. abi3-py310 builds ONE stable-ABI wheel per platform
+# that works on CPython 3.10+. Enabled only with the `python` feature.
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
