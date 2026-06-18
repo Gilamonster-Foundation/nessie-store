@@ -6,11 +6,20 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased] — 0.2.0 (in progress)
 
-The enhancement cycle. Planned:
+The enhancement cycle.
+
+### Added
+- **PyO3 wheels for every crate** (`nessie-ontap-protocol`, `nessie-backend-mem`,
+  `nessie-backend-conformance`) — each pip-installable with examples + tests.
+- **Inside extension point**: `nessie_backend_conformance.run_all(backend)` validates a
+  **Python-authored** storage backend against the conformance suite (write a backend in Python).
+- **Deploy artifacts**: multi-stage `Dockerfile` with a ZFS vdev-bootstrap entrypoint, a systemd
+  unit + example config/environment, and `docs/DEPLOY.md`.
+
+### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
-- PyO3 wheels for `nessie-ontap-protocol`, `nessie-backend-mem`, `nessie-backend-conformance`,
-  plus the inside-extension `PyBackend` (write a storage backend in Python).
-- Live-ZFS / Trident-on-k3s acceptance gate; deploy artifacts (Docker vdev-bootstrap, RPM/systemd).
+- Live-ZFS / Trident-on-k3s acceptance gate.
+- `release.yml` dual-publish (crates.io + PyPI).
 
 ## [0.1.0] — 2026-06-18
 
