@@ -15,10 +15,10 @@ name = "nessie-store"
 path = "src/main.rs"
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core" }
-nessie-backend-mem = { path = "../nessie-backend-mem" }
-nessie-backend-zfs = { path = "../nessie-backend-zfs" }
-nessie-ontap-protocol = { path = "../nessie-ontap-protocol" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0" }
+nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.0" }
+nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.0" }
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -44,5 +44,5 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 uuid = { workspace = true }
-nessie-backend-mem = { path = "../nessie-backend-mem" }
-nessie-backend-core = { path = "../nessie-backend-core" }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
