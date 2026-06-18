@@ -1,0 +1,25 @@
+# Exposes the ONTAP REST control plane (HTTPS/8443).
+#
+# ClusterIP by default — reach it in-cluster, or `kubectl -n nessie-store
+# port-forward svc/nessie-store 8443:8443`. For a homelab LAN endpoint, switch
+# type to LoadBalancer (k3s ServiceLB hands out the node IP) so Trident / the
+# Ansible collection can reach it directly.
+#
+# Note: this Service fronts the CONTROL plane. The NFS data plane is served by
+# the pod directly (see hostNetwork in deployment.yaml) — clients mount the node
+# IP, not this ClusterIP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nessie-store
+  namespace: nessie-store
+  labels:
+    app.kubernetes.io/name: nessie-store
+spec:
+  type: ClusterIP # change to LoadBalancer for a LAN-reachable endpoint
+  selector:
+    app.kubernetes.io/name: nessie-store
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8443

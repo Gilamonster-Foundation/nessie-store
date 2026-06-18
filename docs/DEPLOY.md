@@ -78,6 +78,21 @@ zfs allow nessie create,destroy,mount,snapshot,clone,send,receive ontap-sim
 # plus CAP_SYS_ADMIN for mount/exportfs (AmbientCapabilities in the unit).
 ```
 
+## Kubernetes / k3s
+
+Already running a cluster? Deploy nessie-store as a pod backed by a PV/PVC, using
+the GHCR image:
+
+```bash
+kubectl create namespace nessie-store
+kubectl -n nessie-store create secret generic nessie-store-admin \
+  --from-literal=admin-password='choose-a-real-password'
+kubectl apply -k deploy/k8s/
+```
+
+Manifests + the full walkthrough (storage, the NFS data plane, a non-ZFS
+control-plane-only variant) are in [DEPLOY_K8S.md](DEPLOY_K8S.md).
+
 ## TLS
 
 The daemon serves HTTPS by default. Certificate resolution order: a Vault PKI

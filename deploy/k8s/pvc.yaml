@@ -1,0 +1,24 @@
+# Persistent claim for /data — holds the file-backed ZFS vdev (vdev.img), the
+# generated config.toml, and the minted cluster identity. This survives pod
+# restarts so the pool re-imports and the cluster UUIDs stay stable.
+#
+# Uses the cluster's DEFAULT StorageClass. On k3s that is `local-path`, which
+# dynamically provisions a node-local directory — no explicit PV needed. To bind
+# a static PV instead, set `storageClassName` to match it (see pv.example.yaml).
+#
+# RWO + a single replica is intentional: a ZFS pool has exactly one owner. Two
+# pods must never mount this volume at once.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nessie-store-data
+  namespace: nessie-store
+  labels:
+    app.kubernetes.io/name: nessie-store
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: local-path   # uncomment to pin; omitted = cluster default

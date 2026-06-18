@@ -1,0 +1,8 @@
+# Namespace for the nessie-store ONTAP-on-ZFS endpoint.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nessie-store
+  labels:
+    app.kubernetes.io/name: nessie-store
+    app.kubernetes.io/part-of: gilamonster

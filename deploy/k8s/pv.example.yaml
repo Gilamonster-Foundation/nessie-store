@@ -1,0 +1,31 @@
+# OPTIONAL: a static, node-pinned PersistentVolume for operators who want explicit
+# control instead of dynamic provisioning. Skip this entirely on k3s if you are
+# happy with the default `local-path` StorageClass (the PVC binds without it).
+#
+# This example pins the volume to a host directory on one node. Create the
+# directory first (`mkdir -p /var/lib/nessie-store-data` on that node) and set
+# the nodeAffinity hostname to match. Then point pvc.yaml at this PV by giving
+# both the same `storageClassName: nessie-store-local`.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nessie-store-data-pv
+  labels:
+    app.kubernetes.io/name: nessie-store
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nessie-store-local
+  local:
+    path: /var/lib/nessie-store-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - CHANGE-ME-node-hostname
