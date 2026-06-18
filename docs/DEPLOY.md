@@ -4,6 +4,27 @@ A cheap ONTAP on-ramp. Two supported ways to run it: a container (fastest) or a
 systemd service on a host with ZFS. Both need ZFS privilege — the daemon shells
 out to `zfs`/`zpool`/`exportfs`.
 
+## Quick install (binary + wizard)
+
+One line installs the release binary and launches an interactive wizard that
+writes the config, optionally creates a file-backed ZFS pool, and enables the
+systemd service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Gilamonster-Foundation/nessie-store/main/scripts/install.sh | sudo bash
+```
+
+Already have the binary? Just run the wizard:
+
+```bash
+sudo nessie-store-setup                 # interactive
+sudo nessie-store-setup --non-interactive   # use env vars / defaults (automation)
+```
+
+Or install a distro package (see Releases): `sudo dpkg -i nessie-store_*.deb` /
+`sudo rpm -i nessie-store-*.rpm` — both ship the systemd unit; then run
+`sudo nessie-store-setup`.
+
 ## Docker (quickest)
 
 The image bootstraps a file-backed ZFS pool on first run, so `--privileged` (and
