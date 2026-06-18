@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 use nessie_backend_core::VolumeBackend;
 use nessie_backend_mem::MemBackend;
+use nessie_backend_zfs::{SystemRunner, ZfsBackend, ZfsConfig};
 use nessie_store::config::{BackendKind, Config};
 use nessie_store::identity::Identity;
 use nessie_store::{AppState, app};
@@ -68,6 +69,17 @@ async fn serve(config_path: &std::path::Path) -> anyhow::Result<()> {
 
     let backend: Arc<dyn VolumeBackend> = match cfg.backend {
         BackendKind::Mem => Arc::new(MemBackend::new()),
+        BackendKind::Zfs => Arc::new(ZfsBackend::new(
+            SystemRunner,
+            ZfsConfig {
+                pool: cfg.zfs_pool.clone(),
+                data_lif: cfg.data_lif.clone(),
+                nfs_clients: cfg.zfs_nfs_clients.clone(),
+                dataset_owner: cfg.zfs_dataset_owner.clone(),
+                dataset_mode: cfg.zfs_dataset_mode.clone(),
+                ..ZfsConfig::default()
+            },
+        )),
     };
 
     let listen = cfg.listen;

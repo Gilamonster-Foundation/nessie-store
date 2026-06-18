@@ -9,14 +9,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Which storage substrate the daemon dispatches to. Only the in-memory backend
-/// is wired today; ZFS and friends arrive in later phases.
+/// Which storage substrate the daemon dispatches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendKind {
     /// The in-memory reference backend (zero-privilege; non-persistent).
     #[default]
     Mem,
+    /// The ZFS substrate (real datasets/snapshots/clones; needs ZFS + privilege).
+    Zfs,
 }
 
 /// Top-level daemon configuration.
@@ -43,6 +44,14 @@ pub struct Config {
     pub ontap_version: String,
     /// Synthetic data-LIF IP that NFS clients mount / Trident probes.
     pub data_lif: String,
+    /// ZFS pool datasets are created under (when `backend = "zfs"`).
+    pub zfs_pool: String,
+    /// NFS export client specs for ZFS volumes (CIDRs/hosts); empty disables exports.
+    pub zfs_nfs_clients: Vec<String>,
+    /// `chown` target applied to a ZFS dataset root on junction set (e.g. `1000:1000`).
+    pub zfs_dataset_owner: Option<String>,
+    /// `chmod` mode applied to a ZFS dataset root on junction set (e.g. `0777`).
+    pub zfs_dataset_mode: Option<String>,
 }
 
 impl Default for Config {
@@ -58,6 +67,10 @@ impl Default for Config {
             node_serial_number: "SIM-1-0000000001".to_string(),
             ontap_version: "9.14.1".to_string(),
             data_lif: "127.0.0.1".to_string(),
+            zfs_pool: "ontap-sim".to_string(),
+            zfs_nfs_clients: Vec::new(),
+            zfs_dataset_owner: None,
+            zfs_dataset_mode: None,
         }
     }
 }
@@ -118,5 +131,16 @@ mod tests {
         assert_eq!(back.svm_name, "svmX");
         assert_eq!(back.cluster_name, "nessie-store");
         assert_eq!(back.admin_username, "admin");
+    }
+
+    #[test]
+    fn selects_zfs_backend_with_settings() {
+        let back: Config = toml::from_str(
+            "backend = \"zfs\"\nzfs_pool = \"tank\"\nzfs_nfs_clients = [\"10.0.0.0/8\"]\n",
+        )
+        .expect("parse");
+        assert_eq!(back.backend, BackendKind::Zfs);
+        assert_eq!(back.zfs_pool, "tank");
+        assert_eq!(back.zfs_nfs_clients, ["10.0.0.0/8"]);
     }
 }

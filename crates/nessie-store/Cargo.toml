@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 nessie-backend-core = { path = "../nessie-backend-core" }
 nessie-backend-mem = { path = "../nessie-backend-mem" }
+nessie-backend-zfs = { path = "../nessie-backend-zfs" }
 nessie-ontap-protocol = { path = "../nessie-ontap-protocol" }
 
 tokio = { workspace = true }
