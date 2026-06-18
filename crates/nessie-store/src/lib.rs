@@ -15,6 +15,7 @@ pub mod routes;
 pub mod snapmirror;
 pub mod snapshots;
 pub mod state;
+pub mod tls;
 pub mod volumes;
 
 pub use routes::app;
