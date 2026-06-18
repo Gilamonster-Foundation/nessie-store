@@ -24,6 +24,9 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "python")]
+mod python;
+
 use nessie_backend_core::{
     BackendError, CloneBackend, SnapshotBackend, VolumeBackend, VolumePatch, VolumeSpec, VolumeUuid,
 };

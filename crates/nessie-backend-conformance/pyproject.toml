@@ -1,0 +1,36 @@
+# PyO3 wheel for nessie-backend-conformance (validate a Python-authored backend).
+
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nessie-backend-conformance"
+description = "Validate a Python-authored nessie-store backend against the conformance suite."
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.10"
+authors = [{ name = "Shawn Hartsock", email = "hartsock@users.noreply.github.com" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Topic :: System :: Filesystems",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/Gilamonster-Foundation/nessie-store"
+Repository = "https://github.com/Gilamonster-Foundation/nessie-store"
+Issues = "https://github.com/Gilamonster-Foundation/nessie-store/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+python-source = "python"
+module-name = "nessie_backend_conformance._core"
+features = ["python"]
