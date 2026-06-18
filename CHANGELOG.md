@@ -4,7 +4,13 @@ All notable changes to nessie-store are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.0 (in progress)
+## [Unreleased]
+
+### Planned
+- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
+- Live-ZFS / Trident-on-k3s acceptance gate.
+
+## [0.2.0] — 2026-06-18
 
 The enhancement cycle.
 
@@ -31,10 +37,6 @@ The enhancement cycle.
   Deployment, Service, example Secret + static PV, `kustomization.yaml`) so the GHCR image runs
   as a pod backed by a PV/PVC. `docs/DEPLOY_K8S.md` covers storage, the NFS data plane, and a
   non-ZFS control-plane-only variant.
-
-### Planned
-- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
-- Live-ZFS / Trident-on-k3s acceptance gate.
 
 ## [0.1.0] — 2026-06-18
 
@@ -70,4 +72,5 @@ Ansible collection, the `netapp-ontap` Python SDK) can drive the full workflow.
 - The cross-instance binary `zfs send`/`receive` byte movement is the live-only
   data plane (the control surface is complete); it lands in the 0.2.x cycle.
 
+[0.2.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.1.0
