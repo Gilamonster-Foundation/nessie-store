@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "python")]
+mod python;
 mod runner;
 mod zfs;
 

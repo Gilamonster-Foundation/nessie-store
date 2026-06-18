@@ -9,15 +9,23 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 # Gated tier that runs the conformance suite against a REAL ZFS pool (needs
 # privilege + a loopback pool); off by default so CI stays hermetic.
 live-zfs = []
+# PyO3 bindings (the pip wheel). Off by default; maturin enables it.
+python = ["dep:pyo3", "dep:pythonize", "dep:serde"]
 
 [dependencies]
 nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
 chrono = { workspace = true }
 tracing = { workspace = true }
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
+pythonize = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 nessie-backend-conformance = { path = "../nessie-backend-conformance", version = "0.2.0" }

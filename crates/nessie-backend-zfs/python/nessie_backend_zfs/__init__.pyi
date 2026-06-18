@@ -1,0 +1,43 @@
+"""Type stubs for nessie_backend_zfs (hand-written, committed)."""
+
+from collections.abc import Callable, Sequence
+from typing import Any
+
+class NessieError(Exception):
+    """A nessie-store backend error."""
+
+# A command runner: receives argv and returns {"success", "stdout", "stderr"}.
+Runner = Callable[[Sequence[str]], dict[str, Any]]
+
+class ZfsBackend:
+    def __init__(
+        self,
+        pool: str | None = ...,
+        data_lif: str | None = ...,
+        nfs_clients: list[str] | None = ...,
+        dataset_owner: str | None = ...,
+        dataset_mode: str | None = ...,
+        exports_dir: str | None = ...,
+        srv_root: str | None = ...,
+        runner: Runner | None = ...,
+    ) -> None: ...
+    def capabilities(self) -> dict[str, Any]: ...
+    def create_volume(self, name: str, size_bytes: int | None = ...) -> dict[str, Any]: ...
+    def list_volumes(self) -> list[dict[str, Any]]: ...
+    def get_volume(self, uuid: str) -> dict[str, Any]: ...
+    def delete_volume(self, uuid: str) -> None: ...
+    def patch_volume(
+        self,
+        uuid: str,
+        size_bytes: int | None = ...,
+        junction_path: str | None = ...,
+        export_policy: str | None = ...,
+    ) -> dict[str, Any]: ...
+    def access_handle(self, uuid: str) -> dict[str, Any]: ...
+    def create_snapshot(self, vol_uuid: str, name: str) -> dict[str, Any]: ...
+    def list_snapshots(self, vol_uuid: str) -> list[dict[str, Any]]: ...
+    def get_snapshot(self, vol_uuid: str, snap_uuid: str) -> dict[str, Any]: ...
+    def delete_snapshot(self, vol_uuid: str, snap_uuid: str) -> None: ...
+    def create_clone(
+        self, parent_vol_uuid: str, parent_snap_uuid: str, new_name: str
+    ) -> dict[str, Any]: ...
