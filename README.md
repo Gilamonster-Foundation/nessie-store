@@ -139,6 +139,4 @@ above, without any additional terms or conditions.
 
 ## Related
 
-- [netapp-sim](https://github.com/hartsock/netapp-sim) — Python predecessor. Same protocol surface, single ZFS backend. nessie-store inherits the protocol shape and lifts most of the operation set from `netapp-sim/src/netapp_sim/services/zfs_service.py`.
-- [monty-tui](https://github.com/hartsock/monty-tui) — terminal dashboard for the swarm and the storage layer underneath.
 - [NetApp ONTAP REST API spec](https://docs.netapp.com/us-en/ontap-restapi/) — the surface nessie-store mirrors.
