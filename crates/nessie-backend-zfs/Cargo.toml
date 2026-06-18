@@ -1,0 +1,23 @@
+[package]
+name = "nessie-backend-zfs"
+description = "ZFS-backed storage backend for nessie-store (zfs/zpool/exportfs over a CommandRunner seam)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Gated tier that runs the conformance suite against a REAL ZFS pool (needs
+# privilege + a loopback pool); off by default so CI stays hermetic.
+live-zfs = []
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core" }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+nessie-backend-conformance = { path = "../nessie-backend-conformance" }
