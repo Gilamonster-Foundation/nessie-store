@@ -5,16 +5,19 @@
 # in other repos). The per-PR gate stays ci.yml.
 #
 # On a `vX.Y.Z` tag this: publishes the Rust crates to crates.io (in dep order),
-# builds + publishes the PyO3 wheels to PyPI, builds the daemon binary + a GHCR
-# image, and cuts a GitHub Release. Every publish step is gated on its secret and
-# no-ops gracefully when absent, so a tag on an unconfigured fork still produces
-# the binary, the image, and the GitHub Release.
+# builds + publishes the PyO3 wheels to PyPI for **Linux (x86_64 + aarch64),
+# macOS (universal2), and Windows (x64)** via abi3 (one wheel per platform, works
+# on CPython 3.10+), builds the daemon binary + a GHCR image, and cuts a GitHub
+# Release. Every publish step is gated on its secret AND on the ref being a tag,
+# so `workflow_dispatch` runs build-only (no publish) for validation, and a tag on
+# an unconfigured fork still produces the wheels, binary, image, and Release.
 
 name: Release
 
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch: {} # build-only validation (publishing is gated on a tag)
 
 permissions:
   contents: write
@@ -38,9 +41,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12" # for the pyo3 build scripts (--all crates compile)
-      - name: Publish to crates.io (dependency order; no-op without a token)
+      - name: Publish to crates.io (dependency order; tag-only, no-op without a token)
         run: |
           set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+            echo "::notice::not a tag — skipping crates.io publish"
+            exit 0
+          fi
           if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
             echo "::notice::CARGO_REGISTRY_TOKEN unset — skipping crates.io publish"
             exit 0
@@ -53,44 +60,64 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Build abi3 wheels for every crate on every platform. One job per
+  # (platform × crate); abi3 means one wheel per platform covers CPython 3.10+.
   wheels:
-    runs-on: ubuntu-24.04
-    permissions:
-      id-token: write # PyPI trusted publishing
-      contents: read
-    env:
-      # Hoisted to job env so the publish step's `if:` can read it — the
-      # `secrets` context is NOT available in step `if:` conditions (using it
-      # there is a workflow startup error).
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    name: wheels ${{ matrix.platform.target }} · ${{ matrix.crate }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - nessie-backend-core
+          - nessie-ontap-protocol
+          - nessie-backend-conformance
+          - nessie-backend-mem
+          - nessie-backend-zfs
+          - nessie-store
+        platform:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, manylinux: auto }
+          - { runner: ubuntu-24.04, target: aarch64-unknown-linux-gnu, manylinux: auto }
+          - { runner: macos-14, target: universal2-apple-darwin, manylinux: "off" }
+          - { runner: windows-latest, target: x86_64-pc-windows-msvc, manylinux: "off" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build per-crate wheels
-        run: |
-          set -euo pipefail
-          python3 -m pip install --upgrade pip maturin
-          mkdir -p dist
-          for pp in crates/*/pyproject.toml; do
-            d=$(dirname "$pp")
-            echo "::group::wheel $d"
-            ( cd "$d" && maturin build --release --out "$GITHUB_WORKSPACE/dist" )
-            echo "::endgroup::"
-          done
-          ls -l dist
-      # Upload the artifact BEFORE publishing so the `release` job always gets the
-      # wheels even if the PyPI step is rate-limited or skipped.
+      - name: Build wheel (abi3)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: ${{ matrix.platform.manylinux }}
+          args: --release --out dist -m crates/${{ matrix.crate }}/Cargo.toml
+          sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-${{ matrix.platform.target }}-${{ matrix.crate }}
           path: dist/*.whl
-      - name: Publish to PyPI (token mode; skipped without a token)
+
+  # Collect every platform's wheels and publish to PyPI (tag-only). skip-existing
+  # + continue-on-error keep re-runs idempotent and never let a PyPI new-project
+  # rate-limit fail the release.
+  publish-wheels:
+    needs: wheels
+    if: ${{ !cancelled() && github.ref_type == 'tag' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write # PyPI trusted publishing
+      contents: read
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - name: Publish to PyPI
         if: ${{ env.PYPI_API_TOKEN != '' }}
-        # PyPI rate-limits creating many new projects at once; never let that fail
-        # the release. `skip-existing` makes re-runs idempotent (the already-
-        # published wheels are skipped, the stragglers upload).
         continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -120,6 +147,7 @@ jobs:
   release:
     runs-on: ubuntu-24.04
     needs: [wheels, packages]
+    if: ${{ !cancelled() && github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build the daemon binary
@@ -131,8 +159,9 @@ jobs:
           tar -C target/release -czf "out/nessie-store-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" nessie-store
       - uses: actions/download-artifact@v4
         with:
-          name: wheels
+          pattern: wheels-*
           path: out
+          merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
           name: linux-packages
@@ -162,7 +191,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ github.ref_type == 'tag' }}
           tags: |
             ghcr.io/gilamonster-foundation/nessie-store:${{ github.ref_name }}
             ghcr.io/gilamonster-foundation/nessie-store:latest
