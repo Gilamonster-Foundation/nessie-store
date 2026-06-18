@@ -990,6 +990,8 @@ dependencies = [
  "nessie-backend-mem",
  "nessie-backend-zfs",
  "nessie-ontap-protocol",
+ "pyo3",
+ "pythonize",
  "rcgen",
  "rustls",
  "serde",

@@ -26,7 +26,8 @@ pub struct Identity {
 }
 
 impl Identity {
-    fn mint() -> Self {
+    /// Mint a fresh identity with newly random UUIDs (not persisted).
+    pub fn mint() -> Self {
         Self {
             cluster_uuid: Uuid::new_v4().to_string(),
             svm_uuid: Uuid::new_v4().to_string(),

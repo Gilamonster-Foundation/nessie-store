@@ -9,10 +9,16 @@ All notable changes to nessie-store are documented here. The format follows
 The enhancement cycle.
 
 ### Added
-- **PyO3 wheels for every crate** (`nessie-ontap-protocol`, `nessie-backend-mem`,
-  `nessie-backend-conformance`) — each pip-installable with examples + tests.
-- **Inside extension point**: `nessie_backend_conformance.run_all(backend)` validates a
-  **Python-authored** storage backend against the conformance suite (write a backend in Python).
+- **PyO3 wheels for every crate** (`nessie-backend-core`, `nessie-ontap-protocol`,
+  `nessie-backend-mem`, `nessie-backend-conformance`, `nessie-backend-zfs`, `nessie-store`) —
+  each pip-installable with a runnable example, smoke tests, and README code examples.
+- **Inside extension points**: `nessie_backend_conformance.run_all(backend)` validates a
+  **Python-authored** storage backend against the conformance suite; `nessie_backend_zfs.ZfsBackend`
+  accepts a Python `runner(argv)` callable so every ZFS command is routed through your code (mock,
+  audit, or sudo-wrap).
+- **Outside extension points**: drive the substrates from Python — `ZfsBackend` over real
+  `zfs`/`zpool`, and `nessie_store.Config` to generate/validate the daemon's `config.toml` +
+  `mint_identity()` for tooling.
 - **Deploy artifacts**: multi-stage `Dockerfile` with a ZFS vdev-bootstrap entrypoint, a systemd
   unit + example config/environment, and `docs/DEPLOY.md`.
 - **`release.yml`**: tag-triggered pipeline — crates.io publish (dep order), PyO3 wheels → PyPI,
