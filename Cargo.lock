@@ -916,14 +916,14 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-conformance"
-version = "0.5.20260528"
+version = "0.1.0"
 dependencies = [
  "nessie-backend-core",
 ]
 
 [[package]]
 name = "nessie-backend-core"
-version = "0.5.20260528"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-mem"
-version = "0.5.20260528"
+version = "0.1.0"
 dependencies = [
  "nessie-backend-conformance",
  "nessie-backend-core",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-zfs"
-version = "0.5.20260528"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "nessie-backend-conformance",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-ontap-protocol"
-version = "0.5.20260528"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "nessie-backend-core",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-store"
-version = "0.5.20260528"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",

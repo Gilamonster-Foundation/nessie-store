@@ -137,7 +137,9 @@ Where content-addressed identity matters (mainly for backend implementations tha
 
 ## Versioning + release
 
-- Scheme: `0.{month}.{YYYYMMDD}`.
+- Scheme: **SemVer** (`MAJOR.MINOR.PATCH`). `v0.1.0` marks feature parity with
+  `netapp-sim`; `0.2.x` carries the enhancement cycle. Pre-1.0, minor bumps may
+  carry breaking changes.
 - crates.io + PyPI publish from the same tag. Release flow in [docs/STYLE_PYO3.md](docs/STYLE_PYO3.md).
 
 ## Operator notes

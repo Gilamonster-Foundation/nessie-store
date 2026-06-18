@@ -11,7 +11,7 @@ Read [STYLE_RUST.md](STYLE_RUST.md) and [STYLE_PYTHON.md](STYLE_PYTHON.md) first
   - `cargo publish` → crates.io (`monty-events`)
   - `maturin publish` (or built via CI and pushed to PyPI) → PyPI (`monty-events`)
 - Names match across registries: `monty-events` on crates.io = `monty-events` on PyPI. The Python *module* name is `monty_events` (underscore). PyPI consumers `pip install monty-events` then `import monty_events`.
-- **Versioning:** the `0.{month}.{YYYYMMDD}` scheme (e.g. `0.5.20260512`). The Rust `Cargo.toml` version is the source of truth; the Python package reads from it via maturin's `version_from_cargo` config.
+- **Versioning:** SemVer (e.g. `0.1.0`). The Rust `Cargo.toml` version is the source of truth; the Python package reads from it via maturin's `version_from_cargo` config.
 
 ## Crate layout
 
