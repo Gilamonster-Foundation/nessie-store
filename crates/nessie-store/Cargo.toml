@@ -22,6 +22,9 @@ nessie-ontap-protocol = { path = "../nessie-ontap-protocol" }
 
 tokio = { workspace = true }
 axum = { workspace = true }
+axum-server = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 http = { workspace = true }

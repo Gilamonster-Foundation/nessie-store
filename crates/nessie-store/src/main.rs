@@ -42,6 +42,9 @@ enum Cmd {
         /// Path to the config file.
         #[arg(long, default_value = "nessie-store.toml")]
         config: PathBuf,
+        /// Serve plain HTTP instead of HTTPS (local/testing only; ONTAP clients expect TLS).
+        #[arg(long)]
+        no_tls: bool,
     },
 }
 
@@ -59,11 +62,11 @@ async fn main() -> anyhow::Result<()> {
             println!("wrote default config to {}", config.display());
             Ok(())
         }
-        Cmd::Serve { config } => serve(&config).await,
+        Cmd::Serve { config, no_tls } => serve(&config, no_tls).await,
     }
 }
 
-async fn serve(config_path: &std::path::Path) -> anyhow::Result<()> {
+async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()> {
     let cfg = Config::load(config_path)?;
     let identity = Identity::load_or_create(&cfg.identity_path())?;
 
@@ -83,10 +86,24 @@ async fn serve(config_path: &std::path::Path) -> anyhow::Result<()> {
     };
 
     let listen = cfg.listen;
-    let state = AppState::new(backend, Arc::new(cfg), Arc::new(identity));
+    let tls_dir = cfg.tls_dir();
+    let router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
 
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!(%listen, "nessie-store listening");
-    axum::serve(listener, app(state)).await?;
+    if no_tls {
+        let listener = tokio::net::TcpListener::bind(listen).await?;
+        tracing::info!(%listen, "nessie-store listening (HTTP, --no-tls)");
+        axum::serve(listener, router).await?;
+    } else {
+        // ONTAP REST is HTTPS-only. Install a rustls crypto provider, ensure a
+        // server cert, and serve TLS.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let certs = nessie_store::tls::ensure_cert(&tls_dir)?;
+        let tls_config =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&certs.cert, &certs.key).await?;
+        tracing::info!(%listen, "nessie-store listening (HTTPS)");
+        axum_server::bind_rustls(listen, tls_config)
+            .serve(router.into_make_service())
+            .await?;
+    }
     Ok(())
 }

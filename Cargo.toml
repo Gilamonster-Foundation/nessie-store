@@ -76,10 +76,15 @@ dashmap = "6"
 
 # HTTP server (ONTAP REST surface)
 axum = { version = "0.7", features = ["macros"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 hyper = "1"
 http = "1"
+
+# TLS (ONTAP REST is HTTPS-only): rustls server + self-signed cert generation.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rcgen = "0.13"
 
 # HTTP client (ontap-passthrough backend; s3 backend uses object_store)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

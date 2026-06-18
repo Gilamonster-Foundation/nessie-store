@@ -97,6 +97,12 @@ impl Config {
         }
     }
 
+    /// Directory holding the TLS cert/key (`data_dir/tls`).
+    #[must_use]
+    pub fn tls_dir(&self) -> PathBuf {
+        self.data_dir.join("tls")
+    }
+
     /// Path to the persisted cluster/SVM identity.
     #[must_use]
     pub fn identity_path(&self) -> PathBuf {
