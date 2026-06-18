@@ -12,6 +12,7 @@ pub mod config;
 pub mod error;
 pub mod identity;
 pub mod routes;
+pub mod snapmirror;
 pub mod snapshots;
 pub mod state;
 pub mod volumes;
