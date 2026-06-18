@@ -16,8 +16,11 @@ The enhancement cycle.
 - **Deploy artifacts**: multi-stage `Dockerfile` with a ZFS vdev-bootstrap entrypoint, a systemd
   unit + example config/environment, and `docs/DEPLOY.md`.
 - **`release.yml`**: tag-triggered pipeline — crates.io publish (dep order), PyO3 wheels → PyPI,
-  the daemon binary + a GHCR image, and a GitHub Release. Every publish step is gated on its
-  secret and no-ops without it. Internal path deps now carry explicit versions (for `cargo publish`).
+  the daemon binary, **`.deb` + `.rpm` packages**, a GHCR image, and a GitHub Release. Every
+  publish step is gated on its secret and no-ops without it. Internal path deps now carry explicit
+  versions (for `cargo publish`).
+- **Installers**: a `curl | sudo bash` `install.sh`, an interactive `nessie-store-setup` wizard
+  (systemd), and `.deb`/`.rpm` packages (via cargo-deb / cargo-generate-rpm) that ship the unit.
 
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).

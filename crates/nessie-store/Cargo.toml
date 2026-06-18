@@ -46,3 +46,39 @@ tower = { workspace = true, features = ["util"] }
 uuid = { workspace = true }
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0" }
 nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
+
+# --- Linux packaging -------------------------------------------------------
+# `.deb` via cargo-deb; `.rpm` via cargo-generate-rpm. Asset source paths are
+# relative to this crate's manifest dir, so they reach up to the workspace root
+# (../..). The unit is shipped but NOT auto-enabled — run `nessie-store-setup`
+# (or `systemctl enable --now nessie-store`) after editing the config.
+[package.metadata.deb]
+maintainer = "Shawn Hartsock <hartsock@users.noreply.github.com>"
+license-file = ["../../LICENSE-APACHE", "0"]
+section = "admin"
+priority = "optional"
+extended-description = "Speaks the NetApp ONTAP REST API over a ZFS backend — a cheap ONTAP on-ramp for home and small business."
+depends = "$auto, zfsutils-linux, nfs-kernel-server"
+assets = [
+    ["../../target/release/nessie-store", "usr/bin/", "755"],
+    ["../../scripts/nessie-store-setup.sh", "usr/local/bin/nessie-store-setup", "755"],
+    ["../../deploy/nessie-store.service", "lib/systemd/system/nessie-store.service", "644"],
+    ["../../deploy/config.example.toml", "usr/share/doc/nessie-store/config.example.toml", "644"],
+    ["../../deploy/environment.example", "usr/share/doc/nessie-store/environment.example", "644"],
+    ["../../docs/DEPLOY.md", "usr/share/doc/nessie-store/DEPLOY.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "ONTAP REST API over ZFS — a cheap ONTAP on-ramp"
+assets = [
+    { source = "../../target/release/nessie-store", dest = "/usr/bin/nessie-store", mode = "755" },
+    { source = "../../scripts/nessie-store-setup.sh", dest = "/usr/local/bin/nessie-store-setup", mode = "755" },
+    { source = "../../deploy/nessie-store.service", dest = "/lib/systemd/system/nessie-store.service", mode = "644" },
+    { source = "../../deploy/config.example.toml", dest = "/usr/share/doc/nessie-store/config.example.toml", mode = "644" },
+    { source = "../../deploy/environment.example", dest = "/usr/share/doc/nessie-store/environment.example", mode = "644" },
+    { source = "../../docs/DEPLOY.md", dest = "/usr/share/doc/nessie-store/DEPLOY.md", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+zfs = "*"
+nfs-utils = "*"

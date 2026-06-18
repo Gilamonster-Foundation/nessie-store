@@ -86,9 +86,28 @@ jobs:
           name: wheels
           path: dist/*.whl
 
+  packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build .deb and .rpm
+        run: |
+          set -euo pipefail
+          cargo install cargo-deb cargo-generate-rpm --locked
+          cargo build --release --locked -p nessie-store
+          cargo deb -p nessie-store --no-build
+          cargo generate-rpm -p crates/nessie-store
+          mkdir -p pkgs
+          cp target/debian/*.deb target/generate-rpm/*.rpm pkgs/
+          ls -l pkgs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: pkgs/*
+
   release:
     runs-on: ubuntu-24.04
-    needs: [wheels]
+    needs: [wheels, packages]
     steps:
       - uses: actions/checkout@v4
       - name: Build the daemon binary
@@ -102,12 +121,18 @@ jobs:
         with:
           name: wheels
           path: out
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: out
       - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             out/*.tar.gz
             out/*.whl
+            out/*.deb
+            out/*.rpm
           generate_release_notes: true
 
   docker:
