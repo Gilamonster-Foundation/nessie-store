@@ -80,16 +80,23 @@ jobs:
             echo "::endgroup::"
           done
           ls -l dist
-      - name: Publish to PyPI (token mode; skipped without a token)
-        if: ${{ env.PYPI_API_TOKEN != '' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ env.PYPI_API_TOKEN }}
-          packages-dir: dist
+      # Upload the artifact BEFORE publishing so the `release` job always gets the
+      # wheels even if the PyPI step is rate-limited or skipped.
       - uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: dist/*.whl
+      - name: Publish to PyPI (token mode; skipped without a token)
+        if: ${{ env.PYPI_API_TOKEN != '' }}
+        # PyPI rate-limits creating many new projects at once; never let that fail
+        # the release. `skip-existing` makes re-runs idempotent (the already-
+        # published wheels are skipped, the stragglers upload).
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ env.PYPI_API_TOKEN }}
+          packages-dir: dist
+          skip-existing: true
 
   packages:
     runs-on: ubuntu-24.04
