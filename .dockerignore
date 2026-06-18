@@ -1,0 +1,7 @@
+target/
+.git/
+.github/
+wheels/
+**/__pycache__/
+*.whl
+docs/

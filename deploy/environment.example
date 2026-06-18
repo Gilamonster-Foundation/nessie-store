@@ -1,0 +1,8 @@
+# Install to /etc/nessie-store/environment (referenced by nessie-store.service).
+# Keeps secrets out of the world-readable TOML config.
+
+# Basic-auth password (overrides admin_password in the TOML at startup).
+NESSIE_ADMIN_PASSWORD=change-me
+
+# Tracing verbosity (error|warn|info|debug|trace).
+RUST_LOG=info

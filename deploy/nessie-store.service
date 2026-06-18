@@ -1,0 +1,21 @@
+[Unit]
+Description=nessie-store — ONTAP REST API over ZFS
+Documentation=https://github.com/Gilamonster-Foundation/nessie-store
+After=network-online.target zfs.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# Secrets (NESSIE_ADMIN_PASSWORD, RUST_LOG) live here, not in the TOML.
+EnvironmentFile=-/etc/nessie-store/environment
+ExecStart=/usr/bin/nessie-store serve --config /etc/nessie-store/config.toml
+# Creates/owns /var/lib/nessie-store (data_dir: identity, TLS cert, registry).
+StateDirectory=nessie-store
+Restart=on-failure
+RestartSec=5
+# The daemon shells out to zfs/zpool/exportfs, so it needs ZFS privilege: run as
+# root (default) OR delegate to a service user with `zfs allow` + CAP_SYS_ADMIN.
+# Sandboxing is left conservative because NFS export + ZFS need broad access.
+
+[Install]
+WantedBy=multi-user.target

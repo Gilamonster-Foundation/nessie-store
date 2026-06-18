@@ -1,0 +1,24 @@
+# nessie-store configuration. Install to /etc/nessie-store/config.toml.
+# Generate a fresh default with: nessie-store init --config config.toml
+
+listen = "0.0.0.0:8443"
+data_dir = "/var/lib/nessie-store"
+backend = "zfs"
+
+admin_username = "admin"
+# Prefer the NESSIE_ADMIN_PASSWORD env (see environment.example); this is the fallback.
+admin_password = "admin"
+
+# Reported cluster identity (clients cache the minted UUIDs in data_dir/identity.json).
+cluster_name = "nessie-store"
+svm_name = "svm0"
+node_serial_number = "SIM-1-0000000001"
+ontap_version = "9.14.1"
+# The data-LIF IP clients mount / Trident probes. Set to this host's reachable IP.
+data_lif = "192.168.1.100"
+
+# ZFS backend settings (used when backend = "zfs").
+zfs_pool = "ontap-sim"
+zfs_nfs_clients = ["192.168.0.0/16", "10.42.0.0/16"]
+# zfs_dataset_owner = "1000:1000"
+# zfs_dataset_mode = "0777"
