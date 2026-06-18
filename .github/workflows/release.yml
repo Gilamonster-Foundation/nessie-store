@@ -91,7 +91,10 @@ jobs:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
           args: --release --out dist -m crates/${{ matrix.crate }}/Cargo.toml
-          sccache: "true"
+          # sccache OFF: it mishandles the .S assembly files that ring / aws-lc-sys
+          # compile when cross-building nessie-store to aarch64-linux (both crypto
+          # crates fail their cc build under sccache). Correctness over cache.
+          sccache: "false"
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.platform.target }}-${{ matrix.crate }}
