@@ -4,6 +4,14 @@ All notable changes to nessie-store are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 0.2.0 (in progress)
+
+The enhancement cycle. Planned:
+- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
+- PyO3 wheels for `nessie-ontap-protocol`, `nessie-backend-mem`, `nessie-backend-conformance`,
+  plus the inside-extension `PyBackend` (write a storage backend in Python).
+- Live-ZFS / Trident-on-k3s acceptance gate; deploy artifacts (Docker vdev-bootstrap, RPM/systemd).
+
 ## [0.1.0] — 2026-06-18
 
 **Feature parity with [`netapp-sim`](https://github.com/hartsock/netapp-sim).**
