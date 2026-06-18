@@ -16,38 +16,67 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "nessie-store"
 path = "src/main.rs"
+required-features = ["daemon"]
 
 [features]
-# PyO3 bindings (the pip wheel). Off by default; maturin enables it. The daemon
-# binary never builds with this on — only the cdylib wheel does.
+default = ["daemon"]
+# The full ONTAP daemon: HTTP/TLS server, backends, the whole control plane. On
+# by default; the binary requires it.
+daemon = [
+    "dep:nessie-backend-core",
+    "dep:nessie-backend-mem",
+    "dep:nessie-backend-zfs",
+    "dep:nessie-ontap-protocol",
+    "dep:tokio",
+    "dep:axum",
+    "dep:axum-server",
+    "dep:rustls",
+    "dep:rcgen",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:http",
+    "dep:clap",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:chrono",
+    "dep:base64",
+]
+# PyO3 bindings (the pip wheel) — only `config` + `identity`. Built with
+# `--no-default-features --features python` so the wheel is light (serde/toml/uuid,
+# no TLS/HTTP stack) and cross-compiles to every platform. The daemon binary never
+# builds with this; only the cdylib wheel does.
 python = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0" }
-nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.0" }
-nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.0" }
+# Daemon-only (optional; pulled in by the `daemon` feature).
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0", optional = true }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.0", optional = true }
+nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.0", optional = true }
+nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.0", optional = true }
+tokio = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+axum-server = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+
+# PyO3 wheel.
 pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
 pythonize = { workspace = true, optional = true }
 
-tokio = { workspace = true }
-axum = { workspace = true }
-axum-server = { workspace = true }
-rustls = { workspace = true }
-rcgen = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-http = { workspace = true }
+# Always present — used by `config` + `identity` (and thus the light wheel).
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
-clap = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
-chrono = { workspace = true }
-base64 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
