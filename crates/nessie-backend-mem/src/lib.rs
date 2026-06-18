@@ -10,6 +10,9 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "python")]
+mod python;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
