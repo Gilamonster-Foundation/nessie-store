@@ -919,6 +919,9 @@ name = "nessie-backend-conformance"
 version = "0.2.0"
 dependencies = [
  "nessie-backend-core",
+ "pyo3",
+ "pythonize",
+ "serde",
 ]
 
 [[package]]
