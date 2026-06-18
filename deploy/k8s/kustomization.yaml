@@ -1,0 +1,19 @@
+# One-shot apply:  kubectl apply -k deploy/k8s/
+#
+# The admin Secret is deliberately NOT listed here — create it first so a real
+# password never lands in git (see docs/DEPLOY_K8S.md):
+#
+#   kubectl create namespace nessie-store
+#   kubectl -n nessie-store create secret generic nessie-store-admin \
+#     --from-literal=admin-password='<your-password>'
+#
+# pv.example.yaml is also omitted — it is opt-in static provisioning; the PVC
+# binds to the default StorageClass (local-path on k3s) without it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: nessie-store
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml

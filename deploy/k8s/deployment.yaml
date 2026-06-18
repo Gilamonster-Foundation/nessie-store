@@ -1,0 +1,84 @@
+# nessie-store daemon — one privileged pod, backed by the PVC at /data.
+#
+# Privilege + /dev/zfs are required because the entrypoint creates/imports a
+# file-backed ZFS pool, and the daemon shells out to zfs/zpool/exportfs. The
+# host node must have the ZFS kernel module loaded (true on the homelab k3s
+# node). On a cluster without host ZFS, switch the backend to "mem" (control
+# plane only) — see docs/DEPLOY_K8S.md.
+#
+# Recreate + replicas:1 is intentional and load-bearing: a ZFS pool has exactly
+# one owner and the PVC is ReadWriteOnce. A rolling update would briefly run two
+# pods fighting over the same pool — never allow that.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nessie-store
+  namespace: nessie-store
+  labels:
+    app.kubernetes.io/name: nessie-store
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nessie-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nessie-store
+    spec:
+      # For the NFS data plane to be reachable, clients mount the node's IP.
+      # Uncomment hostNetwork so the data-LIF is the node address (and set
+      # data_lif to it). Left off by default so the control plane works behind
+      # the Service without claiming a host port.
+      # hostNetwork: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: nessie-store
+          image: ghcr.io/gilamonster-foundation/nessie-store:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true # zpool create/import + exportfs need it
+          env:
+            - name: NESSIE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nessie-store-admin
+                  key: admin-password
+            - name: NESSIE_DATA_DIR
+              value: /data
+            - name: NESSIE_ZFS_POOL
+              value: ontap-sim
+            - name: NESSIE_VDEV_SIZE
+              value: 10G
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: https
+              containerPort: 8443
+          # TCP probe: the API is HTTPS + basic-auth on every route, so an
+          # httpGet would 401. A live TLS listener is the honest readiness signal.
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: dev-zfs
+              mountPath: /dev/zfs
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nessie-store-data
+        - name: dev-zfs
+          hostPath:
+            path: /dev/zfs
+            type: CharDevice

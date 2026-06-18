@@ -21,6 +21,10 @@ The enhancement cycle.
   versions (for `cargo publish`).
 - **Installers**: a `curl | sudo bash` `install.sh`, an interactive `nessie-store-setup` wizard
   (systemd), and `.deb`/`.rpm` packages (via cargo-deb / cargo-generate-rpm) that ship the unit.
+- **Kubernetes / k3s deploy surface**: `deploy/k8s/` manifests (namespace, PVC, privileged
+  Deployment, Service, example Secret + static PV, `kustomization.yaml`) so the GHCR image runs
+  as a pod backed by a PV/PVC. `docs/DEPLOY_K8S.md` covers storage, the NFS data plane, and a
+  non-ZFS control-plane-only variant.
 
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
