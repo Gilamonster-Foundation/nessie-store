@@ -28,6 +28,9 @@ mod job;
 mod links;
 mod records;
 
+#[cfg(feature = "python")]
+mod python;
+
 pub use collection::HalCollection;
 pub use duration::iso8601_duration;
 pub use error::{ErrorBody, ErrorEnvelope, envelope_for, status_for};

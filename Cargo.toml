@@ -119,6 +119,9 @@ insta = { version = "1", features = ["json", "yaml"] }
 # binary unable to initialize its own interpreter — the #1 packaging bug here.
 pyo3 = { version = "0.26", default-features = false }
 pyo3-asyncio = { version = "0.26", features = ["tokio-runtime"] }
+# Serde <-> Python conversion at the wheel boundary (each crate's wheel exchanges
+# plain dicts/values, never another wheel's #[pyclass] type).
+pythonize = "0.26"
 
 [profile.release]
 lto = "thin"
