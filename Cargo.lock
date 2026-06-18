@@ -837,6 +837,7 @@ dependencies = [
  "http",
  "nessie-backend-core",
  "nessie-backend-mem",
+ "nessie-backend-zfs",
  "nessie-ontap-protocol",
  "serde",
  "serde_json",

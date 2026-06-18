@@ -14,7 +14,7 @@ use chrono::Utc;
 use serde_json::Value;
 use uuid::Uuid;
 
-use nessie_backend_core::{BackendError, SnapshotBackend, SnapshotUuid, VolumeUuid};
+use nessie_backend_core::{BackendError, SnapshotUuid, VolumeUuid};
 use nessie_ontap_protocol::{
     CreateResponse, DeleteResponse, HalCollection, SnapshotRecord, snapshot_record,
 };
@@ -38,13 +38,11 @@ fn snap_uuid(s: &str) -> Result<SnapshotUuid, ApiError> {
     })
 }
 
-/// Downcast to the snapshot tier, or return the ONTAP "not supported" error.
-fn snap_backend(s: &AppState) -> Result<&dyn SnapshotBackend, ApiError> {
-    s.backend
-        .as_snapshot()
-        .ok_or(ApiError(BackendError::FeatureNotSupported {
-            capability: "snapshots",
-        }))
+/// Snapshot-tier "not supported" error (the substrate can't take snapshots).
+fn no_snapshots() -> BackendError {
+    BackendError::FeatureNotSupported {
+        capability: "snapshots",
+    }
 }
 
 async fn list_snapshots(
@@ -52,10 +50,14 @@ async fn list_snapshots(
     Path(vol): Path<String>,
 ) -> ApiResult<Json<HalCollection<SnapshotRecord>>> {
     let vid = vol_uuid(&vol)?;
-    let backend = snap_backend(&s)?;
+    let backend = s.backend.clone();
+    let snaps = crate::blocking::run(move || {
+        let b = backend.as_snapshot().ok_or_else(no_snapshots)?;
+        b.list_snapshots(&vid)
+    })
+    .await?;
     let now = Utc::now();
-    let records = backend
-        .list_snapshots(&vid)?
+    let records = snaps
         .iter()
         .map(|sn| snapshot_record(&vid, sn, now))
         .collect();
@@ -71,8 +73,12 @@ async fn get_snapshot(
 ) -> ApiResult<Json<SnapshotRecord>> {
     let vid = vol_uuid(&vol)?;
     let sid = snap_uuid(&snap)?;
-    let backend = snap_backend(&s)?;
-    let snapshot = backend.get_snapshot(&vid, &sid)?;
+    let backend = s.backend.clone();
+    let snapshot = crate::blocking::run(move || {
+        let b = backend.as_snapshot().ok_or_else(no_snapshots)?;
+        b.get_snapshot(&vid, &sid)
+    })
+    .await?;
     Ok(Json(snapshot_record(&vid, &snapshot, Utc::now())))
 }
 
@@ -90,9 +96,14 @@ async fn create_snapshot(
             ApiError(BackendError::InvalidArgument(
                 "snapshot name is required".into(),
             ))
-        })?;
-    let backend = snap_backend(&s)?;
-    let snap = backend.create_snapshot(&vid, name)?;
+        })?
+        .to_string();
+    let backend = s.backend.clone();
+    let snap = crate::blocking::run(move || {
+        let b = backend.as_snapshot().ok_or_else(no_snapshots)?;
+        b.create_snapshot(&vid, &name)
+    })
+    .await?;
     let record = snapshot_record(&vid, &snap, Utc::now());
     let location = format!("/api/storage/volumes/{vid}/snapshots/{}", snap.uuid);
     Ok((
@@ -109,8 +120,12 @@ async fn delete_snapshot(
 ) -> ApiResult<Json<DeleteResponse>> {
     let vid = vol_uuid(&vol)?;
     let sid = snap_uuid(&snap)?;
-    let backend = snap_backend(&s)?;
-    backend.delete_snapshot(&vid, &sid)?;
+    let backend = s.backend.clone();
+    crate::blocking::run(move || {
+        let b = backend.as_snapshot().ok_or_else(no_snapshots)?;
+        b.delete_snapshot(&vid, &sid)
+    })
+    .await?;
     Ok(Json(DeleteResponse::success(&sid.to_string())))
 }
 

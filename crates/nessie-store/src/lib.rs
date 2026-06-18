@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod blocking;
 pub mod config;
 pub mod error;
 pub mod identity;
