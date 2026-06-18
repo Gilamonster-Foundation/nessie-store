@@ -140,6 +140,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/network/ip/interfaces", get(interfaces))
         .merge(crate::volumes::volume_routes())
         .merge(crate::snapshots::snapshot_routes())
+        .merge(crate::snapmirror::snapmirror_routes())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_basic_auth,
