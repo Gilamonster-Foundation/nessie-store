@@ -9,8 +9,17 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+python = ["dep:pyo3", "dep:pythonize", "dep:serde"]
+
 [dependencies]
 nessie-backend-core = { path = "../nessie-backend-core" }
+pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros"] }
+pythonize = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 nessie-backend-conformance = { path = "../nessie-backend-conformance" }
