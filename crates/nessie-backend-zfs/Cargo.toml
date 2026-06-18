@@ -15,9 +15,9 @@ homepage.workspace = true
 live-zfs = []
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
 chrono = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-nessie-backend-conformance = { path = "../nessie-backend-conformance" }
+nessie-backend-conformance = { path = "../nessie-backend-conformance", version = "0.2.0" }

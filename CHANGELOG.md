@@ -15,11 +15,13 @@ The enhancement cycle.
   **Python-authored** storage backend against the conformance suite (write a backend in Python).
 - **Deploy artifacts**: multi-stage `Dockerfile` with a ZFS vdev-bootstrap entrypoint, a systemd
   unit + example config/environment, and `docs/DEPLOY.md`.
+- **`release.yml`**: tag-triggered pipeline — crates.io publish (dep order), PyO3 wheels → PyPI,
+  the daemon binary + a GHCR image, and a GitHub Release. Every publish step is gated on its
+  secret and no-ops without it. Internal path deps now carry explicit versions (for `cargo publish`).
 
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
 - Live-ZFS / Trident-on-k3s acceptance gate.
-- `release.yml` dual-publish (crates.io + PyPI).
 
 ## [0.1.0] — 2026-06-18
 
