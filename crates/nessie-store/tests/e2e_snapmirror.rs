@@ -202,3 +202,79 @@ async fn relationship_requires_paths() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "400");
 }
+
+#[tokio::test]
+async fn transfer_snapshots_source_and_records_success() {
+    let app = test_app();
+    // source volume the relationship points at (svm0:vol1 -> "vol1")
+    send(
+        &app,
+        Method::POST,
+        "/api/storage/volumes",
+        Some(json!({ "name": "vol1" })),
+    )
+    .await;
+    let (_s, body) = send(
+        &app,
+        Method::POST,
+        "/api/snapmirror/relationships",
+        Some(json!({
+            "source": { "path": "svm0:vol1" },
+            "destination": { "path": "svm0:vol1_dr" }
+        })),
+    )
+    .await;
+    let rel = body["record"]["uuid"].as_str().unwrap().to_string();
+
+    // trigger a transfer
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        &format!("/api/snapmirror/relationships/{rel}/transfers"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["record"]["state"], "success");
+    assert_eq!(
+        body["record"]["snapshot"],
+        format!("snapmirror.{}.1", &rel[..8])
+    );
+
+    // it now lists
+    let (status, body) = send(
+        &app,
+        Method::GET,
+        &format!("/api/snapmirror/relationships/{rel}/transfers"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["num_records"], 1);
+    assert_eq!(body["records"][0]["state"], "success");
+}
+
+#[tokio::test]
+async fn internal_receive_requires_header_and_body() {
+    let app = test_app();
+    // missing header -> 400
+    let (status, _b) = send(&app, Method::POST, "/internal/snapmirror/receive", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // with header + body -> 200
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/internal/snapmirror/receive")
+        .header(header::AUTHORIZATION, ADMIN)
+        .header("x-destination-volume", "vol1_dr")
+        .body(Body::from(vec![1u8, 2, 3, 4]))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["status"], "received");
+    assert_eq!(body["bytes"], 4);
+}
