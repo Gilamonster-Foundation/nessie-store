@@ -90,7 +90,11 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
-          args: --release --out dist -m crates/${{ matrix.crate }}/Cargo.toml
+          # --no-default-features keeps the nessie-store wheel light (config+identity
+          # only, no TLS/HTTP stack) so it cross-compiles everywhere; harmless for the
+          # other crates (no default features). Each crate's pyproject supplies
+          # `features = ["python"]`.
+          args: --release --out dist --no-default-features -m crates/${{ matrix.crate }}/Cargo.toml
           # sccache OFF: it mishandles the .S assembly files that ring / aws-lc-sys
           # compile when cross-building nessie-store to aarch64-linux (both crypto
           # crates fail their cc build under sccache). Correctness over cache.

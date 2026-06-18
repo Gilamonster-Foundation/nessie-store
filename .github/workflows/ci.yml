@@ -71,7 +71,9 @@ jobs:
           for pp in crates/*/pyproject.toml; do
             d=$(dirname "$pp")
             echo "::group::wheel $d"
-            ( cd "$d" && maturin build --release --out "$GITHUB_WORKSPACE/wheels" )
+            # --no-default-features builds the SHIPPED wheel (nessie-store stays light:
+            # config+identity, no daemon stack); harmless for the other crates.
+            ( cd "$d" && maturin build --release --no-default-features --out "$GITHUB_WORKSPACE/wheels" )
             wheels_built=1
             echo "::endgroup::"
           done
