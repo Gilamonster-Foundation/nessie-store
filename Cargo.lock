@@ -956,6 +956,9 @@ dependencies = [
  "chrono",
  "nessie-backend-conformance",
  "nessie-backend-core",
+ "pyo3",
+ "pythonize",
+ "serde",
  "tracing",
 ]
 
