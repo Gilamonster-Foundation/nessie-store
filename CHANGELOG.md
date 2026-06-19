@@ -10,6 +10,21 @@ All notable changes to nessie-store are documented here. The format follows
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
 - Live-ZFS / Trident-on-k3s acceptance gate.
 
+## [0.2.1] — 2026-06-18
+
+Cross-platform Python wheels.
+
+### Added
+- **Wheels for macOS (universal2), Linux (x86_64 + aarch64), and Windows (x64)** for
+  every crate — Python developers on any OS can `pip install` any component of the stack.
+- **abi3 (stable ABI)** wheels: one wheel per platform works on CPython 3.10+.
+
+### Changed
+- The `nessie-store` crate gained a default `daemon` feature; the PyO3 wheel builds
+  `--no-default-features` so it ships **light** (`Config` + `identity` only — no TLS/HTTP
+  stack), which keeps it small and lets it cross-compile to every platform. The daemon
+  binary and the crates.io crate are unchanged (full `daemon` by default).
+
 ## [0.2.0] — 2026-06-18
 
 The enhancement cycle.
@@ -72,5 +87,6 @@ Ansible collection, the `netapp-ontap` Python SDK) can drive the full workflow.
 - The cross-instance binary `zfs send`/`receive` byte movement is the live-only
   data plane (the control surface is complete); it lands in the 0.2.x cycle.
 
+[0.2.1]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.1.0

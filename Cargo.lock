@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-conformance"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nessie-backend-core",
  "pyo3",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "proptest",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-mem"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nessie-backend-conformance",
  "nessie-backend-core",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-zfs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "nessie-backend-conformance",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-ontap-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "nessie-backend-core",
@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",

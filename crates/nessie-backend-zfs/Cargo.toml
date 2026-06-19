@@ -20,7 +20,7 @@ live-zfs = []
 python = ["dep:pyo3", "dep:pythonize", "dep:serde"]
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.0" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.1" }
 chrono = { workspace = true }
 tracing = { workspace = true }
 pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
@@ -28,4 +28,4 @@ pythonize = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-nessie-backend-conformance = { path = "../nessie-backend-conformance", version = "0.2.0" }
+nessie-backend-conformance = { path = "../nessie-backend-conformance", version = "0.2.1" }
