@@ -16,6 +16,9 @@ members = [
     "crates/nessie-ontap-protocol",
     "crates/nessie-store",
 
+    # Data plane — embedded userspace NFS server (no host kernel NFS):
+    "crates/nessie-nfs",
+
     # Phase 3 — Substrates (Wave A, then Wave B):
     "crates/nessie-backend-zfs",
     # "crates/nessie-backend-s3",
@@ -44,6 +47,10 @@ homepage = "https://github.com/Gilamonster-Foundation/nessie-store"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 futures = "0.3"
+async-trait = "0.1"
+
+# Embedded userspace NFSv3 server (the data plane; no host kernel NFS needed)
+nfsserve = "0.11"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
