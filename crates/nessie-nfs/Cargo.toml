@@ -1,0 +1,25 @@
+[package]
+name = "nessie-nfs"
+description = "Embedded userspace NFSv3 server for nessie-store — exports a real directory tree with no host kernel NFS server."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Gated tier whose tests touch a REAL temp directory (passthrough lifecycle).
+# Off by default so `cargo test --workspace` stays hermetic; run single-threaded
+# in the release gate (`--features live-fs -- --test-threads=1`).
+live-fs = []
+
+[dependencies]
+nfsserve = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }
