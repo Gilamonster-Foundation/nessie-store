@@ -80,6 +80,11 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
                 nfs_clients: cfg.zfs_nfs_clients.clone(),
                 dataset_owner: cfg.zfs_dataset_owner.clone(),
                 dataset_mode: cfg.zfs_dataset_mode.clone(),
+                // With the embedded NFS server on, it serves the export-root tree
+                // itself — so volume junctions land there and we drive no host
+                // kernel exports.
+                srv_root: cfg.nfs_export_root.clone(),
+                manage_kernel_exports: !cfg.nfs_enabled,
                 ..ZfsConfig::default()
             },
         )),
