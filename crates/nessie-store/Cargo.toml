@@ -27,6 +27,7 @@ daemon = [
     "dep:nessie-backend-mem",
     "dep:nessie-backend-zfs",
     "dep:nessie-ontap-protocol",
+    "dep:nessie-nfs",
     "dep:tokio",
     "dep:axum",
     "dep:axum-server",
@@ -53,6 +54,7 @@ nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.1", opti
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.1", optional = true }
 nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.1", optional = true }
 nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.1", optional = true }
+nessie-nfs = { path = "../nessie-nfs", version = "0.2.1", optional = true }
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 axum-server = { workspace = true, optional = true }
