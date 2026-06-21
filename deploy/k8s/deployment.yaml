@@ -57,6 +57,8 @@ spec:
           ports:
             - name: https
               containerPort: 8443
+            - name: nfs # embedded userspace NFSv3 (data plane)
+              containerPort: 2049
           # TCP probe: the API is HTTPS + basic-auth on every route, so an
           # httpGet would 401. A live TLS listener is the honest readiness signal.
           readinessProbe:

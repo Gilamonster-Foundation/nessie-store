@@ -95,6 +95,11 @@ ontap_version = "9.14.1"
 data_lif = "${DATA_LIF}"
 zfs_pool = "${POOL}"
 zfs_nfs_clients = [${clients_toml}]
+# Embedded userspace NFSv3 server — serves NFS itself, no host kernel NFS needed.
+nfs_enabled = true
+nfs_listen = "0.0.0.0:2049"
+nfs_export_root = "/srv"
+nfs_export_name = ""
 EOF
 
 cat >"$ENV_FILE" <<EOF
