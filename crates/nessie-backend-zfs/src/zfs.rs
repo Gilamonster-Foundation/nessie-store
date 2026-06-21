@@ -42,6 +42,10 @@ pub struct ZfsConfig {
     pub exports_dir: PathBuf,
     /// NFSv4 pseudo-root; a junction `/j` mounts at `<srv_root>/j`.
     pub srv_root: PathBuf,
+    /// Drive the HOST kernel NFS server (`/etc/exports.d/` + `exportfs -r`).
+    /// Set `false` when nessie-store's embedded userspace NFS server serves the
+    /// `srv_root` tree itself — then no host kernel NFS server is involved.
+    pub manage_kernel_exports: bool,
     /// Base backoff for busy-retry on destroy (doubles each attempt).
     pub retry_base: Duration,
     /// Maximum destroy retries on a "busy" error.
@@ -58,6 +62,7 @@ impl Default for ZfsConfig {
             dataset_mode: None,
             exports_dir: PathBuf::from("/etc/exports.d"),
             srv_root: PathBuf::from("/srv"),
+            manage_kernel_exports: true,
             retry_base: Duration::from_secs(1),
             max_destroy_retries: 5,
         }
@@ -222,6 +227,11 @@ impl<R: CommandRunner> ZfsBackend<R> {
 
     /// Durable per-volume NFS export (best-effort; never fails the operation).
     fn nfs_export(&self, name: &str, mountpoint: &str) {
+        // The embedded userspace NFS server serves the srv_root tree directly, so
+        // there is no host kernel export table to maintain.
+        if !self.cfg.manage_kernel_exports {
+            return;
+        }
         if self.cfg.nfs_clients.is_empty() {
             return;
         }
@@ -243,6 +253,10 @@ impl<R: CommandRunner> ZfsBackend<R> {
 
     /// Remove a durable export (best-effort), before destroy.
     fn nfs_unexport(&self, name: &str) {
+        // Embedded NFS plane: nothing in the host kernel export table to remove.
+        if !self.cfg.manage_kernel_exports {
+            return;
+        }
         if let Some(path) = self.exports_file(name) {
             let _ = std::fs::remove_file(&path);
         }
@@ -720,6 +734,28 @@ mod tests {
             b.get_volume(&v.uuid),
             Err(BackendError::VolumeNotFound(_))
         ));
+    }
+
+    #[test]
+    fn embedded_nfs_mode_emits_no_exportfs() {
+        // With the embedded userspace NFS server serving the srv_root tree, the
+        // backend must never drive the host kernel export table — no `exportfs`,
+        // even when nfs_clients is set.
+        let mock = Arc::new(Mock::default());
+        let mut c = cfg();
+        c.manage_kernel_exports = false;
+        c.nfs_clients = vec!["10.0.0.0/8".into()];
+        let b = ZfsBackend::new(mock.clone(), c);
+        let v = b.create_volume(VolumeSpec::named("vol1")).unwrap();
+        b.delete_volume(&v.uuid).unwrap();
+        assert!(
+            !mock
+                .calls()
+                .iter()
+                .any(|call| call.first().map(String::as_str) == Some("exportfs")),
+            "embedded mode must not call exportfs; got {:?}",
+            mock.calls()
+        );
     }
 
     #[test]
