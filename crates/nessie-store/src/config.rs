@@ -52,6 +52,17 @@ pub struct Config {
     pub zfs_dataset_owner: Option<String>,
     /// `chmod` mode applied to a ZFS dataset root on junction set (e.g. `0777`).
     pub zfs_dataset_mode: Option<String>,
+
+    /// Start the embedded userspace NFSv3 server (the data plane; no host kernel
+    /// NFS needed). When false, no NFS server is started.
+    pub nfs_enabled: bool,
+    /// Address the embedded NFS server binds (e.g. `0.0.0.0:2049`).
+    pub nfs_listen: String,
+    /// Directory tree the NFS server exports. Defaults to the ZFS pseudo-root
+    /// where volume junctions mount, so every junctioned volume is served.
+    pub nfs_export_root: PathBuf,
+    /// Export path clients mount (`<host>:/<name>`); empty serves the bare root.
+    pub nfs_export_name: String,
 }
 
 impl Default for Config {
@@ -71,6 +82,10 @@ impl Default for Config {
             zfs_nfs_clients: Vec::new(),
             zfs_dataset_owner: None,
             zfs_dataset_mode: None,
+            nfs_enabled: false,
+            nfs_listen: "0.0.0.0:2049".to_string(),
+            nfs_export_root: PathBuf::from("/srv"),
+            nfs_export_name: String::new(),
         }
     }
 }
@@ -148,5 +163,23 @@ mod tests {
         assert_eq!(back.backend, BackendKind::Zfs);
         assert_eq!(back.zfs_pool, "tank");
         assert_eq!(back.zfs_nfs_clients, ["10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn nfs_defaults_and_override() {
+        // Off by default, with a sane :2049 listen + /srv export root.
+        let def = Config::default();
+        assert!(!def.nfs_enabled);
+        assert_eq!(def.nfs_listen, "0.0.0.0:2049");
+        assert_eq!(def.nfs_export_root, PathBuf::from("/srv"));
+
+        // The embedded NFS plane is opt-in via the `[nfs]`-style flat keys.
+        let cfg: Config = toml::from_str(
+            "nfs_enabled = true\nnfs_listen = \"0.0.0.0:12049\"\nnfs_export_root = \"/srv/ontap\"\n",
+        )
+        .expect("parse");
+        assert!(cfg.nfs_enabled);
+        assert_eq!(cfg.nfs_listen, "0.0.0.0:12049");
+        assert_eq!(cfg.nfs_export_root, PathBuf::from("/srv/ontap"));
     }
 }

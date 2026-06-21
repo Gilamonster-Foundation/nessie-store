@@ -85,6 +85,19 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
         )),
     };
 
+    // Embedded userspace NFS data plane (no host kernel NFS server). Runs on the
+    // same tokio runtime as the HTTP control plane; exits only on a fatal error.
+    if cfg.nfs_enabled {
+        let bind = cfg.nfs_listen.clone();
+        let root = cfg.nfs_export_root.clone();
+        let export = cfg.nfs_export_name.clone();
+        tokio::spawn(async move {
+            if let Err(e) = nessie_nfs::serve(root, &bind, &export).await {
+                tracing::error!(%e, "embedded NFS server exited");
+            }
+        });
+    }
+
     let listen = cfg.listen;
     let tls_dir = cfg.tls_dir();
     let router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));

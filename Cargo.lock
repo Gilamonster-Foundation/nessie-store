@@ -1015,6 +1015,7 @@ dependencies = [
  "nessie-backend-core",
  "nessie-backend-mem",
  "nessie-backend-zfs",
+ "nessie-nfs",
  "nessie-ontap-protocol",
  "pyo3",
  "pythonize",
