@@ -14,8 +14,9 @@ RUN cargo build --release --locked -p nessie-store
 
 # ---- runtime ----------------------------------------------------------------
 FROM ubuntu:24.04
+# No nfs-kernel-server: nessie-store serves NFS itself (embedded userspace NFSv3).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends zfsutils-linux nfs-kernel-server ca-certificates \
+    && apt-get install -y --no-install-recommends zfsutils-linux ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/target/release/nessie-store /usr/bin/nessie-store
@@ -28,7 +29,8 @@ ENV NESSIE_DATA_DIR=/data \
     NESSIE_VDEV_SIZE=1G \
     NESSIE_ADMIN_PASSWORD=admin
 VOLUME ["/data"]
-EXPOSE 8443
+# 8443 = ONTAP REST (control); 2049 = embedded NFSv3 (data).
+EXPOSE 8443 2049
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["nessie-store", "serve", "--config", "/data/config.toml"]

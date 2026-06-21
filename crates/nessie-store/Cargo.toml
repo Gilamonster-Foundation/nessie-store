@@ -99,7 +99,7 @@ license-file = ["../../LICENSE-APACHE", "0"]
 section = "admin"
 priority = "optional"
 extended-description = "Speaks the NetApp ONTAP REST API over a ZFS backend — a cheap ONTAP on-ramp for home and small business."
-depends = "$auto, zfsutils-linux, nfs-kernel-server"
+depends = "$auto, zfsutils-linux"
 assets = [
     ["../../target/release/nessie-store", "usr/bin/", "755"],
     ["../../scripts/nessie-store-setup.sh", "usr/local/bin/nessie-store-setup", "755"],
@@ -122,4 +122,3 @@ assets = [
 
 [package.metadata.generate-rpm.requires]
 zfs = "*"
-nfs-utils = "*"

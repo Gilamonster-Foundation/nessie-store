@@ -19,6 +19,18 @@ data_lif = "192.168.1.100"
 
 # ZFS backend settings (used when backend = "zfs").
 zfs_pool = "ontap-sim"
+# Only used when nfs_enabled = false (the legacy host-kernel-NFS export path).
 zfs_nfs_clients = ["192.168.0.0/16", "10.42.0.0/16"]
 # zfs_dataset_owner = "1000:1000"
 # zfs_dataset_mode = "0777"
+
+# Embedded userspace NFS server (the data plane). When true, nessie-store serves
+# NFSv3 itself — NO host kernel NFS server (rpc.nfsd/exportfs) is needed, and the
+# ZFS backend stops writing /etc/exports.d/. Clients mount with:
+#   mount -t nfs -o nfsvers=3,proto=tcp,port=2049,mountport=2049,nolock <data_lif>:/ ...
+nfs_enabled = true
+nfs_listen = "0.0.0.0:2049"
+# Directory tree served; volume junctions mount under it.
+nfs_export_root = "/srv"
+# Export path clients mount (<host>:/<name>); empty serves the bare root.
+nfs_export_name = ""

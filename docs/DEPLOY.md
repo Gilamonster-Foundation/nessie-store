@@ -2,7 +2,21 @@
 
 A cheap ONTAP on-ramp. Two supported ways to run it: a container (fastest) or a
 systemd service on a host with ZFS. Both need ZFS privilege — the daemon shells
-out to `zfs`/`zpool`/`exportfs`.
+out to `zfs`/`zpool`.
+
+**NFS data plane (v0.3.0+):** nessie-store includes an **embedded userspace NFSv3
+server**, so it serves NFS itself — **no host kernel NFS server** (`rpc.nfsd`,
+`exportfs`, `rpcbind`) is required. Enable it with `nfs_enabled = true` (default
+listen `0.0.0.0:2049`). Clients mount with:
+
+```bash
+sudo mount -t nfs \
+  -o nfsvers=3,proto=tcp,port=2049,mountport=2049,nolock,noacl \
+  <data_lif>:/ /mnt/point
+```
+
+(Set `nfs_enabled = false` to fall back to the legacy host-kernel export path,
+which uses `exportfs` + `zfs_nfs_clients` and needs `nfs-kernel-server`.)
 
 ## Quick install (binary + wizard)
 

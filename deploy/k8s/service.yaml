@@ -5,9 +5,9 @@
 # type to LoadBalancer (k3s ServiceLB hands out the node IP) so Trident / the
 # Ansible collection can reach it directly.
 #
-# Note: this Service fronts the CONTROL plane. The NFS data plane is served by
-# the pod directly (see hostNetwork in deployment.yaml) — clients mount the node
-# IP, not this ClusterIP.
+# Fronts BOTH planes: ONTAP REST (8443) and the embedded userspace NFSv3 server
+# (2049). nessie-store serves NFS itself — no host kernel NFS server — so the
+# data plane rides this Service too (no hostNetwork required).
 apiVersion: v1
 kind: Service
 metadata:
@@ -20,6 +20,9 @@ spec:
   selector:
     app.kubernetes.io/name: nessie-store
   ports:
-    - name: https
+    - name: https # ONTAP REST (control plane)
       port: 8443
       targetPort: 8443
+    - name: nfs # embedded NFSv3 (data plane)
+      port: 2049
+      targetPort: 2049

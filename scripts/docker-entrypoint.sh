@@ -29,11 +29,13 @@ fi
 if [ ! -f "$CONFIG" ]; then
     echo "entrypoint: writing default config $CONFIG"
     nessie-store init --config "$CONFIG"
-    # Point it at the data dir + pool + zfs backend (sed keeps the file ONTAP-faithful).
+    # Point it at the data dir + pool + zfs backend, and turn on the embedded
+    # userspace NFS server (no host kernel NFS in the container).
     sed -i \
         -e "s|^data_dir = .*|data_dir = \"${DATA_DIR}\"|" \
         -e "s|^backend = .*|backend = \"zfs\"|" \
         -e "s|^zfs_pool = .*|zfs_pool = \"${POOL}\"|" \
+        -e "s|^nfs_enabled = .*|nfs_enabled = true|" \
         "$CONFIG"
 fi
 

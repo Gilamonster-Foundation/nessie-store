@@ -80,12 +80,32 @@ pool has exactly one owner, so two pods must never mount this volume at once.
 
 ## The NFS data plane
 
-The Service fronts the **control plane** (the REST API). NFS exports are served
-by the pod directly, so clients mount the **node IP**, not the ClusterIP. For
-that to work, uncomment `hostNetwork: true` in `deployment.yaml` and set
-`data_lif` to the node's address (edit the generated `/data/config.toml`, or pass
-it through the config). This mirrors real ONTAP: control plane and data plane on
-separate paths.
+nessie-store serves NFS itself via an **embedded userspace NFSv3 server**
+(`nfs_enabled = true`, port `2049`) — **no host kernel NFS server is needed on
+the node**, which makes it far friendlier to run in a pod than the old
+`exportfs`/`rpc.nfsd` model. Add the NFS port to the Service (or a second
+`LoadBalancer`/`NodePort`) so clients can reach it:
+
+```yaml
+ports:
+  - name: https        # ONTAP REST (control)
+    port: 8443
+    targetPort: 8443
+  - name: nfs          # embedded NFSv3 (data)
+    port: 2049
+    targetPort: 2049
+```
+
+Pods mount it with the embedded-server options (no rpcbind/NLM):
+
+```
+nfsvers=3,proto=tcp,port=2049,mountport=2049,nolock,noacl
+```
+
+For Trident's ontap-nas backend, pin those via `nfsMountOptions` and
+`nfsVersion: "3"`. The node still needs the NFS **client** (`nfs-common` + the
+`nfs` kernel module) — that is the kubelet's mount client, not an NFS server.
+This mirrors real ONTAP: control plane and data plane on separate ports.
 
 ## No ZFS? (control plane only)
 
