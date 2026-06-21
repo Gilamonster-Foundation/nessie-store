@@ -9,6 +9,38 @@ All notable changes to nessie-store are documented here. The format follows
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
 - Live-ZFS / Trident-on-k3s acceptance gate.
+- SMB support (v0.4.0).
+
+## [0.3.0] — 2026-06-20
+
+Host-kernel-free NFS export plane.
+
+### Added
+- **Embedded userspace NFSv3 server** (`nessie-nfs`): nessie-store serves NFS
+  **itself**, in-process — **no host kernel NFS server** (`rpc.nfsd`, `exportfs`,
+  `rpcbind`) required. Built on `nfsserve` (BSD-3). `PassthroughFs` exports a real
+  directory tree with **stable file handles** (fileid = inode, no generation
+  number, fixed `serverid`) so mounts survive a daemon restart, and a readdir that
+  orders by fileid so cookies never drop/duplicate entries.
+- **`[nfs]` config**: `nfs_enabled`, `nfs_listen` (default `0.0.0.0:2049`),
+  `nfs_export_root` (default `/srv`), `nfs_export_name`. The daemon spawns the NFS
+  server alongside the HTTP control plane.
+
+### Changed
+- When the embedded NFS server is on, the ZFS backend no longer drives the host
+  kernel export table (`ZfsConfig.manage_kernel_exports = false`): no
+  `/etc/exports.d/` writes, no `exportfs`.
+- **Packaging dropped the host kernel NFS dependency**: `.deb` no longer depends on
+  `nfs-kernel-server`, `.rpm` no longer requires `nfs-utils`, the container no
+  longer installs it (and `EXPOSE`s 2049). Docker, the setup wizard, and
+  `config.example.toml` enable the embedded server by default; the k8s Service +
+  Deployment expose 2049 so the data plane rides the Service (no `hostNetwork`).
+- Clients mount with `nfsvers=3,proto=tcp,port=2049,mountport=2049,nolock,noacl`.
+
+### Notes
+- The embedded server is NFSv3 only, with no NLM locking (`nolock`) and AUTH_UNIX
+  (gate access at the network layer). Set `nfs_enabled = false` to fall back to the
+  legacy host-kernel `exportfs` path.
 
 ## [0.2.1] — 2026-06-18
 
@@ -87,6 +119,7 @@ Ansible collection, the `netapp-ontap` Python SDK) can drive the full workflow.
 - The cross-instance binary `zfs send`/`receive` byte movement is the live-only
   data plane (the control surface is complete); it lands in the 0.2.x cycle.
 
+[0.3.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.1.0

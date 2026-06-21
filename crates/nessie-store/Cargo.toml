@@ -50,11 +50,11 @@ python = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
 # Daemon-only (optional; pulled in by the `daemon` feature).
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.1", optional = true }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.1", optional = true }
-nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.2.1", optional = true }
-nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.2.1", optional = true }
-nessie-nfs = { path = "../nessie-nfs", version = "0.2.1", optional = true }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.0", optional = true }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.0", optional = true }
+nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.3.0", optional = true }
+nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.3.0", optional = true }
+nessie-nfs = { path = "../nessie-nfs", version = "0.3.0", optional = true }
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 axum-server = { workspace = true, optional = true }
@@ -85,8 +85,8 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 uuid = { workspace = true }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.2.1" }
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.2.1" }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.0" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.0" }
 
 # --- Linux packaging -------------------------------------------------------
 # `.deb` via cargo-deb; `.rpm` via cargo-generate-rpm. Asset source paths are

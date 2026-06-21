@@ -53,7 +53,7 @@ jobs:
             exit 0
           fi
           for c in nessie-backend-core nessie-ontap-protocol nessie-backend-conformance \
-                   nessie-backend-mem nessie-backend-zfs nessie-store; do
+                   nessie-backend-mem nessie-backend-zfs nessie-nfs nessie-store; do
             echo "::group::publish $c"
             cargo publish -p "$c" --locked || echo "::warning::publish $c failed (already published?)"
             sleep 20  # crates.io index propagation before the next crate
