@@ -17,6 +17,7 @@ members = [
     "crates/nessie-store",
 
     # Data plane — embedded userspace NFS server (no host kernel NFS):
+    "crates/nessie-nfsserve",
     "crates/nessie-nfs",
 
     # Phase 3 — Substrates (Wave A, then Wave B):
@@ -32,7 +33,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Shawn Hartsock <hartsock@users.noreply.github.com>"]
@@ -49,8 +50,15 @@ tokio-stream = "0.1"
 futures = "0.3"
 async-trait = "0.1"
 
-# Embedded userspace NFSv3 server (the data plane; no host kernel NFS needed)
-nfsserve = "0.11"
+# Embedded userspace NFSv3 server (the data plane; no host kernel NFS needed).
+# We ship a vendored, hardened FORK as the `nessie-nfsserve` workspace crate (see
+# crates/nessie-nfsserve) rather than the upstream `nfsserve` dependency — it
+# carries COMMIT + AUTH_UNIX ownership + stable-write fixes upstream lacks.
+# These transitive deps are upstream nfsserve's; pinned here for the fork.
+byteorder = "1.4"
+filetime = "0.2"
+num-derive = "0.4"
+num-traits = "0.2"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

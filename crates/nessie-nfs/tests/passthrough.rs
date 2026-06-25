@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nessie_nfs::PassthroughFs;
-use nfsserve::nfs::{filename3, sattr3};
-use nfsserve::vfs::NFSFileSystem;
+use nessie_nfsserve::nfs::{filename3, sattr3};
+use nessie_nfsserve::vfs::NFSFileSystem;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 

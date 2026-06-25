@@ -2,8 +2,9 @@
 //!
 //! Serves a real on-disk directory tree (a ZFS dataset mountpoint, or any path)
 //! over NFSv3 **in-process** — no host kernel NFS server, no `rpc.nfsd`, no
-//! `exportfs`, no `rpcbind`/portmapper. Built on the [`nfsserve`] crate (the
-//! NFSv3 wire/transport layer); this crate supplies the filesystem
+//! `exportfs`, no `rpcbind`/portmapper. Built on the `nessie-nfsserve` crate (a
+//! vendored, hardened fork of HuggingFace's `nfsserve` — the NFSv3
+//! wire/transport layer); this crate supplies the filesystem
 //! ([`PassthroughFs`]) that maps NFS operations onto `std`/`tokio` file I/O.
 //!
 //! Clients mount it with an explicit fixed port, e.g.:
@@ -43,10 +44,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use nfsserve::fs_util::{metadata_to_fattr3, path_setattr};
-use nfsserve::nfs::{fattr3, fileid3, filename3, nfs_fh3, nfspath3, nfsstat3, sattr3};
-use nfsserve::tcp::{NFSTcp, NFSTcpListener};
-use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
+use nessie_nfsserve::fs_util::{metadata_to_fattr3, path_setattr};
+use nessie_nfsserve::nfs::{fattr3, fileid3, filename3, nfs_fh3, nfspath3, nfsstat3, sattr3};
+use nessie_nfsserve::tcp::{NFSTcp, NFSTcpListener};
+use nessie_nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// A fixed `serverid`/cookieverf so file handles stay valid across restarts.
@@ -373,7 +374,7 @@ impl NFSFileSystem for PassthroughFs {
         Ok(fileid3::from_le_bytes(bytes))
     }
 
-    fn serverid(&self) -> nfsserve::nfs::cookieverf3 {
+    fn serverid(&self) -> nessie_nfsserve::nfs::cookieverf3 {
         SERVER_VERIFIER
     }
 }

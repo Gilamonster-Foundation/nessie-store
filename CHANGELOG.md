@@ -6,6 +6,14 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`nessie-nfsserve`**: a vendored, hardened fork of HuggingFace's `nfsserve`
+  0.11.0 (BSD-3-Clause, preserved) as a workspace crate. Replaces the external
+  `nfsserve` dependency so the embedded NFS plane can carry the F2/F3/F5 hardening
+  fixes (write durability, `NFSPROC3_COMMIT`, AUTH_UNIX ownership) that the
+  upstream `NFSFileSystem` trait cannot express. No behavior change in this step —
+  it is the enabling refactor (airship ADR 0001: keep nessie-store self-contained).
+
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
 - Live-ZFS / Trident-on-k3s acceptance gate.
