@@ -46,6 +46,11 @@ All notable changes to nessie-store are documented here. The format follows
   inode namespace and reuse low inode numbers — no longer aliases one clone's file
   onto another's (or returns spurious `NFS3ERR_STALE`). The fileid remains stable
   across a daemon restart, so cached client handles keep working.
+- **Clone/volume mountability (F1).** `create_volume` and `create_clone` now pass
+  `-o mountpoint=<srv_root>/<name>` so a freshly created volume or FlexClone lands
+  under the NFS export root and is mountable from a **single** `POST` — previously
+  it inherited `/<pool>/<name>` and was unreachable over NFS until a second
+  `PATCH …/{uuid} {nas:{path:…}}` set a junction.
 
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).

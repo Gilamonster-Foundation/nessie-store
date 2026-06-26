@@ -338,7 +338,10 @@ impl<R: CommandRunner> VolumeBackend for ZfsBackend<R> {
     fn create_volume(&self, spec: VolumeSpec) -> Result<Volume, BackendError> {
         let full = self.full(&spec.name);
         let quota = spec.size_bytes.map(|b| format!("quota={b}"));
-        let mut argv: Vec<&str> = vec!["zfs", "create"];
+        // Place the volume under the NFS export root at create time so it is
+        // mountable immediately, without a follow-up junction PATCH (F1).
+        let mountpoint = format!("mountpoint={}/{}", self.cfg.srv_root.display(), spec.name);
+        let mut argv: Vec<&str> = vec!["zfs", "create", "-o", &mountpoint];
         if let Some(q) = &quota {
             argv.push("-o");
             argv.push(q);
@@ -569,7 +572,10 @@ impl<R: CommandRunner> CloneBackend for ZfsBackend<R> {
         }
         let src = format!("{}/{pname}@{sname}", self.cfg.pool);
         let dst = self.full(new_name);
-        self.run_checked(&["zfs", "clone", &src, &dst])?;
+        // Land the clone under the NFS export root so it is mountable from this
+        // single POST — no second junction PATCH needed (F1).
+        let mountpoint = format!("mountpoint={}/{}", self.cfg.srv_root.display(), new_name);
+        self.run_checked(&["zfs", "clone", "-o", &mountpoint, &src, &dst])?;
         let uuid = self.reg().register_vol(new_name);
         Ok(plain_volume(
             uuid,
@@ -668,7 +674,15 @@ mod tests {
         assert_eq!(v.size_bytes, Some(1024));
         assert_eq!(
             mock.last(),
-            ["zfs", "create", "-o", "quota=1024", "tank/vol1"]
+            [
+                "zfs",
+                "create",
+                "-o",
+                "mountpoint=/srv/vol1",
+                "-o",
+                "quota=1024",
+                "tank/vol1"
+            ]
         );
     }
 
@@ -678,7 +692,10 @@ mod tests {
         mock.push(Mock::ok(""));
         let b = backend(mock.clone());
         b.create_volume(VolumeSpec::named("v")).unwrap();
-        assert_eq!(mock.last(), ["zfs", "create", "tank/v"]);
+        assert_eq!(
+            mock.last(),
+            ["zfs", "create", "-o", "mountpoint=/srv/v", "tank/v"]
+        );
     }
 
     #[test]
@@ -821,11 +838,46 @@ mod tests {
         let c = b.create_clone(&v.uuid, &s.uuid, "clone1").unwrap();
         assert_eq!(
             mock.last(),
-            ["zfs", "clone", "tank/vol1@snap1", "tank/clone1"]
+            [
+                "zfs",
+                "clone",
+                "-o",
+                "mountpoint=/srv/clone1",
+                "tank/vol1@snap1",
+                "tank/clone1"
+            ]
         );
         let origin = c.clone.unwrap();
         assert_eq!(origin.parent_volume, "vol1");
         assert_eq!(origin.parent_snapshot, "snap1");
+    }
+
+    #[test]
+    fn fresh_volume_and_clone_land_under_srv_root_mountpoint() {
+        // F1: a volume/clone must mount under the NFS export root from a single
+        // create (no follow-up junction PATCH), or it is unreachable over NFS.
+        // Before the fix neither command set `-o mountpoint`, so the dataset
+        // inherited `/<pool>/<name>` instead of `/srv/<name>`.
+        let mock = Arc::new(Mock::default());
+        mock.push(Mock::ok("")); // create vol
+        mock.push(Mock::ok("")); // snapshot
+        mock.push(Mock::ok("")); // clone
+        let b = backend(mock.clone());
+
+        let v = b.create_volume(VolumeSpec::named("data")).unwrap();
+        assert!(
+            mock.last().contains(&"mountpoint=/srv/data".to_string()),
+            "volume must be placed under srv_root: {:?}",
+            mock.last()
+        );
+
+        let s = b.create_snapshot(&v.uuid, "snap").unwrap();
+        b.create_clone(&v.uuid, &s.uuid, "kid").unwrap();
+        assert!(
+            mock.last().contains(&"mountpoint=/srv/kid".to_string()),
+            "clone must be placed under srv_root: {:?}",
+            mock.last()
+        );
     }
 
     #[test]
