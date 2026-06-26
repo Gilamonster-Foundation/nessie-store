@@ -6,6 +6,16 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Planned
+- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
+- Live-ZFS / Trident-on-k3s acceptance gate.
+- SMB support (v0.4.0).
+
+## [0.3.1] — 2026-06-26
+
+Embedded-NFS hardening — the F1–F5 prerequisites for serving live agent
+workspaces over the in-process NFS server (epic #44).
+
 ### Added
 - **`nessie-nfsserve`**: a vendored, hardened fork of HuggingFace's `nfsserve`
   0.11.0 (BSD-3-Clause, preserved) as a workspace crate. Replaces the external
@@ -52,10 +62,10 @@ All notable changes to nessie-store are documented here. The format follows
   it inherited `/<pool>/<name>` and was unreachable over NFS until a second
   `PATCH …/{uuid} {nas:{path:…}}` set a junction.
 
-### Planned
-- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
-- Live-ZFS / Trident-on-k3s acceptance gate.
-- SMB support (v0.4.0).
+### Notes
+- The cross-user ownership, crash-recovery, and two-dataset aliasing assertions
+  require a real kernel NFS mount (and, for ownership, `CAP_CHOWN` / root); they
+  are covered by **live/root-only** integration tests, not the hermetic CI suite.
 
 ## [0.3.0] — 2026-06-20
 
@@ -165,6 +175,7 @@ Ansible collection, the `netapp-ontap` Python SDK) can drive the full workflow.
 - The cross-instance binary `zfs send`/`receive` byte movement is the live-only
   data plane (the control surface is complete); it lands in the 0.2.x cycle.
 
+[0.3.1]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Gilamonster-Foundation/nessie-store/releases/tag/v0.2.0
