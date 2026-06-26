@@ -14,6 +14,19 @@ All notable changes to nessie-store are documented here. The format follows
   upstream `NFSFileSystem` trait cannot express. No behavior change in this step —
   it is the enabling refactor (airship ADR 0001: keep nessie-store self-contained).
 
+### Fixed
+- **NFS write durability (F2/F3, blockers).** The embedded NFS server no longer
+  loses acknowledged writes on a crash:
+  - `WRITE` now honors the client's `stable` flag and reports the **honest**
+    `committed` level (`FILE_SYNC` only when the data is actually on stable
+    storage, else `UNSTABLE`) instead of unconditionally claiming `FILE_SYNC`.
+    `FILE_SYNC`/`DATA_SYNC` writes `fdatasync` before acknowledging.
+  - `NFSPROC3_COMMIT` is now implemented (previously dispatched to
+    `PROC_UNAVAIL`), so a client `fsync()` succeeds **only after** a real flush.
+    `PassthroughFs::commit` fsyncs the target; unstable writes are durable after
+    the following commit. New `NFSFileSystem::{write_stable, commit}` trait hooks
+    (defaulting to the safe, honest behavior) carry this.
+
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
 - Live-ZFS / Trident-on-k3s acceptance gate.

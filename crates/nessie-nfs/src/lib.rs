@@ -187,6 +187,18 @@ impl NFSFileSystem for PassthroughFs {
     }
 
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
+        // An UNSTABLE write: durability is deferred to a later COMMIT.
+        let (attr, _stable) = self.write_stable(id, offset, data, false).await?;
+        Ok(attr)
+    }
+
+    async fn write_stable(
+        &self,
+        id: fileid3,
+        offset: u64,
+        data: &[u8],
+        stable: bool,
+    ) -> Result<(fattr3, bool), nfsstat3> {
         let path = self.path_of(id)?;
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -198,7 +210,28 @@ impl NFSFileSystem for PassthroughFs {
             .map_err(|e| io_to_nfs(&e))?;
         file.write_all(data).await.map_err(|e| io_to_nfs(&e))?;
         file.flush().await.map_err(|e| io_to_nfs(&e))?;
-        self.getattr(id).await
+        if stable {
+            // FILE_SYNC/DATA_SYNC: the data must be on stable storage before we
+            // acknowledge. fdatasync flushes the file's dirty pages to disk.
+            file.sync_data().await.map_err(|e| io_to_nfs(&e))?;
+        }
+        // Otherwise this is an UNSTABLE write — left in the page cache until the
+        // client issues COMMIT (see `commit`). We honestly report `stable` so the
+        // server never claims FILE_SYNC for data that is not yet durable.
+        Ok((self.getattr(id).await?, stable))
+    }
+
+    async fn commit(&self, id: fileid3, _offset: u64, _count: u32) -> Result<(), nfsstat3> {
+        // fsync flushes *all* of the inode's dirty pages, regardless of which
+        // descriptor (or a now-closed one from an earlier UNSTABLE write) dirtied
+        // them — so opening the path fresh and syncing it is sufficient and keeps
+        // this server stateless. A client `fsync()` returns only after this lands.
+        let path = self.path_of(id)?;
+        let file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|e| io_to_nfs(&e))?;
+        file.sync_data().await.map_err(|e| io_to_nfs(&e))?;
+        Ok(())
     }
 
     async fn create(
