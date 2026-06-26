@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-conformance"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nessie-backend-core",
  "pyo3",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "proptest",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-mem"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nessie-backend-conformance",
  "nessie-backend-core",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-zfs"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "nessie-backend-conformance",
@@ -980,17 +980,31 @@ dependencies = [
 
 [[package]]
 name = "nessie-nfs"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
- "nfsserve",
+ "nessie-nfsserve",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nessie-nfsserve"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "byteorder",
+ "filetime",
+ "num-derive",
+ "num-traits",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "nessie-ontap-protocol"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "nessie-backend-core",
@@ -1003,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-store"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1030,22 +1044,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "nfsserve"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1424b6d88c60a091931392970999ea3ceab132d968e6a5545c770fad5b97d7"
-dependencies = [
- "anyhow",
- "async-trait",
- "byteorder",
- "filetime",
- "num-derive",
- "num-traits",
- "tokio",
- "tracing",
 ]
 
 [[package]]

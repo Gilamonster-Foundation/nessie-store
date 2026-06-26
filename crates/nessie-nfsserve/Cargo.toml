@@ -1,0 +1,33 @@
+[package]
+name = "nessie-nfsserve"
+description = "Vendored, hardened fork of nfsserve (HuggingFace) — the NFSv3 wire/transport layer behind nessie-store's embedded NFS plane."
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+authors.workspace = true
+# Upstream nfsserve is BSD-3-Clause (XetData 2023, Hugging Face 2025); our
+# additions are MIT OR Apache-2.0. The combined crate ships under all three —
+# see README.md and LICENSE-UPSTREAM-BSD3.
+license = "BSD-3-Clause AND (MIT OR Apache-2.0)"
+repository.workspace = true
+homepage.workspace = true
+
+# This is a FORK, not a thin wrapper. It carries nessie-store-specific hardening
+# the upstream crate does not have (NFSPROC3_COMMIT, stable-flag-aware writes,
+# AUTH_UNIX credential threading). Kept as a workspace crate so nessie-store stays
+# self-contained and replaceable (airship ADR 0001). Pinned at upstream 0.11.0.
+
+[lib]
+name = "nessie_nfsserve"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+byteorder = { workspace = true }
+filetime = { workspace = true }
+num-derive = { workspace = true }
+num-traits = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
