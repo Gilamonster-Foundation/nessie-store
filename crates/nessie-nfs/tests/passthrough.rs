@@ -290,6 +290,35 @@ async fn setattr_applies_explicit_chown() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// --- F4: handle aliasing / restart stability ------------------------------
+
+#[tokio::test]
+async fn distinct_files_have_distinct_restart_stable_fileids() {
+    // F4: sibling files get distinct fileids, and a fresh server instance
+    // (simulating a daemon restart) resolves each name to the SAME fileid — the
+    // (dev,ino)-derived id is stable, so cached client handles keep working.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (a, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    let (b, _) = fs
+        .create(root, &name("b"), sattr3::default())
+        .await
+        .unwrap();
+    assert_ne!(a, b, "distinct files must have distinct fileids");
+
+    // Restart: a brand-new PassthroughFs over the same tree resolves the same ids.
+    let fs2 = PassthroughFs::new(&dir).unwrap();
+    let root2 = fs2.root_dir();
+    assert_eq!(fs2.lookup(root2, &name("a")).await.unwrap(), a);
+    assert_eq!(fs2.lookup(root2, &name("b")).await.unwrap(), b);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test]
 async fn stable_handle_resolves_same_inode() {
     let dir = scratch();

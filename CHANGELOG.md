@@ -40,6 +40,12 @@ All notable changes to nessie-store are documented here. The format follows
     `CAP_CHOWN` (k8s `privileged: true`) to own files as arbitrary callers.
   - `deploy/config.example.toml` documents the recommended `zfs_dataset_owner` /
     `zfs_dataset_mode` (`1000:1001` / `2775`) for shared agent workspaces.
+- **NFS handle aliasing across datasets (F4).** The NFS fileid is now derived
+  from the `(st_dev, st_ino)` pair (mixed with SplitMix64), not `st_ino` alone, so
+  a single export spanning sibling ZFS datasets — which each have an independent
+  inode namespace and reuse low inode numbers — no longer aliases one clone's file
+  onto another's (or returns spurious `NFS3ERR_STALE`). The fileid remains stable
+  across a daemon restart, so cached client handles keep working.
 
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).

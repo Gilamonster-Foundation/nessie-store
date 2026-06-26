@@ -17,12 +17,14 @@
 //!
 //! Unlike the upstream `mirrorfs` example (which allocates fileids from a counter
 //! that resets every boot, so clients see `NFS3ERR_STALE` after a restart), this
-//! server derives the NFS fileid from the underlying **inode number** (`st_ino`,
-//! stable for the life of the file on ZFS) and encodes file handles **without a
-//! generation number**, with a fixed `serverid`. Handles therefore survive a
-//! daemon restart. A handle for an inode the server has not yet resolved to a
-//! path (e.g. a deep path cached by a client across a restart) returns
-//! `NFS3ERR_STALE`, prompting the client to re-resolve from the mount root.
+//! server derives the NFS fileid from the underlying **`(st_dev, st_ino)`** pair
+//! (both stable for the life of the file on ZFS) and encodes file handles
+//! **without a generation number**, with a fixed `serverid`. Folding in `st_dev`
+//! means a single export spanning sibling ZFS datasets (which each have an
+//! independent inode namespace) never aliases. Handles therefore survive a daemon
+//! restart. A handle the server has not yet resolved to a path (e.g. a deep path
+//! cached by a client across a restart) returns `NFS3ERR_STALE`, prompting the
+//! client to re-resolve from the mount root.
 //!
 //! ## Limitations (honest, per NFSv3 + this implementation)
 //!
@@ -75,6 +77,34 @@ fn io_to_nfs(e: &std::io::Error) -> nfsstat3 {
     }
 }
 
+/// The SplitMix64 finalizer — a fast, well-distributed bijective bit-mixer.
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Derive a stable NFS fileid from a file's `(st_dev, st_ino)` pair.
+///
+/// Each ZFS dataset is its own filesystem with an independent inode namespace, so
+/// a parent volume and its clones reuse low inode numbers. Keying handles on
+/// `st_ino` alone (as the upstream examples do) makes those reused inodes **alias**
+/// when a single export spans sibling datasets — a client reading one clone could
+/// get another's file, or `NFS3ERR_STALE`. Folding `st_dev` in keeps the fileid
+/// distinct across datasets; it is stable for the life of the file (both
+/// components are), so handles still survive a daemon restart (F4).
+fn fileid_of(meta: &std::fs::Metadata) -> fileid3 {
+    fileid_from(meta.dev(), meta.ino())
+}
+
+/// The pure `(dev, ino) -> fileid` core of [`fileid_of`], split out so the
+/// cross-device aliasing property is unit-testable without a real second
+/// filesystem.
+fn fileid_from(dev: u64, ino: u64) -> fileid3 {
+    splitmix64(dev ^ splitmix64(ino))
+}
+
 /// An NFSv3 filesystem that passes operations through to a real directory tree.
 pub struct PassthroughFs {
     root: PathBuf,
@@ -88,7 +118,7 @@ impl PassthroughFs {
     /// Build a passthrough server rooted at `root` (which must exist).
     pub fn new(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let root = root.into().canonicalize()?;
-        let root_id = std::fs::symlink_metadata(&root)?.ino();
+        let root_id = fileid_of(&std::fs::symlink_metadata(&root)?);
         let mut map = HashMap::new();
         map.insert(root_id, root.clone());
         Ok(Self {
@@ -107,10 +137,10 @@ impl PassthroughFs {
             .ok_or(nfsstat3::NFS3ERR_STALE)
     }
 
-    /// Register `path` and return its (stable, inode-derived) fileid.
+    /// Register `path` and return its (stable, `(dev,ino)`-derived) fileid.
     fn register(&self, path: &Path) -> Result<(fileid3, std::fs::Metadata), nfsstat3> {
         let meta = std::fs::symlink_metadata(path).map_err(|e| io_to_nfs(&e))?;
-        let id = meta.ino();
+        let id = fileid_of(&meta);
         self.map
             .lock()
             .expect("map lock")
@@ -388,7 +418,7 @@ impl NFSFileSystem for PassthroughFs {
                 .await
                 .map_err(|e| io_to_nfs(&e))?;
         }
-        self.map.lock().expect("map lock").remove(&meta.ino());
+        self.map.lock().expect("map lock").remove(&fileid_of(&meta));
         Ok(())
     }
 
@@ -421,8 +451,9 @@ impl NFSFileSystem for PassthroughFs {
         if !dmeta.is_dir() {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
-        // Order entries by stable fileid (inode) so the NFS cookie (start_after)
-        // is meaningful and pagination never duplicates or drops entries.
+        // Order entries by stable fileid (a (dev,ino) hash) so the NFS cookie
+        // (start_after) is meaningful and pagination never duplicates or drops
+        // entries.
         let mut by_id: BTreeMap<fileid3, PathBuf> = BTreeMap::new();
         let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| io_to_nfs(&e))?;
         while let Some(ent) = rd.next_entry().await.map_err(|e| io_to_nfs(&e))? {
@@ -430,7 +461,7 @@ impl NFSFileSystem for PassthroughFs {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            by_id.insert(meta.ino(), ent.path());
+            by_id.insert(fileid_of(&meta), ent.path());
         }
         let total_after = by_id.range((start_after + 1)..).count();
         let mut entries = Vec::new();
@@ -530,6 +561,29 @@ mod tests {
             assert_eq!(fh.data.len(), 8, "handle is just the 8-byte fileid");
             assert_eq!(fs.fh_to_id(&fh).unwrap(), id);
         }
+    }
+
+    #[test]
+    fn fileid_distinguishes_same_inode_across_devices() {
+        // F4: the same st_ino on two different ZFS datasets (distinct st_dev) must
+        // map to DIFFERENT fileids, or a single export aliases sibling clones.
+        let ino = 34usize as u64; // a low inode reused across datasets
+        assert_ne!(
+            fileid_from(0x10, ino),
+            fileid_from(0x11, ino),
+            "same inode on different devices must not collide"
+        );
+        // And distinct inodes on the same device differ too.
+        assert_ne!(fileid_from(0x10, 34), fileid_from(0x10, 35));
+    }
+
+    #[test]
+    fn fileid_is_deterministic() {
+        // Stability across calls (and thus across restarts) is what keeps handles
+        // valid: the same (dev, ino) always yields the same fileid.
+        assert_eq!(fileid_from(0x42, 1000), fileid_from(0x42, 1000));
+        assert_eq!(splitmix64(12345), splitmix64(12345));
+        assert_ne!(splitmix64(0), splitmix64(1));
     }
 
     #[test]
