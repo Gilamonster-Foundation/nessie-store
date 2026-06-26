@@ -41,8 +41,17 @@ def test_volume_lifecycle_and_argv() -> None:
     vol = b.create_volume("vol1", size_bytes=1024)
     assert vol["name"] == "vol1"
     assert vol["size_bytes"] == 1024  # domain shape (not the wire "size")
-    # The backend emitted the exact zfs argv — the inside seam saw it.
-    assert ["zfs", "create", "-o", "quota=1024", "ontap-sim/vol1"] in r.calls
+    # The backend emitted the exact zfs argv — the inside seam saw it. The
+    # mountpoint lands the volume under srv_root so it is mountable at once (F1).
+    assert [
+        "zfs",
+        "create",
+        "-o",
+        "mountpoint=/srv/vol1",
+        "-o",
+        "quota=1024",
+        "ontap-sim/vol1",
+    ] in r.calls
 
 
 def test_snapshot_and_clone() -> None:
@@ -55,6 +64,15 @@ def test_snapshot_and_clone() -> None:
     assert clone["clone"]["parent_volume"] == "vol1"
     assert clone["clone"]["parent_snapshot"] == "base"
     assert ["zfs", "snapshot", "ontap-sim/vol1@base"] in r.calls
+    # The clone lands under srv_root so it is mountable from this one call (F1).
+    assert [
+        "zfs",
+        "clone",
+        "-o",
+        "mountpoint=/srv/child",
+        "ontap-sim/vol1@base",
+        "ontap-sim/child",
+    ] in r.calls
 
 
 def test_access_handle_is_nfs_export() -> None:
