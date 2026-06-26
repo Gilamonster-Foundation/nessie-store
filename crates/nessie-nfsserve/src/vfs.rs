@@ -6,6 +6,7 @@ use async_trait::async_trait;
 
 use crate::nfs;
 use crate::nfs::*;
+use crate::rpc::UnixCred;
 #[derive(Default, Debug)]
 pub struct DirEntrySimple {
     pub fileid: fileid3,
@@ -195,6 +196,45 @@ pub trait NFSFileSystem: Sync {
         dirid: fileid3,
         dirname: &filename3,
     ) -> Result<(fileid3, fattr3), nfsstat3>;
+
+    // --- AUTH_UNIX-aware variants -----------------------------------------
+    //
+    // The `*_with_cred` methods carry the calling client's Unix credential so an
+    // implementation can own the newly created object as the caller rather than
+    // as the daemon (which would otherwise be `root:root` and break shared
+    // pod/host workspaces). Each defaults to its credential-less counterpart, so
+    // a filesystem that does not care about ownership needs no changes.
+
+    /// Like [`create`](Self::create), but with the caller's credential.
+    async fn create_with_cred(
+        &self,
+        dirid: fileid3,
+        filename: &filename3,
+        attr: sattr3,
+        _cred: &UnixCred,
+    ) -> Result<(fileid3, fattr3), nfsstat3> {
+        self.create(dirid, filename, attr).await
+    }
+
+    /// Like [`create_exclusive`](Self::create_exclusive), but with the caller's credential.
+    async fn create_exclusive_with_cred(
+        &self,
+        dirid: fileid3,
+        filename: &filename3,
+        _cred: &UnixCred,
+    ) -> Result<fileid3, nfsstat3> {
+        self.create_exclusive(dirid, filename).await
+    }
+
+    /// Like [`mkdir`](Self::mkdir), but with the caller's credential.
+    async fn mkdir_with_cred(
+        &self,
+        dirid: fileid3,
+        dirname: &filename3,
+        _cred: &UnixCred,
+    ) -> Result<(fileid3, fattr3), nfsstat3> {
+        self.mkdir(dirid, dirname).await
+    }
 
     /// Removes a file.
     /// If not supported due to readonly file system

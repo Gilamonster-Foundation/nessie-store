@@ -26,6 +26,20 @@ All notable changes to nessie-store are documented here. The format follows
     `PassthroughFs::commit` fsyncs the target; unstable writes are durable after
     the following commit. New `NFSFileSystem::{write_stable, commit}` trait hooks
     (defaulting to the safe, honest behavior) carry this.
+- **NFS AUTH_UNIX ownership (F5, blocker).** Files and directories created over
+  the embedded NFS server are now owned by the **calling client** instead of
+  landing `root:root`:
+  - The parsed AUTH_UNIX credential is exposed as `nessie_nfsserve::UnixCred` and
+    threaded into new `NFSFileSystem::{create_with_cred, create_exclusive_with_cred,
+    mkdir_with_cred}` hooks (defaulting to the credential-less behavior).
+  - `PassthroughFs` chowns each new object to the caller's uid; the group is left
+    to set-GID inheritance under a mode-2775 parent (the shared pod/host workspace
+    contract) and otherwise set to the caller's gid. A `SETATTR` carrying uid/gid
+    now actually chowns (previously silently ignored). Chowning new objects is
+    best-effort (logs if the daemon lacks `CAP_CHOWN`); the daemon must run with
+    `CAP_CHOWN` (k8s `privileged: true`) to own files as arbitrary callers.
+  - `deploy/config.example.toml` documents the recommended `zfs_dataset_owner` /
+    `zfs_dataset_mode` (`1000:1001` / `2775`) for shared agent workspaces.
 
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).

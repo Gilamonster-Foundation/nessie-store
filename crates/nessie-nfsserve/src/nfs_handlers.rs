@@ -1487,16 +1487,22 @@ pub async fn nfsproc3_create(
     let fid: Result<nfs::fileid3, nfs::nfsstat3>;
     let postopattr: nfs::post_op_attr;
     // fill in the fid and post op attr here
+    // The caller's AUTH_UNIX credential, so the new file is owned by the client
+    // rather than the (root) daemon (F5).
+    let cred = context.auth.cred();
     if matches!(createhow, createmode3::EXCLUSIVE) {
         // the API for exclusive is very slightly different
         // We are not returning a post op attribute
-        fid = context.vfs.create_exclusive(dirid, &dirops.name).await;
+        fid = context
+            .vfs
+            .create_exclusive_with_cred(dirid, &dirops.name, &cred)
+            .await;
         postopattr = nfs::post_op_attr::Void;
     } else {
         // create!
         let res = context
             .vfs
-            .create(dirid, &dirops.name, target_attributes)
+            .create_with_cred(dirid, &dirops.name, target_attributes, &cred)
             .await;
         fid = res.map(|x| x.0);
         postopattr = if let Ok((_, fattr)) = res {
@@ -2023,7 +2029,12 @@ pub async fn nfsproc3_mkdir(
         }
     };
 
-    let res = context.vfs.mkdir(dirid, &args.dirops.name).await;
+    // Own the new directory as the calling client, not the (root) daemon (F5).
+    let cred = context.auth.cred();
+    let res = context
+        .vfs
+        .mkdir_with_cred(dirid, &args.dirops.name, &cred)
+        .await;
 
     // Re-read dir attributes for post op attr
     let post_dir_attr = match context.vfs.getattr(dirid).await {

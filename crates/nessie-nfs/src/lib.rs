@@ -29,8 +29,11 @@
 //! - **No NLM/NSM locking** — clients must mount with `nolock`; locks are
 //!   client-local only.
 //! - **NFSv3 only** — no v4/pNFS/delegations/Kerberos.
-//! - **No per-export client ACL / authentication** — it is AUTH_UNIX/anon; gate
-//!   access at the network layer (bind address / firewall) for now.
+//! - **No per-export client ACL / authentication** — there is no per-client
+//!   access check; gate access at the network layer (bind address / firewall).
+//!   The AUTH_UNIX credential *is* honored for **ownership**: a created file/dir
+//!   is chowned to the calling uid (group left to set-GID inheritance), and a
+//!   SETATTR chown is applied — but the credential is trusted, not verified.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -44,10 +47,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use nessie_nfsserve::UnixCred;
 use nessie_nfsserve::fs_util::{metadata_to_fattr3, path_setattr};
-use nessie_nfsserve::nfs::{fattr3, fileid3, filename3, nfs_fh3, nfspath3, nfsstat3, sattr3};
+use nessie_nfsserve::nfs::{
+    fattr3, fileid3, filename3, nfs_fh3, nfspath3, nfsstat3, sattr3, set_gid3, set_uid3,
+};
 use nessie_nfsserve::tcp::{NFSTcp, NFSTcpListener};
 use nessie_nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
+
+/// The set-GID bit (`S_ISGID`) on a directory mode: children inherit the
+/// directory's group (and, for subdirectories, the set-GID bit itself). This is
+/// the mechanism behind the shared pod/host workspace contract (a mode-2775
+/// volume root), so we must not clobber the inherited group when chowning.
+const S_ISGID: u32 = 0o2000;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// A fixed `serverid`/cookieverf so file handles stay valid across restarts.
@@ -124,6 +136,34 @@ impl PassthroughFs {
         }
         Ok(dir.join(OsStr::from_bytes(name)))
     }
+
+    /// Best-effort: own a freshly created object (`id`, inside directory `dirid`)
+    /// as the calling client (F5) instead of the daemon (`root:root`).
+    ///
+    /// The owner (uid) is set to the caller. The group (gid) is left to the
+    /// kernel's set-GID inheritance when the parent directory carries `S_ISGID`
+    /// (the shared pod/host workspace contract: a mode-2775 root makes children
+    /// inherit the shared group) — otherwise it is set to the caller's primary
+    /// gid. A chown failure (e.g. the daemon lacks `CAP_CHOWN`) is logged, not
+    /// fatal: the object is still created, just owned by the daemon, so a
+    /// misconfigured deployment degrades rather than failing every create.
+    fn chown_new(&self, id: fileid3, dirid: fileid3, cred: &UnixCred) {
+        let (Ok(path), Ok(parent)) = (self.path_of(id), self.path_of(dirid)) else {
+            return;
+        };
+        let parent_setgid = std::fs::symlink_metadata(&parent)
+            .map(|m| m.mode() & S_ISGID != 0)
+            .unwrap_or(false);
+        let gid = if parent_setgid { None } else { Some(cred.gid) };
+        if let Err(e) = std::os::unix::fs::chown(&path, Some(cred.uid), gid) {
+            tracing::warn!(
+                path = %path.display(),
+                uid = cred.uid,
+                error = %e,
+                "nessie-nfs: could not chown new object to caller (need CAP_CHOWN?); leaving daemon ownership",
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -152,6 +192,20 @@ impl NFSFileSystem for PassthroughFs {
     async fn setattr(&self, id: fileid3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
         let path = self.path_of(id)?;
         path_setattr(&path, &setattr).await?;
+        // path_setattr deliberately ignores uid/gid; honor an explicit client
+        // chown here so SETATTR ownership changes actually take effect (F5). A
+        // failure (e.g. no CAP_CHOWN) is surfaced — the client asked for this.
+        let uid = match setattr.uid {
+            set_uid3::uid(u) => Some(u),
+            _ => None,
+        };
+        let gid = match setattr.gid {
+            set_gid3::gid(g) => Some(g),
+            _ => None,
+        };
+        if uid.is_some() || gid.is_some() {
+            std::os::unix::fs::chown(&path, uid, gid).map_err(|e| io_to_nfs(&e))?;
+        }
         self.getattr(id).await
     }
 
@@ -283,6 +337,42 @@ impl NFSFileSystem for PassthroughFs {
             .map_err(|e| io_to_nfs(&e))?;
         let (id, meta) = self.register(&path)?;
         Ok((id, metadata_to_fattr3(id, &meta)))
+    }
+
+    async fn create_with_cred(
+        &self,
+        dirid: fileid3,
+        filename: &filename3,
+        attr: sattr3,
+        cred: &UnixCred,
+    ) -> Result<(fileid3, fattr3), nfsstat3> {
+        let (id, _) = self.create(dirid, filename, attr).await?;
+        self.chown_new(id, dirid, cred);
+        Ok((id, self.getattr(id).await?))
+    }
+
+    async fn create_exclusive_with_cred(
+        &self,
+        dirid: fileid3,
+        filename: &filename3,
+        cred: &UnixCred,
+    ) -> Result<fileid3, nfsstat3> {
+        let id = self.create_exclusive(dirid, filename).await?;
+        self.chown_new(id, dirid, cred);
+        Ok(id)
+    }
+
+    async fn mkdir_with_cred(
+        &self,
+        dirid: fileid3,
+        dirname: &filename3,
+        cred: &UnixCred,
+    ) -> Result<(fileid3, fattr3), nfsstat3> {
+        let (id, _) = self.mkdir(dirid, dirname).await?;
+        // A new directory under a set-GID parent already inherits the parent's
+        // group and the set-GID bit (kernel behavior); chown_new preserves that.
+        self.chown_new(id, dirid, cred);
+        Ok((id, self.getattr(id).await?))
     }
 
     async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {

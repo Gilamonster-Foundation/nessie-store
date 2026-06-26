@@ -5,6 +5,7 @@
 
 mod context;
 mod rpc;
+pub use rpc::UnixCred;
 mod rpcwire;
 mod write_counter;
 pub mod xdr;

@@ -110,6 +110,32 @@ pub struct auth_unix {
 }
 xdr_struct!(auth_unix, stamp, machinename, uid, gid, gids);
 
+/// The Unix credential a client presented in its AUTH_UNIX RPC header — the
+/// effective uid, primary gid, and supplementary gids. Exposed (unlike the raw
+/// `auth_unix`, whose fields are private wire detail) so a `NFSFileSystem` can
+/// own newly created files as the caller instead of as the daemon (`root:root`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnixCred {
+    /// Effective user id of the calling client.
+    pub uid: u32,
+    /// Primary group id of the calling client.
+    pub gid: u32,
+    /// Supplementary group ids of the calling client.
+    pub gids: Vec<u32>,
+}
+
+impl auth_unix {
+    /// The caller's Unix credential (uid/gid/supplementary gids). For
+    /// non-AUTH_UNIX flavors these are the AUTH_NONE defaults (all zero).
+    pub fn cred(&self) -> UnixCred {
+        UnixCred {
+            uid: self.uid,
+            gid: self.gid,
+            gids: self.gids.clone(),
+        }
+    }
+}
+
 ///Provisions for authentication of caller to service and vice-versa are
 ///provided as a part of the RPC protocol.  The call message has two
 ///authentication fields, the credentials and verifier.  The reply
@@ -509,5 +535,33 @@ pub fn make_success_reply(xid: u32) -> rpc_msg {
     rpc_msg {
         xid,
         body: rpc_body::REPLY(reply),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_unix_exposes_caller_credential() {
+        // The parsed AUTH_UNIX uid/gid/supplementary gids must reach a public
+        // UnixCred so a filesystem can own new files as the caller (F5).
+        let auth = auth_unix {
+            stamp: 0,
+            machinename: b"client".to_vec(),
+            uid: 1000,
+            gid: 100,
+            gids: vec![1001, 27],
+        };
+        let cred = auth.cred();
+        assert_eq!(cred.uid, 1000);
+        assert_eq!(cred.gid, 100);
+        assert_eq!(cred.gids, vec![1001, 27]);
+    }
+
+    #[test]
+    fn auth_none_yields_zeroed_credential() {
+        // No AUTH_UNIX header => default (anon) credential, not a panic.
+        assert_eq!(auth_unix::default().cred(), UnixCred::default());
     }
 }
