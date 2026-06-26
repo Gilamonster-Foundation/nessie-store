@@ -131,6 +131,44 @@ pub trait NFSFileSystem: Sync {
     /// this should return Err(nfsstat3::NFS3ERR_ROFS)
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3>;
 
+    /// Writes `data` at `offset`, honoring the NFS WRITE `stable` flag.
+    ///
+    /// When `stable` is true the implementation MUST place the data (and the
+    /// metadata needed to retrieve it) on stable storage before returning; when
+    /// it is false the implementation may leave the data in a volatile cache and
+    /// defer durability to a later [`commit`](Self::commit). Returns the
+    /// post-write attributes together with whether the data is now on stable
+    /// storage — `true` lets the server answer the client `FILE_SYNC`, `false`
+    /// answers `UNSTABLE` (so the client knows it must `COMMIT`).
+    ///
+    /// The default delegates to [`write`](Self::write) and reports `false`. That
+    /// is the *honest* answer for a filesystem that has not opted into
+    /// synchronous writes — unlike the historical behavior of unconditionally
+    /// claiming `FILE_SYNC`, which loses acknowledged data on a crash.
+    async fn write_stable(
+        &self,
+        id: fileid3,
+        offset: u64,
+        data: &[u8],
+        _stable: bool,
+    ) -> Result<(fattr3, bool), nfsstat3> {
+        let attr = self.write(id, offset, data).await?;
+        Ok((attr, false))
+    }
+
+    /// Flushes previously-written (possibly unstable) data for `id` in the byte
+    /// range `[offset, offset + count)` to stable storage — the server side of
+    /// `NFSPROC3_COMMIT`, i.e. a client `fsync()`. A `count` of 0 means "through
+    /// end of file".
+    ///
+    /// The default is a no-op success, correct only for a filesystem whose writes
+    /// are already durable. Any filesystem that buffers writes (e.g. one that
+    /// returns `false` from [`write_stable`](Self::write_stable)) MUST override
+    /// this, or a client `fsync()` is a lie.
+    async fn commit(&self, _id: fileid3, _offset: u64, _count: u32) -> Result<(), nfsstat3> {
+        Ok(())
+    }
+
     /// Creates a file with the following attributes.
     /// If not supported due to readonly file system
     /// this should return Err(nfsstat3::NFS3ERR_ROFS)
