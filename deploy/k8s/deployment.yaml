@@ -39,7 +39,10 @@ spec:
           image: ghcr.io/gilamonster-foundation/nessie-store:latest
           imagePullPolicy: IfNotPresent
           securityContext:
-            privileged: true # zpool create/import + exportfs need it
+            # privileged covers zpool create/import and grants CAP_CHOWN, which
+            # the embedded NFS server needs to own files as their AUTH_UNIX caller
+            # (F5) instead of root:root.
+            privileged: true
           env:
             - name: NESSIE_ADMIN_PASSWORD
               valueFrom:

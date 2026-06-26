@@ -21,8 +21,13 @@ data_lif = "192.168.1.100"
 zfs_pool = "ontap-sim"
 # Only used when nfs_enabled = false (the legacy host-kernel-NFS export path).
 zfs_nfs_clients = ["192.168.0.0/16", "10.42.0.0/16"]
-# zfs_dataset_owner = "1000:1000"
-# zfs_dataset_mode = "0777"
+# Owner/mode stamped on each volume root. For a SHARED agent workspace (a pod and
+# the host both read/write the same tree), set a set-GID root so new files created
+# over NFS inherit the shared group, and let the embedded server own each file as
+# its AUTH_UNIX caller (F5). The daemon must hold CAP_CHOWN — it runs as root
+# (k8s `privileged: true`) — to own files as arbitrary callers.
+# zfs_dataset_owner = "1000:1001"   # uid:gid — e.g. worker uid : shared "agents" gid
+# zfs_dataset_mode  = "2775"        # rwxrwsr-x: set-GID so children inherit the group
 
 # Embedded userspace NFS server (the data plane). When true, nessie-store serves
 # NFSv3 itself — NO host kernel NFS server (rpc.nfsd/exportfs) is needed, and the

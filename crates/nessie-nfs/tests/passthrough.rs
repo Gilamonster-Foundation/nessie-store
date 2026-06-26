@@ -5,12 +5,18 @@
 //!   cargo test -p nessie-nfs --features live-fs -- --test-threads=1
 #![cfg(feature = "live-fs")]
 
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nessie_nfs::PassthroughFs;
-use nessie_nfsserve::nfs::{filename3, sattr3};
+use nessie_nfsserve::UnixCred;
+use nessie_nfsserve::nfs::{filename3, sattr3, set_uid3};
 use nessie_nfsserve::vfs::NFSFileSystem;
+
+/// A uid no test runner is likely to be, used to prove a chown actually moved
+/// ownership (only assertable when the test process can chown — i.e. root).
+const ALIEN_UID: u32 = 31_000;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -159,6 +165,128 @@ async fn commit_on_missing_handle_is_stale() {
     let dir = scratch();
     let fs = PassthroughFs::new(&dir).unwrap();
     assert!(fs.commit(999_999_999, 0, 0).await.is_err());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- F5: AUTH_UNIX ownership ----------------------------------------------
+
+#[tokio::test]
+async fn create_with_cred_owns_new_file_as_caller() {
+    // F5: a file created over NFS must be owned by the calling client, not the
+    // (root) daemon. The cross-uid assertion only holds when the test process is
+    // privileged (root CI container); otherwise we verify the best-effort path
+    // still creates the file rather than failing. Regression for root:root.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+
+    let (_probe, _) = fs
+        .create(root, &name("probe"), sattr3::default())
+        .await
+        .unwrap();
+    let probe_path = dir.join("probe");
+    let daemon_uid = std::fs::metadata(&probe_path).unwrap().uid();
+    let daemon_gid = std::fs::metadata(&probe_path).unwrap().gid();
+    let privileged = std::os::unix::fs::chown(&probe_path, Some(ALIEN_UID), None).is_ok();
+
+    let cred = UnixCred {
+        uid: ALIEN_UID,
+        gid: daemon_gid,
+        gids: vec![],
+    };
+    let (_fid, _) = fs
+        .create_with_cred(root, &name("owned"), sattr3::default(), &cred)
+        .await
+        .unwrap();
+    let owner = std::fs::metadata(dir.join("owned")).unwrap().uid();
+    if privileged {
+        assert_eq!(
+            owner, ALIEN_UID,
+            "privileged daemon owns the file as the caller"
+        );
+    } else {
+        assert_eq!(
+            owner, daemon_uid,
+            "unprivileged: best-effort, file still created"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn setgid_parent_preserves_inherited_group() {
+    // F5 contract: under a set-GID directory (mode 2775) the child KEEPS the
+    // inherited group — a caller's (possibly bogus) primary gid must not override
+    // it. This is what lets a pod and the host co-own a shared workspace, and it
+    // is provable without privilege (chown-to-self + gid left untouched).
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+
+    let (subid, _) = fs.mkdir(root, &name("shared")).await.unwrap();
+    let subpath = dir.join("shared");
+    std::fs::set_permissions(&subpath, std::fs::Permissions::from_mode(0o2775)).unwrap();
+    let meta = std::fs::metadata(&subpath).unwrap();
+    let (parent_uid, parent_gid) = (meta.uid(), meta.gid());
+
+    // Caller's primary gid is one we are not a member of: under set-GID it is
+    // ignored, so no privilege is needed and the child inherits parent_gid.
+    let cred = UnixCred {
+        uid: parent_uid,
+        gid: 99_999,
+        gids: vec![],
+    };
+    fs.create_with_cred(subid, &name("f"), sattr3::default(), &cred)
+        .await
+        .unwrap();
+    let child = std::fs::metadata(subpath.join("f")).unwrap();
+    assert_eq!(
+        child.gid(),
+        parent_gid,
+        "set-GID parent: child keeps inherited group"
+    );
+    assert_ne!(
+        child.gid(),
+        99_999,
+        "bogus caller gid must not override set-GID"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn setattr_applies_explicit_chown() {
+    // F5: SETATTR carrying uid/gid must actually chown (fs_util refuses to). When
+    // privileged the ownership changes; when not, the explicit request honestly
+    // surfaces an error instead of silently succeeding.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (fid, _) = fs
+        .create(root, &name("f"), sattr3::default())
+        .await
+        .unwrap();
+    let path = dir.join("f");
+    let daemon_uid = std::fs::metadata(&path).unwrap().uid();
+    let privileged = std::os::unix::fs::chown(&path, Some(ALIEN_UID), None).is_ok();
+    let _ = std::os::unix::fs::chown(&path, Some(daemon_uid), None); // reset
+
+    let attr = sattr3 {
+        uid: set_uid3::uid(ALIEN_UID),
+        ..sattr3::default()
+    };
+    let res = fs.setattr(fid, attr).await;
+    if privileged {
+        assert!(res.is_ok());
+        assert_eq!(std::fs::metadata(&path).unwrap().uid(), ALIEN_UID);
+    } else {
+        assert!(
+            res.is_err(),
+            "unprivileged explicit chown must surface an error"
+        );
+    }
+
     std::fs::remove_dir_all(&dir).ok();
 }
 
