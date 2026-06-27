@@ -3,7 +3,7 @@
 //! temp directory — run it single-threaded in the release gate:
 //!
 //!   cargo test -p nessie-nfs --features live-fs -- --test-threads=1
-#![cfg(feature = "live-fs")]
+#![cfg(all(unix, feature = "live-fs"))]
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;

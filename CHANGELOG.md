@@ -6,6 +6,15 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Windows workspace build.** `nessie-nfs` is Unix-only (it relies on
+  `std::os::unix`, `tokio::fs::symlink`, and AUTH_UNIX `chown`) but was not gated,
+  so `cargo build/test --workspace` failed to compile on Windows (the nightly
+  Windows verification). The Unix implementation now lives in a `#[cfg(unix)]`
+  module; non-Unix targets get a `serve` stub returning `ErrorKind::Unsupported`,
+  so the whole workspace compiles on Windows again. Verified with
+  `cargo check -p nessie-nfs --target x86_64-pc-windows-msvc`.
+
 ### Planned
 - Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
 - Live-ZFS / Trident-on-k3s acceptance gate.
