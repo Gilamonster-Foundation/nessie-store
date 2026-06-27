@@ -7,9 +7,11 @@
 # *compile* errors are caught by the hook. The `test-py` job below (per-crate
 # wheel build + pytest) is CI-only — it needs maturin + per-version Python and is
 # too heavy for a pre-push hook, so it is a documented non-parity (like kyln's
-# live-substrate UAT). The aggressive supersets (deep-regression, cross-os,
-# security-audit, live-zfs, release) likewise live in their own scheduled
-# workflows and are not mirrored in the hook.
+# live-substrate UAT). The `portability-windows` job (cross-check the Unix-only
+# crates to the MSVC target) is likewise CI-only — it needs a cross-target
+# toolchain. The aggressive supersets (deep-regression, cross-os, security-audit,
+# live-zfs, release) likewise live in their own scheduled workflows and are not
+# mirrored in the hook.
 
 name: CI
 
@@ -52,6 +54,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test workspace
         run: cargo test --workspace --locked
+
+  # Windows portability guard. `nessie-nfs` / `nessie-nfsserve` are Unix-only by
+  # design (no Windows wheel), but must not break `cargo build --workspace` on
+  # Windows — the nightly-windows verification (issues #37/#38) caught exactly that.
+  # These two crates have no native (C) dependencies, so we cross-*check* them to
+  # the MSVC target from Linux: cheap, and needs no Windows runner or linker
+  # (`cargo check` does not link). HOOK PARITY: CI-only by design — it needs a
+  # cross-target toolchain, so the pre-push hook documents it as a non-mirrored
+  # gate (like `test-py` and the cross-os superset), not a drift.
+  portability-windows:
+    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add Windows target
+        run: rustup target add x86_64-pc-windows-msvc
+      - name: Cross-check the Unix-only crates compile on Windows
+        run: cargo check -p nessie-nfs -p nessie-nfsserve --target x86_64-pc-windows-msvc --locked
 
   # Per-crate PyO3 wheels: every crate with a pyproject.toml is built into a wheel,
   # installed, and exercised by its python/tests + linted. CI-only (see header).
