@@ -8,6 +8,9 @@
 # security-audit, live-zfs, release) are CI-only and intentionally NOT run here.
 # The per-crate wheel build + pytest (ci.yml test-py) is also CI-only; clippy
 # --all-features below compiles every crate's PyO3 bindings, covering the parity.
+# The ci.yml `portability-windows` job (cross-check the Unix-only crates to the
+# MSVC target) is CI-only too — it needs a cross-target toolchain, so it is a
+# documented non-parity, not drift.
 #
 # No `--no-verify` bypass: the hook is the local equivalent of the CI gate.
 # Heavy cargo output is redirected to a log and only concise status is printed
