@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # nessie-store — pre-push hook.
 #
-# PIPELINE PARITY: This hook mirrors the per-PR jobs in .github/workflows/ci.yml
-# (lint: cargo fmt --check + cargo clippy -D warnings; test: cargo test). When
-# editing this file, verify it still matches that pipeline (workspace rule:
+# PIPELINE PARITY: This hook mirrors the per-PR Rust jobs in
+# .github/workflows/ci.yml (lint: cargo fmt --check + cargo clippy -D warnings;
+# test: cargo test), plus a local docs-drift check (README crate inventory vs
+# crates/, also run by `just doc-check`). When editing this file, verify it still
+# matches that pipeline (workspace rule:
 # "Push Hook Governance"). The aggressive supersets (deep-regression, cross-os,
 # security-audit, live-zfs, release) are CI-only and intentionally NOT run here.
 # The per-crate wheel build + pytest (ci.yml test-py) is also CI-only; clippy
@@ -43,6 +45,10 @@ run "cargo fmt --check" cargo fmt --all -- --check
 run "cargo clippy --all-features -D warnings" \
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 run "cargo test --workspace" cargo test --workspace --locked
+
+# Documentation-drift guard — cheap bash check, also run by `just doc-check`.
+# The README crate inventory must match crates/ on disk.
+run "doc-drift (README inventory)" bash scripts/check-doc-drift.sh
 
 # Python lint mirrors ci.yml (no-op until python sources exist).
 if compgen -G "crates/*/python" >/dev/null 2>&1; then

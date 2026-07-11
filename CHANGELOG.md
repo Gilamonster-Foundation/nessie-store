@@ -6,6 +6,15 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+- **Durable-docs honesty pass.** The README now carries a machine-checked **crate
+  inventory** separating *implemented* crates from *planned* ones, and a new
+  `scripts/check-doc-drift.sh` gate (run by the pre-push hook and `just doc-check`)
+  asserts that inventory matches `crates/` so the docs cannot silently drift. Corrected the overstated "v1.0 parity-complete" claim in
+  `CLAUDE.md` to a version-anchored plan-vs-state note, and flagged SnapMirror as
+  control-plane only. Added `docs/design/demand-paged-nfs-gateways.md` for the two
+  experimental NFS gateways (#71).
+
 ### Fixed
 - **Windows workspace build.** `nessie-nfs` is Unix-only (it relies on
   `std::os::unix`, `tokio::fs::symlink`, and AUTH_UNIX `chown`) but was not gated,
@@ -16,9 +25,9 @@ All notable changes to nessie-store are documented here. The format follows
   `cargo check -p nessie-nfs --target x86_64-pc-windows-msvc`.
 
 ### Planned
-- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane).
-- Live-ZFS / Trident-on-k3s acceptance gate.
-- SMB support (v0.4.0).
+- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane) — #69.
+- Live-ZFS / Trident-on-k3s acceptance gate — #70.
+- SMB support (v0.4.0) — epic #51.
 
 ## [0.3.1] — 2026-06-26
 

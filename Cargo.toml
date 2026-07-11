@@ -1,8 +1,9 @@
 # nessie-store — Cargo workspace
 #
-# Skeleton; crate stubs land here as the implementation builds out each surface
-# via the staged sortie plan in ~/.claude/plans/splendid-swimming-shamir.md.
-# See README.md for the planned layout and CLAUDE.md for trait shape.
+# The `members` below are the crates that exist today; commented-out entries are
+# planned substrates/clients not yet implemented. The README "crate inventory" is
+# the source of truth (scripts/check-doc-drift.sh keeps it in sync with this dir).
+# See CLAUDE.md for the trait shape.
 
 [workspace]
 resolver = "2"
