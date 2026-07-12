@@ -48,6 +48,9 @@ homepage = "https://github.com/Gilamonster-Foundation/nessie-store"
 # Async + I/O foundation
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+# Bridges an async HTTP body into a sync reader for the blocking replication receive
+# (StreamReader = "io", SyncIoBridge = "io-util").
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
 futures = "0.3"
 async-trait = "0.1"
 
