@@ -16,9 +16,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use nessie_backend_core::{
-    AccessHandle, BackendError, Capabilities, CloneBackend, CloneOrigin, Snapshot, SnapshotBackend,
-    SnapshotUuid, Volume, VolumeBackend, VolumePatch, VolumeSpec, VolumeState, VolumeStyle,
-    VolumeType, VolumeUuid,
+    AccessHandle, BackendError, Capabilities, CloneBackend, CloneOrigin, ReplicationBackend,
+    Snapshot, SnapshotBackend, SnapshotUuid, Volume, VolumeBackend, VolumePatch, VolumeSpec,
+    VolumeState, VolumeStyle, VolumeType, VolumeUuid,
 };
 
 use crate::runner::CommandRunner;
@@ -300,7 +300,7 @@ impl<R: CommandRunner> ZfsBackend<R> {
 
 impl<R: CommandRunner> VolumeBackend for ZfsBackend<R> {
     fn capabilities(&self) -> Capabilities {
-        Capabilities::clones()
+        Capabilities::all()
     }
 
     fn list_volumes(&self) -> Result<Vec<Volume>, BackendError> {
@@ -544,6 +544,10 @@ impl<R: CommandRunner> SnapshotBackend for ZfsBackend<R> {
     fn as_clone(&self) -> Option<&dyn CloneBackend> {
         Some(self)
     }
+
+    fn as_replication(&self) -> Option<&dyn ReplicationBackend> {
+        Some(self)
+    }
 }
 
 impl<R: CommandRunner> CloneBackend for ZfsBackend<R> {
@@ -588,6 +592,46 @@ impl<R: CommandRunner> CloneBackend for ZfsBackend<R> {
     }
 }
 
+impl<R: CommandRunner> ReplicationBackend for ZfsBackend<R> {
+    fn send_stream(
+        &self,
+        vol: &VolumeUuid,
+        snap: &str,
+        base: Option<&str>,
+    ) -> Result<Box<dyn std::io::Read + Send>, BackendError> {
+        let ds = self
+            .reg()
+            .vol_name(vol)
+            .ok_or(BackendError::VolumeNotFound(*vol))?;
+        // `snap` / `base` are snapshot *names* — the cross-instance contract.
+        let source = format!("{}/{ds}@{snap}", self.cfg.pool);
+        if let Some(base) = base {
+            let incr = format!("{}/{ds}@{base}", self.cfg.pool);
+            self.runner
+                .spawn_stdout(&["zfs", "send", "-i", &incr, &source])
+        } else {
+            self.runner.spawn_stdout(&["zfs", "send", &source])
+        }
+    }
+
+    fn receive_stream(
+        &self,
+        dest: &str,
+        stream: &mut dyn std::io::Read,
+    ) -> Result<u64, BackendError> {
+        let full = self.full(dest);
+        // `-F` rolls the destination forward: idempotent re-apply, and required to
+        // land an incremental onto an existing dataset.
+        let applied = self
+            .runner
+            .run_stdin(&["zfs", "receive", "-F", &full], stream)?;
+        // Make the received dataset addressable immediately (list_volumes would
+        // otherwise register it lazily on the next scan).
+        self.reg().register_vol(dest);
+        Ok(applied)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +643,7 @@ mod tests {
     struct Mock {
         responses: Mutex<VecDeque<CommandOutput>>,
         calls: Mutex<Vec<Vec<String>>>,
+        received: Mutex<Vec<u8>>,
     }
 
     impl Mock {
@@ -630,6 +675,9 @@ mod tests {
                 .cloned()
                 .unwrap_or_default()
         }
+        fn received(&self) -> Vec<u8> {
+            self.received.lock().unwrap().clone()
+        }
     }
 
     impl CommandRunner for Mock {
@@ -644,6 +692,33 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(|| Mock::ok("")))
+        }
+
+        fn spawn_stdout(
+            &self,
+            argv: &[&str],
+        ) -> Result<Box<dyn std::io::Read + Send>, BackendError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(argv.iter().map(|s| s.to_string()).collect());
+            Ok(Box::new(std::io::Cursor::new(b"ZFS-SEND-STREAM".to_vec())))
+        }
+
+        fn run_stdin(
+            &self,
+            argv: &[&str],
+            input: &mut dyn std::io::Read,
+        ) -> Result<u64, BackendError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(argv.iter().map(|s| s.to_string()).collect());
+            let mut sink = Vec::new();
+            let n = std::io::copy(input, &mut sink)
+                .map_err(|e| BackendError::Internal(e.to_string()))?;
+            *self.received.lock().unwrap() = sink;
+            Ok(n)
         }
     }
 
@@ -906,9 +981,67 @@ mod tests {
     }
 
     #[test]
-    fn advertises_clone_tier() {
+    fn advertises_full_tier_including_replication() {
         let b = backend(Arc::new(Mock::default()));
-        assert_eq!(b.capabilities(), Capabilities::clones());
-        assert!(b.as_snapshot().and_then(|s| s.as_clone()).is_some());
+        assert_eq!(b.capabilities(), Capabilities::all());
+        let snap = b.as_snapshot().expect("snapshot tier");
+        assert!(snap.as_clone().is_some());
+        assert!(snap.as_replication().is_some());
+    }
+
+    #[test]
+    fn send_stream_full_emits_zfs_send() {
+        let mock = Arc::new(Mock::default());
+        let b = backend(mock.clone());
+        let v = b.create_volume(VolumeSpec::named("vol1")).unwrap();
+        b.create_snapshot(&v.uuid, "snapmirror.aaaa.1").unwrap();
+        let repl = b.as_snapshot().unwrap().as_replication().unwrap();
+
+        let mut s = repl
+            .send_stream(&v.uuid, "snapmirror.aaaa.1", None)
+            .unwrap();
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut s, &mut buf).unwrap();
+        assert_eq!(buf, b"ZFS-SEND-STREAM");
+        assert_eq!(mock.last(), ["zfs", "send", "tank/vol1@snapmirror.aaaa.1"]);
+    }
+
+    #[test]
+    fn send_stream_incremental_emits_dash_i() {
+        let mock = Arc::new(Mock::default());
+        let b = backend(mock.clone());
+        let v = b.create_volume(VolumeSpec::named("vol1")).unwrap();
+        b.create_snapshot(&v.uuid, "base").unwrap();
+        b.create_snapshot(&v.uuid, "next").unwrap();
+        let repl = b.as_snapshot().unwrap().as_replication().unwrap();
+
+        let _ = repl.send_stream(&v.uuid, "next", Some("base")).unwrap();
+        assert_eq!(
+            mock.last(),
+            ["zfs", "send", "-i", "tank/vol1@base", "tank/vol1@next"]
+        );
+    }
+
+    #[test]
+    fn send_stream_unknown_volume_is_not_found() {
+        let b = backend(Arc::new(Mock::default()));
+        let repl = b.as_snapshot().unwrap().as_replication().unwrap();
+        assert!(matches!(
+            repl.send_stream(&VolumeUuid::new(), "snap", None),
+            Err(BackendError::VolumeNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn receive_stream_emits_zfs_receive_and_streams_bytes() {
+        let mock = Arc::new(Mock::default());
+        let b = backend(mock.clone());
+        let repl = b.as_snapshot().unwrap().as_replication().unwrap();
+
+        let mut input = std::io::Cursor::new(b"REPLICATION-BYTES".to_vec());
+        let n = repl.receive_stream("vol1_dr", &mut input).unwrap();
+        assert_eq!(n, 17);
+        assert_eq!(mock.last(), ["zfs", "receive", "-F", "tank/vol1_dr"]);
+        assert_eq!(mock.received(), b"REPLICATION-BYTES");
     }
 }
