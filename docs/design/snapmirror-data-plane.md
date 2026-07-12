@@ -136,6 +136,18 @@ ONTAP path). Contract:
 
 Only Slice 5 depends on this; Slices 1–4 do not.
 
+### Known follow-ups (receiver authorization)
+
+The receive endpoint currently authorizes **any** valid peer token to write **any**
+destination volume — trust is per-peer + network-gated, which suits the homelab
+sim. Binding an authenticated peer to the specific destination it may write
+(reject otherwise) needs the destination to hold relationship records; today
+relationships live only on the source (push model). Tightening this — and giving
+the destination its own relationship view — is a follow-up. Slice 5 also **streams**
+the receive body straight into the backend (no full-buffer), and **serializes
+transfers per relationship** (an overlapping transfer on one relationship gets 409),
+both hardened after adversarial review.
+
 ## Staged PRs
 
 1. **Slice 1** — `ReplicationBackend` tier in `nessie-backend-core` *(this PR)*.

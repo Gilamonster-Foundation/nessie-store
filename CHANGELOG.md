@@ -6,6 +6,20 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **SnapMirror live data plane (#69).** Cross-instance replication now moves real
+  bytes. A new `ReplicationBackend` capability tier (`send_stream` / `receive_stream`,
+  reached via `SnapshotBackend::as_replication`) is implemented by the `mem` and
+  `zfs` backends (`zfs send [-i base]` / `zfs receive`, over a new streaming
+  `CommandRunner` seam). A SnapMirror transfer takes a source snapshot, then streams
+  it (full, or incremental from the relationship's per-pair base cursor) to the
+  peer's `POST /internal/snapmirror/receive`, which applies it to the destination
+  volume. The peer endpoint bypasses ONTAP Basic auth and authenticates a
+  **per-peer replication token** instead. `bytes_transferred` is now honest. See
+  [docs/REPLICATION.md](docs/REPLICATION.md) to run two instances, and
+  `docs/design/snapmirror-data-plane.md` for the design (incl. fan-out / cascade
+  topology). A two-instance integration test proves it end to end.
+
 ### Documentation
 - **Durable-docs honesty pass.** The README now carries a machine-checked **crate
   inventory** separating *implemented* crates from *planned* ones, and a new
@@ -25,8 +39,8 @@ All notable changes to nessie-store are documented here. The format follows
   `cargo check -p nessie-nfs --target x86_64-pc-windows-msvc`.
 
 ### Planned
-- Cross-instance binary `zfs send` → HTTP → `zfs receive` streaming (the live data plane) — #69.
-- Live-ZFS / Trident-on-k3s acceptance gate — #70.
+- Live-ZFS / Trident-on-k3s acceptance gate (incl. a real two-instance `zfs`
+  replication check) — #70.
 - SMB support (v0.4.0) — epic #51.
 
 ## [0.3.1] — 2026-06-26
