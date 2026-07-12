@@ -16,12 +16,20 @@ use serde_json::json;
 
 use crate::state::AppState;
 
-/// Paths served without authentication (OpenAPI docs), matching ONTAP/the sim.
-const BYPASS: &[&str] = &["/docs", "/openapi.json", "/redoc"];
+/// Paths not gated by ONTAP Basic auth. The OpenAPI docs are public (matching
+/// ONTAP/the sim); the internal SnapMirror receive endpoint is peer-to-peer and
+/// authenticates with a per-peer replication token in its handler, not admin
+/// credentials — see [`crate::snapmirror`].
+const BYPASS: &[&str] = &[
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/internal/snapmirror/receive",
+];
 
 /// Constant-time byte comparison (avoids leaking credential length/content via
 /// timing). Returns false fast only on length mismatch.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

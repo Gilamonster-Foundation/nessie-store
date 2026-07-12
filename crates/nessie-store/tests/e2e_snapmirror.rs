@@ -8,10 +8,25 @@ use axum::http::{Method, Request, StatusCode, header};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use nessie_backend_core::{SnapshotBackend, VolumeBackend, VolumeSpec};
 use nessie_backend_mem::MemBackend;
 use nessie_store::config::Config;
 use nessie_store::identity::Identity;
 use nessie_store::{AppState, app};
+
+/// A valid mem replication stream (as `send_stream` would produce), for driving
+/// the receive endpoint without a second live instance.
+fn mem_replication_stream(source_vol: &str, snapshot: &str) -> Vec<u8> {
+    use std::io::Read as _;
+    let b = MemBackend::new();
+    let v = b.create_volume(VolumeSpec::named(source_vol)).unwrap();
+    b.create_snapshot(&v.uuid, snapshot).unwrap();
+    let repl = b.as_snapshot().unwrap().as_replication().unwrap();
+    let mut s = repl.send_stream(&v.uuid, snapshot, None).unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).unwrap();
+    out
+}
 
 const ADMIN: &str = "Basic YWRtaW46YWRtaW4="; // admin:admin
 
@@ -255,19 +270,44 @@ async fn transfer_snapshots_source_and_records_success() {
 }
 
 #[tokio::test]
-async fn internal_receive_requires_header_and_body() {
+async fn internal_receive_authenticates_by_token_and_applies_stream() {
     let app = test_app();
-    // missing header -> 400
-    let (status, _b) = send(&app, Method::POST, "/internal/snapmirror/receive", None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // with header + body -> 200
+    // No token -> 401 (the endpoint bypasses Basic auth; the token is the credential).
     let req = Request::builder()
         .method(Method::POST)
         .uri("/internal/snapmirror/receive")
-        .header(header::AUTHORIZATION, ADMIN)
         .header("x-destination-volume", "vol1_dr")
-        .body(Body::from(vec![1u8, 2, 3, 4]))
+        .body(Body::from(mem_replication_stream("s", "snapmirror.aaaa.1")))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Register a peer to mint a replication token.
+    let (status, peer) = send(
+        &app,
+        Method::POST,
+        "/api/cluster/peers",
+        Some(json!({ "name": "src-cluster", "ip_address": "10.0.0.9" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let token = peer["authentication"]["passphrase"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A valid token + a real replication stream -> 200, and the destination volume
+    // materializes with the replicated snapshot.
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/internal/snapmirror/receive")
+        .header("x-replication-token", &token)
+        .header("x-destination-volume", "vol1_dr")
+        .body(Body::from(mem_replication_stream(
+            "srcvol",
+            "snapmirror.aaaa.1",
+        )))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -276,5 +316,26 @@ async fn internal_receive_requires_header_and_body() {
         .unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["status"], "received");
-    assert_eq!(body["bytes"], 4);
+    assert!(body["bytes"].as_u64().unwrap() > 0);
+
+    let (_s, vols) = send(&app, Method::GET, "/api/storage/volumes", None).await;
+    assert!(
+        vols["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "vol1_dr"),
+        "receive must create the destination volume"
+    );
+
+    // A wrong token -> 401.
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/internal/snapmirror/receive")
+        .header("x-replication-token", "not-the-token")
+        .header("x-destination-volume", "vol1_dr2")
+        .body(Body::from(mem_replication_stream("s", "snapmirror.aaaa.2")))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
