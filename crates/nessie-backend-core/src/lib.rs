@@ -22,8 +22,10 @@
 //! and returns the documented ONTAP "feature not supported" response when the
 //! substrate lacks the capability — no silent emulation.
 //!
-//! Later phases extend the stack with `ReplicationBackend` (SnapMirror) and an
-//! export tier; the [`AccessHandle`] enum already carries the data-plane contract.
+//! The [`ReplicationBackend`] tier (SnapMirror-style cross-instance streaming)
+//! branches from [`SnapshotBackend`], reached via [`SnapshotBackend::as_replication`];
+//! a later export tier is still planned. The [`AccessHandle`] enum already carries
+//! the data-plane contract.
 //!
 //! # Data-plane discipline
 //!
@@ -48,7 +50,7 @@ pub use access::AccessHandle;
 pub use capabilities::Capabilities;
 pub use error::BackendError;
 pub use ids::{SnapshotUuid, VolumeUuid};
-pub use traits::{CloneBackend, SnapshotBackend, VolumeBackend};
+pub use traits::{CloneBackend, ReplicationBackend, SnapshotBackend, VolumeBackend};
 pub use types::{
     CloneOrigin, Snapshot, Volume, VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType,
 };
