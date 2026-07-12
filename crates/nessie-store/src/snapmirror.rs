@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use nessie_backend_core::BackendError;
+use nessie_backend_core::{BackendError, SnapshotBackend};
 
 use crate::state::AppState;
 
@@ -28,6 +28,10 @@ struct Peer {
     uuid: String,
     name: String,
     address: String,
+    /// Shared replication token: a sender presents it on the destination's
+    /// `/internal/snapmirror/receive`, and the destination validates it against
+    /// this peer record. Both sides of a pair hold the same token.
+    token: String,
 }
 
 /// A SnapMirror relationship.
@@ -69,6 +73,15 @@ impl SnapMirrorStore {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().expect("snapmirror store mutex poisoned")
     }
+
+    /// True if `token` matches any registered peer's replication token
+    /// (constant-time). Gates the internal receive endpoint.
+    fn peer_token_valid(&self, token: &str) -> bool {
+        let g = self.lock();
+        g.peers
+            .values()
+            .any(|p| crate::auth::ct_eq(p.token.as_bytes(), token.as_bytes()))
+    }
 }
 
 fn svm_of(path: &str) -> &str {
@@ -96,6 +109,10 @@ fn peer_obj(p: &Peer) -> Value {
         "name": p.name,
         "ip_address": p.address,
         "status": { "state": "available" },
+        // The replication passphrase is returned so the operator can configure the
+        // matching peer on the other instance (this is a homelab ONTAP sim, not a
+        // secrets vault; the token gates only the internal receive endpoint).
+        "authentication": { "passphrase": p.token },
         "_links": { "self": { "href": format!("/api/cluster/peers/{}", p.uuid) } },
     })
 }
@@ -148,11 +165,21 @@ async fn create_peer(State(s): State<AppState>, Json(body): Json<Value>) -> Resp
             "peer name and ip_address are required".into(),
         );
     }
+    // Accept a caller-supplied passphrase (to match the other side of the pair),
+    // else mint one and return it in the response.
+    let token = body
+        .get("authentication")
+        .and_then(|a| a.get("passphrase"))
+        .and_then(Value::as_str)
+        .or_else(|| body.get("passphrase").and_then(Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let uuid = Uuid::new_v4().to_string();
     let peer = Peer {
         uuid: uuid.clone(),
         name,
         address,
+        token,
     };
     let obj = peer_obj(&peer);
     s.snapmirror.lock().peers.insert(uuid, peer);
@@ -484,9 +511,30 @@ async fn create_transfer(State(s): State<AppState>, Path(uuid): Path<String>) ->
 }
 
 /// `POST /internal/snapmirror/receive` — NOT an ONTAP path. The peer data-plane
-/// endpoint: accept a replication stream for a destination volume. The real
-/// `zfs receive` apply is the live-only data plane; here we acknowledge receipt.
-async fn internal_receive(headers: HeaderMap, body: Bytes) -> Response {
+/// endpoint: authenticate the sending peer by its replication token, then apply
+/// the replication stream to the destination volume via the backend's
+/// [`ReplicationBackend`](nessie_backend_core::ReplicationBackend). Bypasses ONTAP
+/// Basic auth (see [`crate::auth`]); the token is the credential here.
+async fn internal_receive(State(s): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let Some(token) = headers
+        .get("x-replication-token")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return ontap_error(
+            StatusCode::UNAUTHORIZED,
+            "401",
+            "snapmirror",
+            "X-Replication-Token header is required".into(),
+        );
+    };
+    if !s.snapmirror.peer_token_valid(token) {
+        return ontap_error(
+            StatusCode::UNAUTHORIZED,
+            "401",
+            "snapmirror",
+            "invalid replication token".into(),
+        );
+    }
     let Some(dest) = headers
         .get("x-destination-volume")
         .and_then(|v| v.to_str().ok())
@@ -506,7 +554,36 @@ async fn internal_receive(headers: HeaderMap, body: Bytes) -> Response {
             "empty replication stream".into(),
         );
     }
-    Json(json!({ "status": "received", "bytes": body.len(), "destination": dest })).into_response()
+
+    let dest = dest.to_string();
+    let backend = s.backend.clone();
+    let result = crate::blocking::run(move || {
+        let repl = backend
+            .as_snapshot()
+            .and_then(SnapshotBackend::as_replication)
+            .ok_or(BackendError::FeatureNotSupported {
+                capability: "replication",
+            })?;
+        let mut reader = body.as_ref();
+        let applied = repl.receive_stream(&dest, &mut reader)?;
+        Ok::<(String, u64), BackendError>((dest, applied))
+    })
+    .await;
+
+    match result {
+        Ok((dest, applied)) => Json(json!({
+            "status": "received",
+            "bytes": applied,
+            "destination": dest,
+        }))
+        .into_response(),
+        Err(e) => ontap_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "500",
+            "snapmirror",
+            format!("receive failed: {}", e.0),
+        ),
+    }
 }
 
 fn now_rfc3339() -> String {
