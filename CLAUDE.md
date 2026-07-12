@@ -151,7 +151,18 @@ Where content-addressed identity matters (mainly for backend implementations tha
 - The repo lives on `agent-workspace` NFS, visible inside harness pods at `/workspaces/nessie-store` and on gnuc at `/mnt/agent-workspace/nessie-store`. Convenience symlink at `~/workspaces/nessie-store` on gnuc. **Do NOT `git worktree add/remove` here** — on this NFS-symlinked checkout it can flip `core.bare=true` and break the working tree.
 - **Build vehicle (2026-06-14): incremental, one PR per phase, operator-driven** (not
   drake-swarm). The active plan is `~/.claude/plans/nessie-store-ontap-rust-rewrite.md` on
-  gnuc; the older sortie plan `splendid-swimming-shamir.md` is superseded. v1.0 is
-  parity-complete with `netapp-sim` (volumes, snapshots, FlexClone, SnapMirror, NFS data
-  plane, auth, TLS, identity, the Trident acceptance gate, and the Face-A pip client);
-  embedded Python extensions (Face B) are the v1.1 fast-follow.
+  gnuc; the older sortie plan `splendid-swimming-shamir.md` is superseded.
+- **Current state (as of 0.3.1) — plan vs. reality.** The README
+  [crate inventory](README.md#crate-inventory) is the machine-checked source of truth
+  (`scripts/check-doc-drift.sh`). **Shipped:** the ONTAP REST *control* plane
+  (discovery, volumes CRUD + FlexClone, snapshots CRUD + delta, HTTP Basic auth, TLS,
+  mint-once identity) over the trait stack; the `zfs` + `mem` backends; and an embedded
+  hardened NFSv3 *data* plane (`nessie-nfs` + `nessie-nfsserve`). **Not yet done, despite
+  older prose:** SnapMirror is control-plane only — the `zfs send → zfs receive` byte
+  movement is stubbed (#69); the live-ZFS / Trident acceptance gate is unbuilt (#70);
+  the s3 / nfs-bare / ontap-passthrough / p4d / gitlfs backends and the unified
+  `nessie-client` do not exist (#72); `fpolicy` and NFS `export-policies` REST parity
+  with `netapp-sim` is absent. **v1.0 = full `netapp-sim` parity is the *goal*, not the
+  current state;** embedded Python (Face B) is the post-parity fast-follow. Two
+  experimental demand-paged NFS gateways (git-LFS, Perforce) are designed but unbuilt
+  (#71).

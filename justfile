@@ -12,7 +12,7 @@ default:
 
 # Full lock-step check that mirrors CI (run before pushing). `check` formats in
 # place; `ci-check` asserts formatting (exact CI parity, no in-place changes).
-check: rust-check py-check
+check: rust-check py-check doc-check
     @echo "✓ all checks passed"
 
 # Exact CI/hook parity — fails on unformatted code rather than reformatting.
@@ -21,6 +21,12 @@ ci-check:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test --workspace --locked
     @just py-check
+    @just doc-check
+
+# Documentation-drift guard — the README crate inventory must match crates/.
+# Also run by the pre-push hook (and, once added, the ci.yml `docs-drift` job).
+doc-check:
+    bash scripts/check-doc-drift.sh
 
 # Rust side — fmt + clippy + tests on the workspace.
 rust-check:
