@@ -68,6 +68,11 @@ pub trait SnapshotBackend: VolumeBackend {
     fn as_clone(&self) -> Option<&dyn CloneBackend> {
         None
     }
+
+    /// Upcast to the replication tier if this backend honors it. Defaults to `None`.
+    fn as_replication(&self) -> Option<&dyn ReplicationBackend> {
+        None
+    }
 }
 
 /// The clone tier: writable FlexClones diverging from a snapshot.
@@ -79,6 +84,43 @@ pub trait CloneBackend: SnapshotBackend {
         parent_snap: &SnapshotUuid,
         new_name: &str,
     ) -> Result<Volume, BackendError>;
+}
+
+/// The replication tier: SnapMirror-style cross-instance streaming.
+///
+/// A replication-capable backend can serialize a snapshot into a substrate-native
+/// byte stream (for ZFS, `zfs send`) and apply such a stream to a destination
+/// volume (`zfs receive`). It branches from [`SnapshotBackend`] — replication needs
+/// snapshots — and is independent of [`CloneBackend`]: a backend may honor either,
+/// both, or neither.
+///
+/// Snapshots are named deterministically by the SnapMirror layer, and those
+/// **names are the cross-instance contract**: an incremental stream names the
+/// common base snapshot, which the destination must already hold. Backends address
+/// replication snapshots by name, not by the local [`SnapshotUuid`] (which differs
+/// between instances).
+pub trait ReplicationBackend: SnapshotBackend {
+    /// Open a replication stream for the snapshot named `snap` on volume `vol`.
+    ///
+    /// With `base = Some(name)`, produce an **incremental** stream from that base
+    /// snapshot (the destination must already hold `base`); with `base = None`, a
+    /// full stream. The returned reader streams the substrate-native replication
+    /// payload and owns any underlying process; a transfer failure surfaces as a
+    /// read error.
+    fn send_stream(
+        &self,
+        vol: &VolumeUuid,
+        snap: &str,
+        base: Option<&str>,
+    ) -> Result<Box<dyn std::io::Read + Send>, BackendError>;
+
+    /// Apply a replication stream to the destination volume named `dest`, creating
+    /// or updating it, and return the number of bytes applied.
+    fn receive_stream(
+        &self,
+        dest: &str,
+        stream: &mut dyn std::io::Read,
+    ) -> Result<u64, BackendError>;
 }
 
 #[cfg(test)]
@@ -139,7 +181,7 @@ mod tests {
 
     impl VolumeBackend for FullTier {
         fn capabilities(&self) -> Capabilities {
-            Capabilities::clones()
+            Capabilities::all()
         }
         fn list_volumes(&self) -> Result<Vec<Volume>, BackendError> {
             Ok(vec![])
@@ -200,6 +242,9 @@ mod tests {
         fn as_clone(&self) -> Option<&dyn CloneBackend> {
             Some(self)
         }
+        fn as_replication(&self) -> Option<&dyn ReplicationBackend> {
+            Some(self)
+        }
     }
 
     impl CloneBackend for FullTier {
@@ -210,6 +255,32 @@ mod tests {
             new_name: &str,
         ) -> Result<Volume, BackendError> {
             Ok(fake_volume(new_name))
+        }
+    }
+
+    impl ReplicationBackend for FullTier {
+        fn send_stream(
+            &self,
+            _vol: &VolumeUuid,
+            snap: &str,
+            base: Option<&str>,
+        ) -> Result<Box<dyn std::io::Read + Send>, BackendError> {
+            // A trivial "stream": full = "full:<snap>", incremental = "incr:<base>:<snap>".
+            let payload = match base {
+                Some(b) => format!("incr:{b}:{snap}"),
+                None => format!("full:{snap}"),
+            };
+            Ok(Box::new(std::io::Cursor::new(payload.into_bytes())))
+        }
+        fn receive_stream(
+            &self,
+            _dest: &str,
+            stream: &mut dyn std::io::Read,
+        ) -> Result<u64, BackendError> {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(stream, &mut buf)
+                .map_err(|e| BackendError::Internal(e.to_string()))?;
+            Ok(buf.len() as u64)
         }
     }
 
@@ -229,6 +300,49 @@ mod tests {
             .create_clone(&VolumeUuid::new(), &SnapshotUuid::new(), "clone1")
             .expect("clone created");
         assert_eq!(v.name, "clone1");
+    }
+
+    #[test]
+    fn full_tier_exposes_replication_and_round_trips() {
+        let b = FullTier;
+        let snap = b.as_snapshot().expect("snapshot tier present");
+        let repl = snap.as_replication().expect("replication tier present");
+
+        // A full stream carries the snapshot name.
+        let mut full = repl
+            .send_stream(&VolumeUuid::new(), "snapmirror.abc.1", None)
+            .expect("send full");
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut full, &mut buf).expect("read full");
+        assert_eq!(buf, b"full:snapmirror.abc.1");
+
+        // An incremental stream names the common base snapshot.
+        let mut incr = repl
+            .send_stream(
+                &VolumeUuid::new(),
+                "snapmirror.abc.2",
+                Some("snapmirror.abc.1"),
+            )
+            .expect("send incremental");
+        let mut ibuf = Vec::new();
+        std::io::Read::read_to_end(&mut incr, &mut ibuf).expect("read incremental");
+        assert_eq!(ibuf, b"incr:snapmirror.abc.1:snapmirror.abc.2");
+
+        // Receiving reports the number of bytes applied.
+        let applied = repl
+            .receive_stream("vol1_dr", &mut buf.as_slice())
+            .expect("receive");
+        assert_eq!(applied, buf.len() as u64);
+    }
+
+    #[test]
+    fn replication_upcasts_to_snapshot_and_volume() {
+        let b = FullTier;
+        let repl: &dyn ReplicationBackend = b.as_snapshot().unwrap().as_replication().unwrap();
+        // Upcast through the supertrait edge (stable on MSRV 1.88).
+        let as_snap: &dyn SnapshotBackend = repl;
+        let as_vol: &dyn VolumeBackend = as_snap;
+        assert!(as_vol.capabilities().replication);
     }
 
     #[test]
