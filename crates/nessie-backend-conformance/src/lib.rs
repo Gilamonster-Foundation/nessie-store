@@ -28,7 +28,8 @@
 mod python;
 
 use nessie_backend_core::{
-    BackendError, CloneBackend, SnapshotBackend, VolumeBackend, VolumePatch, VolumeSpec, VolumeUuid,
+    BackendError, CloneBackend, ReplicationBackend, SnapshotBackend, VolumeBackend, VolumePatch,
+    VolumeSpec, VolumeUuid,
 };
 
 /// A unique volume/snapshot name so suites never collide with prior state on a
@@ -65,6 +66,14 @@ pub fn run_all(backend: &dyn VolumeBackend) {
         caps.clones,
         clone.is_some()
     );
+    let repl = snap.and_then(SnapshotBackend::as_replication);
+    assert_eq!(
+        repl.is_some(),
+        caps.replication,
+        "capabilities().replication ({}) disagrees with as_replication().is_some() ({})",
+        caps.replication,
+        repl.is_some()
+    );
 
     run_volume_suite(backend);
     if let Some(snap) = snap {
@@ -72,6 +81,9 @@ pub fn run_all(backend: &dyn VolumeBackend) {
     }
     if let Some(clone) = clone {
         run_clone_suite(clone);
+    }
+    if let Some(repl) = repl {
+        run_replication_suite(repl);
     }
 }
 
@@ -232,4 +244,66 @@ pub fn run_clone_suite(backend: &dyn CloneBackend) {
     backend
         .delete_volume(&parent.uuid)
         .expect("cleanup parent volume");
+}
+
+/// The replication contract on a [`ReplicationBackend`]: a snapshot serialized by
+/// `send_stream` and applied by `receive_stream` reproduces the volume + snapshot
+/// on the destination and reports a non-zero byte count. Same-instance send→receive
+/// exercises the backend contract; the true cross-instance path is a daemon test.
+pub fn run_replication_suite(backend: &dyn ReplicationBackend) {
+    let src = backend
+        .create_volume(VolumeSpec::named(unique("conf-replsrc")))
+        .expect("create replication source volume");
+    let snap_name = unique("snapmirror");
+    let snap = backend
+        .create_snapshot(&src.uuid, &snap_name)
+        .expect("create source snapshot");
+
+    // A full stream received into a fresh destination volume.
+    let mut stream = backend
+        .send_stream(&src.uuid, &snap_name, None)
+        .expect("send_stream (full) should succeed");
+    let dest_name = unique("conf-repldst");
+    let applied = backend
+        .receive_stream(&dest_name, &mut stream)
+        .expect("receive_stream should succeed");
+    assert!(
+        applied > 0,
+        "a replication stream must report a non-zero byte count"
+    );
+
+    // The destination volume now exists and carries the replicated snapshot.
+    let dest = backend
+        .list_volumes()
+        .expect("list_volumes after receive")
+        .into_iter()
+        .find(|v| v.name == dest_name)
+        .expect("destination volume materialized after receive");
+    let dest_snaps = backend
+        .list_snapshots(&dest.uuid)
+        .expect("list destination snapshots");
+    assert!(
+        dest_snaps.iter().any(|s| s.name == snap_name),
+        "destination must carry the replicated snapshot {snap_name}"
+    );
+
+    // Sending an unknown snapshot is a typed error, not a panic or empty stream.
+    assert!(
+        matches!(
+            backend.send_stream(&src.uuid, &unique("nope"), None),
+            Err(BackendError::InvalidArgument(_))
+        ),
+        "send_stream of an unknown snapshot must be InvalidArgument"
+    );
+
+    // cleanup.
+    backend
+        .delete_volume(&dest.uuid)
+        .expect("cleanup destination volume");
+    backend
+        .delete_snapshot(&src.uuid, &snap.uuid)
+        .expect("cleanup source snapshot");
+    backend
+        .delete_volume(&src.uuid)
+        .expect("cleanup source volume");
 }
