@@ -29,13 +29,13 @@ env:
   RUSTFLAGS: "-D warnings"
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
-  # A fork sets `vars.NESSIE_CI_RUNNER` to e.g. `ubuntu-24.04`; the maintainer's
+  # A fork sets `vars.GMF_LINUX_RUNNER` to e.g. `ubuntu-24.04`; the maintainer's
   # self-hosted ARC label is the default.
   CARGO_HOME: ${{ github.workspace }}/.cargo
 
 jobs:
   lint:
-    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.GMF_LINUX_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       # --all-features compiles the PyO3 bindings, so a Python interpreter must
@@ -49,7 +49,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
-    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.GMF_LINUX_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Test workspace
@@ -64,7 +64,7 @@ jobs:
   # cross-target toolchain, so the pre-push hook documents it as a non-mirrored
   # gate (like `test-py` and the cross-os superset), not a drift.
   portability-windows:
-    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.GMF_LINUX_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Add Windows target
@@ -75,7 +75,7 @@ jobs:
   # Per-crate PyO3 wheels: every crate with a pyproject.toml is built into a wheel,
   # installed, and exercised by its python/tests + linted. CI-only (see header).
   test-py:
-    runs-on: ${{ vars.NESSIE_CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.GMF_LINUX_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
