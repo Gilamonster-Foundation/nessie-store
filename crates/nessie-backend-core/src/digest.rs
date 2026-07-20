@@ -259,38 +259,12 @@ pub enum DigestParseError {
     },
 }
 
-const HEX: &[u8; 16] = b"0123456789abcdef";
-
 fn to_hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
-fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
+    crate::hex::encode(bytes)
 }
 
 fn from_hex(s: &str) -> Result<Vec<u8>, DigestParseError> {
-    let s = s.as_bytes();
-    if s.len() % 2 != 0 {
-        return Err(DigestParseError::BadHex);
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in s.chunks_exact(2) {
-        let hi = hex_val(pair[0]).ok_or(DigestParseError::BadHex)?;
-        let lo = hex_val(pair[1]).ok_or(DigestParseError::BadHex)?;
-        out.push((hi << 4) | lo);
-    }
-    Ok(out)
+    crate::hex::decode(s).ok_or(DigestParseError::BadHex)
 }
 
 #[cfg(test)]

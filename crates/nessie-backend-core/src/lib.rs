@@ -37,10 +37,15 @@
 #![deny(missing_docs)]
 
 mod access;
+mod action_cache;
+mod action_result;
+mod attestation;
+mod attestation_set;
 mod capabilities;
 mod cas;
 mod digest;
 mod error;
+mod hex;
 mod ids;
 mod traits;
 mod types;
@@ -49,6 +54,13 @@ mod types;
 mod python;
 
 pub use access::AccessHandle;
+pub use action_cache::ActionCacheBackend;
+pub use action_result::{ActionResult, OutputFile};
+pub use attestation::{
+    Attestation, HexIdError, Signature, SignatureVerifier, SignedAttestation, SignerId,
+    statement_signing_bytes,
+};
+pub use attestation_set::{AcResolution, AttestationSet};
 pub use capabilities::Capabilities;
 pub use cas::CasBackend;
 pub use digest::{Digest, DigestAlgo, DigestParseError};
