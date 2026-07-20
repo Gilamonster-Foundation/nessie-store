@@ -7,6 +7,7 @@
 //! do not nest. This is the P2P-native substrate the swarm is built on
 //! (`docs/design/p2p-cas-swarm.md`).
 
+use crate::action_cache::ActionCacheBackend;
 use crate::digest::Digest;
 use crate::error::BackendError;
 use std::io::Read;
@@ -62,4 +63,13 @@ pub trait CasBackend: Send + Sync {
     ///
     /// Returns [`BackendError`] if reading `source` or persisting the blob fails.
     fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError>;
+
+    /// Upcast to the action-cache tier if this backend attests results, else
+    /// `None`. Mirrors [`VolumeBackend::as_snapshot`](crate::VolumeBackend::as_snapshot):
+    /// the default `None` is the honest decline, and `as_action_cache().is_some()`
+    /// is the in-process capability probe (a REAPI/NFS face downcasts at dispatch
+    /// and returns "feature not supported" when it is `None`).
+    fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {
+        None
+    }
 }

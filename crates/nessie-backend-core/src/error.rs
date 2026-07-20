@@ -10,6 +10,7 @@
 use std::time::Duration;
 use thiserror::Error;
 
+use crate::attestation::SignerId;
 use crate::digest::Digest;
 use crate::ids::{SnapshotUuid, VolumeUuid};
 
@@ -33,6 +34,25 @@ pub enum BackendError {
     /// No blob with this digest is present in the content-addressed store.
     #[error("blob {0} not found")]
     BlobNotFound(Digest),
+
+    /// A signed attestation failed the signature/identity seam — the signature was
+    /// invalid or the signer is not an admitted swarm member. The attestation is
+    /// dropped and never counts toward the k-of-n confirmation threshold.
+    #[error("attestation from signer {signer} failed verification")]
+    AttestationUnverified {
+        /// The signer whose attestation was rejected.
+        signer: SignerId,
+    },
+
+    /// Two or more distinct results are each confirmed at k distinct signers for
+    /// one action — reachable only when the Byzantine-minority hypothesis is
+    /// violated (`|Byzantine| ≥ k`) or the action is non-deterministic. Surfaced
+    /// rather than silently resolving to one side.
+    #[error("conflicting confirmed results for action {action}")]
+    ActionResultConflict {
+        /// The action whose attestations disagree.
+        action: Digest,
+    },
 
     /// A volume with this name already exists.
     #[error("volume {0:?} already exists")]
