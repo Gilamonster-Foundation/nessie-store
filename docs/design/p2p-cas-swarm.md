@@ -1,7 +1,9 @@
 # Design: nessie-store as a P2P content-addressed swarm
 
-**Status:** design — P2P/CAS context open; the four gating decisions are
-**settled** (2026-07-20, operator — see [Decisions](#decisions--settled-2026-07-20-operator)).
+**Status:** design — P2P/CAS context open; the gating decisions are **settled**
+(2026-07-20, operator — see [Decisions](#decisions--settled-2026-07-20-operator)),
+including node storage modes (cache vs durable store of record). First code slice
+(the content `Digest` type) is in flight.
 Board card `knowledge/board/nessie-store/2026-07-20_p2p-cas-reapi-design-handoff.md`
 (P1) · supersedes the near-term REAPI listing in
 `knowledge/board/nessie-store/2026-05-17_direction.md`.
@@ -207,6 +209,46 @@ gains a `CasBlob { digest, providers: Vec<PeerAddr> }` variant, so a client fetc
 bytes *directly* from a holding peer (matching the repo's existing "daemon does not
 broker bytes" discipline). Only *discovery* differs between the two routers.
 
+## Node storage modes — cache vs durable store of record
+
+A nessie node runs its local disk in one of two modes. This is the same
+distinction as IPFS *cache vs pin*, BitTorrent *leech vs seed*, and the OS page
+cache vs a store of record — CAS makes all three the same idea.
+
+- **Cache mode.** Local disk is a **bounded** cache. Recently-used blobs stay
+  local; cold blobs are **evicted** and "float" to the swarm — evicting drops the
+  local copy but not the blob, because a later read re-fetches it by digest from a
+  peer. Content-addressing is what makes this safe: a fetched blob is
+  self-verifying (`Digest::verify`), so a re-fetch from *any* peer is trustworthy,
+  and eviction is a purely local decision with no coordination.
+- **Durable store-of-record mode.** The node **retains everything** it holds and
+  never evicts — a full replica / pin / authority. These nodes are what make
+  cache-mode eviction lossless: they are the guaranteed holders cold data floats
+  *to*.
+
+**The one safety invariant: never evict the last replica.** Cache-mode eviction is
+gated on the [`ContentRouter`](#content-routing--the-swarm-shape-decision): before
+dropping a blob, the node confirms **≥ R** other providers hold it. An
+under-replicated blob is **pinned** — the node behaves as a *temporary* store of
+record for it, replicating it outward until the invariant is met, and only then
+becoming eligible to evict. So a swarm stays lossless as long as it has enough
+durable nodes (or enough cache nodes for R-way replication); this is a deployment
+property the design surfaces, not a hope.
+
+The eviction policy sits behind its own seam — **LRU is the default**, with LFU /
+ARC / size-tiered composable without touching CAS (three-Cs: Configuration picks
+the *mode*, Composition picks the *policy*). A **pinned class** overrides eviction
+regardless of mode: confirmed AC entries (the ungameable-completion keystone —
+these must never float away), agent-mesh identity material, and actively-referenced
+Merkle roots are small and load-bearing, so they are kept even on cache nodes.
+
+Config follows the workspace config law (lean core, typed knobs): a `[cas]` block
+selects `mode = "cache" | "durable"` and, for cache mode, a byte budget, an
+eviction `policy`, and the replication factor `R`. Mechanically this is a
+`CasStore` wrapper over a `CasBackend` plus an `EvictionPolicy` seam; it is a
+**later slice** — it needs the `ContentRouter` to check replica counts — not part
+of the single-node first slice.
+
 ## REAPI as a long-term face, not the core
 
 REAPI v2 (`build.bazel.remote.execution.v2`) is CAS + ActionCache + Execution +
@@ -270,6 +312,11 @@ These gated the first implementable slice; all four are now settled.
 4. **Native digest ↔ REAPI digest → multihash native, SHA-256 at the boundary.**
    Self-describing multihash (BLAKE3 default) internally; the REAPI face pins
    SHA-256 as its wire contract and translates at the boundary.
+5. **Node storage modes → cache and durable store of record.** A node runs local
+   disk either as a bounded LRU cache (cold blobs float to the swarm) or as a
+   durable store of record (retain everything). Eviction is replica-gated (never
+   drop the last copy); confirmed AC entries and identity material are a pinned
+   class. See [Node storage modes](#node-storage-modes--cache-vs-durable-store-of-record).
 
 ## First implementable slice (once the above are settled)
 
@@ -300,3 +347,10 @@ each gated on the decision it depends on.
   its manifest (path → digest) ownership (kyln vs embedded) is still open there.
 - **Blob chunking** — fixed-size vs content-defined (Rabin) chunking for large-blob
   dedup and partial fetch. BitTorrent-style fixed pieces are the simpler v0.
+- **Eviction victim selection at scale** — LRU is the default policy, but the
+  replica-count check it depends on costs a `ContentRouter` round-trip per
+  candidate; batch the check, cache provider counts, or gossip a coarse replica
+  estimate? Settle when the `CasStore` slice is built.
+- **Durable-node sufficiency** — how does a swarm *know* it has enough durable
+  holders for its replication factor before cache nodes start evicting? A health
+  signal (monty-tui) vs a hard admission gate on the first eviction.
