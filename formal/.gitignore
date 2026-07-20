@@ -1,0 +1,7 @@
+# Lean build output
+lean/.lake/
+# TLC scratch (states, snapshots) and the cached model checker
+tla/states/
+tla/*.old
+tla/MC.out
+.cache/
