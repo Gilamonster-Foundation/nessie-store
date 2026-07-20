@@ -81,6 +81,7 @@ cannot silently drift out of sync.
 | --- | --- |
 | `nessie-backend-core` | trait stack + types + `AccessHandle` (no impls) |
 | `nessie-backend-conformance` | capability-driven test harness |
+| `nessie-cas-conformance` | conformance suite for the `CasBackend` contract |
 | `nessie-backend-mem` | HashMap reference backend |
 | `nessie-backend-zfs` | ZFS substrate — native snapshot + clone |
 | `nessie-ontap-protocol` | HAL / ONTAP REST wire shapes |

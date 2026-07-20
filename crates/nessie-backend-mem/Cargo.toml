@@ -23,3 +23,4 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 nessie-backend-conformance = { path = "../nessie-backend-conformance", version = "0.3.1" }
+nessie-cas-conformance = { path = "../nessie-cas-conformance", version = "0.3.1" }

@@ -12,6 +12,7 @@ members = [
     "crates/nessie-backend-core",
     "crates/nessie-backend-mem",
     "crates/nessie-backend-conformance",
+    "crates/nessie-cas-conformance",
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",

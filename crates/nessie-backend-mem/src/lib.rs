@@ -15,12 +15,13 @@
 mod python;
 
 use std::collections::{HashMap, HashSet};
+use std::io::{Cursor, Read};
 use std::sync::{Mutex, MutexGuard};
 
 use nessie_backend_core::{
-    AccessHandle, BackendError, Capabilities, CloneBackend, CloneOrigin, ReplicationBackend,
-    Snapshot, SnapshotBackend, SnapshotUuid, Volume, VolumeBackend, VolumePatch, VolumeSpec,
-    VolumeState, VolumeStyle, VolumeType, VolumeUuid,
+    AccessHandle, BackendError, Capabilities, CasBackend, CloneBackend, CloneOrigin, Digest,
+    ReplicationBackend, Snapshot, SnapshotBackend, SnapshotUuid, Volume, VolumeBackend,
+    VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType, VolumeUuid,
 };
 
 #[derive(Default)]
@@ -416,6 +417,66 @@ impl ReplicationBackend for MemBackend {
             snaps.insert(snap.uuid, snap);
         }
         Ok(applied)
+    }
+}
+
+/// An in-memory content-addressed store: `HashMap<Digest, blob bytes>` behind a
+/// `Mutex`. The [`CasBackend`] reference impl and the sanity check that the CAS
+/// conformance harness is sound — a separate backend family from [`MemBackend`],
+/// mirroring how CAS sits beside the volume trait stack.
+pub struct MemCas {
+    blobs: Mutex<HashMap<Digest, Vec<u8>>>,
+}
+
+impl MemCas {
+    /// Create an empty in-memory content-addressed store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            blobs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<Digest, Vec<u8>>> {
+        self.blobs.lock().expect("mem cas mutex poisoned")
+    }
+}
+
+impl Default for MemCas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CasBackend for MemCas {
+    fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
+        Ok(self.lock().contains_key(digest))
+    }
+
+    fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
+        let bytes = self
+            .lock()
+            .get(digest)
+            .cloned()
+            .ok_or_else(|| BackendError::BlobNotFound(digest.clone()))?;
+        // Honor the contract: bytes must verify against the digest before serving.
+        // In mem this cannot fail, but the reference impl models the guarantee.
+        debug_assert!(
+            digest.verify(&bytes),
+            "mem cas blob failed self-verification"
+        );
+        Ok(Box::new(Cursor::new(bytes)))
+    }
+
+    fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
+        let mut bytes = Vec::new();
+        source
+            .read_to_end(&mut bytes)
+            .map_err(|e| BackendError::Internal(format!("cas put: reading source failed: {e}")))?;
+        let digest = Digest::compute(&bytes);
+        // Idempotent: an existing identical blob is left untouched.
+        self.lock().entry(digest.clone()).or_insert(bytes);
+        Ok(digest)
     }
 }
 
