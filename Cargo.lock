@@ -1146,6 +1146,7 @@ version = "0.3.1"
 dependencies = [
  "nessie-backend-conformance",
  "nessie-backend-core",
+ "nessie-cas-conformance",
  "pyo3",
  "pythonize",
  "serde",
@@ -1162,6 +1163,13 @@ dependencies = [
  "pythonize",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "nessie-cas-conformance"
+version = "0.3.1"
+dependencies = [
+ "nessie-backend-core",
 ]
 
 [[package]]

@@ -10,6 +10,7 @@
 use std::time::Duration;
 use thiserror::Error;
 
+use crate::digest::Digest;
 use crate::ids::{SnapshotUuid, VolumeUuid};
 
 /// An error from a storage backend operation.
@@ -28,6 +29,10 @@ pub enum BackendError {
         /// The snapshot that was not found.
         snapshot: SnapshotUuid,
     },
+
+    /// No blob with this digest is present in the content-addressed store.
+    #[error("blob {0} not found")]
+    BlobNotFound(Digest),
 
     /// A volume with this name already exists.
     #[error("volume {0:?} already exists")]
@@ -92,6 +97,13 @@ mod tests {
             e.to_string(),
             "volume 00000000-0000-0000-0000-000000000000 not found"
         );
+    }
+
+    #[test]
+    fn blob_not_found_message_includes_digest() {
+        let d = Digest::compute(b"");
+        let e = BackendError::BlobNotFound(d.clone());
+        assert_eq!(e.to_string(), format!("blob {d} not found"));
     }
 
     #[test]
