@@ -1,9 +1,11 @@
 # Design: nessie-store as a P2P content-addressed swarm
 
-**Status:** design — P2P/CAS context open; the gating decisions are **settled**
+**Status:** design **settled + slice-1 built**. The gating decisions are settled
 (2026-07-20, operator — see [Decisions](#decisions--settled-2026-07-20-operator)),
-including node storage modes (cache vs durable store of record). First code slice
-(the content `Digest` type) is in flight.
+including node storage modes. The single-node CAS spine is **merged to `main`**
+(`Digest` #81, `CasBackend` #84, `MemCas` + `nessie-cas-conformance` #85,
+`AccessHandle::CasBlob` #86; formal model #83). The swarm layer is next — see
+[Implementation status](#implementation-status).
 Board card `knowledge/board/nessie-store/2026-07-20_p2p-cas-reapi-design-handoff.md`
 (P1) · supersedes the near-term REAPI listing in
 `knowledge/board/nessie-store/2026-05-17_direction.md`.
@@ -360,22 +362,41 @@ These gated the first implementable slice; all four are now settled.
    reachable blob is lost swarm-wide. Validated on the nuc1/nuc2/gnuc testbed.
    See [Node storage modes](#node-storage-modes--cache-vs-durable-store-of-record).
 
-## First implementable slice (once the above are settled)
+## First implementable slice — CAS spine (built ✅)
 
-Deliberately CAS-only, single-node, no swarm yet — the smallest honest step:
+Deliberately CAS-only, single-node, no swarm — the smallest honest step, now
+merged to `main`:
 
-1. `Digest` multihash newtype in `nessie-backend-core` (or a new `nessie-cas-core`)
-   + `Capabilities.content_addressed`.
-2. `CasBackend` trait + a `nessie-cas-conformance` suite (get/put/has, digest
-   verification on read, put-computes-digest).
-3. `mem` `CasBackend` (`HashMap<Digest, Bytes>`) passing the suite.
-4. `AccessHandle::CasBlob { digest, providers }` variant (providers empty in the
-   single-node slice).
+1. ✅ `Digest` multihash newtype in `nessie-backend-core` (#81).
+2. ✅ `CasBackend` trait (#84) + `nessie-cas-conformance` suite (#85).
+3. ✅ `mem` `CasBackend` (`MemCas`, `HashMap<Digest, Vec<u8>>`) passing the suite (#85).
+4. ✅ `AccessHandle::CasBlob { digest, providers }` variant (#86; providers empty
+   single-node).
 
-Nothing above touches the swarm, the AC, or REAPI — it proves the CAS spine
-against real code first, exactly as `mem` proved the volume trait. The swarm
-(ContentRouter + NATS), the AC CRDT, and the REAPI face are subsequent slices,
-each gated on the decision it depends on.
+It proved the CAS spine against real code, exactly as `mem` proved the volume
+trait. The remaining layers follow in dependency order below.
+
+## Implementation status
+
+A living tracker for the build (operator directive: build the whole roadmap,
+merge each slice on green, in dependency order).
+
+| Layer | Slice | Status |
+|---|---|---|
+| Design | this doc + machine-checked formal model | ✅ #80, #82, #83 |
+| CAS spine | `Digest`, `CasBackend`, `MemCas`+conformance, `AccessHandle::CasBlob` | ✅ #81, #84, #85, #86 |
+| **AC CRDT** | `Attestation`, grow-only set, k-of-n `Confirmed`, `ActionCacheBackend` + mem + conformance (signature verification behind a seam) | 🔜 next |
+| Merkle DAG | tree objects + `references()` (for GC + REAPI) | ⏳ |
+| Content routing | `ContentRouter` seam + in-process `MemRouter` | ⏳ |
+| — NATS router | `async-nats` rendezvous provider records | ⏳ |
+| — Kademlia router | `libp2p` DHT | ⏳ |
+| Storage modes | `CasStore` + reachability GC + LRU eviction (+ formal PO-GC-1/2) | ⏳ |
+| REAPI face | gRPC CAS + ActionCache subset (`tonic`) | ⏳ |
+| Daemon wiring | `[cas]` config + dispatch through `nessie-store` | ⏳ |
+
+The AC CRDT is next because it is self-contained (an in-process data structure the
+formal model already covers) and does not need the network or agent-mesh — its
+signature/identity checks sit behind a seam the shared swarm-join primitive fills.
 
 ## Open questions (deferred, tracked)
 
