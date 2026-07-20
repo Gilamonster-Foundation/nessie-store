@@ -23,6 +23,10 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 url = { workspace = true }
+# Content-addressing primitives. The Digest type is genuinely multi-hash:
+# BLAKE3 is the default, SHA-256 a first-class peer (the REAPI face pins it).
+blake3 = { workspace = true }
+sha2 = { workspace = true }
 # Face-A external bindings: the host CPython provides libpython, so PyO3 must NOT
 # link it -> extension-module. abi3-py310 builds ONE stable-ABI wheel per platform
 # that works on CPython 3.10+. Enabled only with the `python` feature.
