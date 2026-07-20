@@ -7,6 +7,7 @@
 //! funnel. The handle is substrate-native; each variant is the contract a
 //! data-plane client honors for that substrate.
 
+use crate::digest::Digest;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -51,6 +52,20 @@ pub enum AccessHandle {
         /// The data LIF clients mount.
         data_lif: Url,
     },
+    /// A content-addressed blob and where to fetch it (the CAS backend).
+    ///
+    /// The client fetches the blob *by digest* directly from any listed provider
+    /// — content addressing makes the source interchangeable and the bytes
+    /// self-verifying, so the daemon still brokers no bytes. `providers` is empty
+    /// on a single node with no swarm; the swarm's content router populates it
+    /// once that lands (the field name is stable; its element type will become a
+    /// typed peer address then).
+    CasBlob {
+        /// The content digest naming the blob.
+        digest: Digest,
+        /// Peer addresses known to hold the blob (empty on a single node).
+        providers: Vec<String>,
+    },
     /// No external data plane (the in-memory backend; conformance-only).
     InMemory,
 }
@@ -68,6 +83,32 @@ mod tests {
         let json = serde_json::to_string(&h).expect("serialize");
         assert!(json.contains("\"kind\":\"nfs_export\""), "tagged: {json}");
         let back: AccessHandle = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(h, back);
+    }
+
+    #[test]
+    fn cas_blob_roundtrips_and_is_tagged() {
+        let h = AccessHandle::CasBlob {
+            digest: crate::Digest::compute(b"hi"),
+            providers: vec!["peer-a:7000".into(), "peer-b:7000".into()],
+        };
+        let json = serde_json::to_string(&h).expect("serialize");
+        assert!(json.contains("\"kind\":\"cas_blob\""), "tagged: {json}");
+        assert!(
+            json.contains("blake3:"),
+            "digest is self-describing: {json}"
+        );
+        let back: AccessHandle = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(h, back);
+    }
+
+    #[test]
+    fn cas_blob_providers_empty_on_single_node() {
+        let h = AccessHandle::CasBlob {
+            digest: crate::Digest::compute(b""),
+            providers: Vec::new(),
+        };
+        let back: AccessHandle = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
         assert_eq!(h, back);
     }
 
