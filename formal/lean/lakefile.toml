@@ -1,0 +1,8 @@
+name = "nessieFormal"
+defaultTargets = ["NessieFormal"]
+
+# Deliberately NO dependencies (no Mathlib/Batteries): the proofs use only Lean
+# core, so `lake build` is fast and needs no network — it can gate CI cheaply.
+
+[[lean_lib]]
+name = "NessieFormal"
