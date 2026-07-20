@@ -38,6 +38,7 @@
 
 mod access;
 mod capabilities;
+mod digest;
 mod error;
 mod ids;
 mod traits;
@@ -48,6 +49,7 @@ mod python;
 
 pub use access::AccessHandle;
 pub use capabilities::Capabilities;
+pub use digest::{Digest, DigestAlgo, DigestParseError};
 pub use error::BackendError;
 pub use ids::{SnapshotUuid, VolumeUuid};
 pub use traits::{CloneBackend, ReplicationBackend, SnapshotBackend, VolumeBackend};
