@@ -1,8 +1,9 @@
 # Design: nessie-store as a P2P content-addressed swarm
 
-**Status:** design — opening the P2P/CAS context · board card
-`knowledge/board/nessie-store/2026-07-20_p2p-cas-reapi-design-handoff.md` (P1) ·
-supersedes the near-term REAPI listing in
+**Status:** design — P2P/CAS context open; the four gating decisions are
+**settled** (2026-07-20, operator — see [Decisions](#decisions--settled-2026-07-20-operator)).
+Board card `knowledge/board/nessie-store/2026-07-20_p2p-cas-reapi-design-handoff.md`
+(P1) · supersedes the near-term REAPI listing in
 `knowledge/board/nessie-store/2026-05-17_direction.md`.
 
 This doc opens the P2P design context. It is deliberately a *design* artifact,
@@ -190,14 +191,21 @@ pub trait ContentRouter: Send + Sync {
 - A **Kademlia** `ContentRouter` is the truly Napster-free variant (IPFS/BitTorrent
   lineage). More to build: NAT traversal, cold-start, provider-record TTLs.
 
-**Recommendation:** v0 ships the **NATS rendezvous** router behind the trait; the
-Kademlia router drops in later with **zero changes to CAS/AC** (three-Cs:
-Composition). The "no central complex" pitch is then a *roadmap honesty*: v0 has a
-NATS coordination point; the DHT variant removes the last one. The data plane
-itself is already P2P from day one — `AccessHandle` gains a
-`CasBlob { digest, providers: Vec<PeerAddr> }` variant, so a client fetches bytes
-*directly* from a holding peer (matching the repo's existing "daemon does not
-broker bytes" discipline). Only *discovery* leans on NATS in v0.
+**Decision (settled — hybrid, both routers first-class):** ship **both** a NATS
+rendezvous router *and* a Kademlia DHT router as first-class implementations of
+`ContentRouter` from the start, selectable (and composable) per deployment. The
+NATS router serves environments that already run the infra; the DHT router serves
+open peers and delivers the literal "no central complex" pitch. Both sit behind
+the one seam, so CAS/AC never see which is in play, and a node can consult both
+(local NATS first, DHT fallback) without either layer knowing. This front-loads a
+little more surface than a NATS-only v0, but settles the Napster-vs-Gnutella-vs-DHT
+axis by *refusing to pick* — the deployment picks. The `ContentRouter` seam is what
+makes that cost bounded.
+
+The data plane is already P2P from day one regardless of router — `AccessHandle`
+gains a `CasBlob { digest, providers: Vec<PeerAddr> }` variant, so a client fetches
+bytes *directly* from a holding peer (matching the repo's existing "daemon does not
+broker bytes" discipline). Only *discovery* differs between the two routers.
 
 ## REAPI as a long-term face, not the core
 
@@ -245,22 +253,23 @@ face is built, not now.)
 - **honest-gate / ceiling paper** — ungameable completion via the confirmed AC
   entry above.
 
-## Decisions this doc surfaces (for Shawn)
+## Decisions — settled (2026-07-20, operator)
 
-These gate the first implementable slice. Recommendations are stated; none are
-locked here.
+These gated the first implementable slice; all four are now settled.
 
-1. **Content routing / swarm shape.** → *Recommend* NATS rendezvous in v0 behind a
-   `ContentRouter` seam, Kademlia DHT as a later drop-in. (Napster-index vs
-   Gnutella-flood vs BitTorrent-DHT, staged.)
-2. **AC consistency model.** → *Recommend* eventual + idempotent re-exec, AC as a
-   grow-only set of signed attestations, `k`-of-`n` agreement as the confirm gate.
-   No consensus/lease. (This is also the keystone; one mechanism, two payoffs.)
-3. **Backend vs face.** → *Recommend* both: CAS is a new **backend** trait family
-   (`CasBackend` / `ActionCacheBackend`) beside the volume stack, and REAPI is a
-   **gRPC face** over it — symmetric with ONTAP-REST-over-`VolumeBackend`.
-4. **Native digest ↔ REAPI digest.** → *Recommend* self-describing multihash
-   (BLAKE3) natively; the REAPI face pins SHA-256 and translates at the boundary.
+1. **Content routing / swarm shape → hybrid.** Both a NATS rendezvous router *and*
+   a Kademlia DHT router are first-class behind the `ContentRouter` seam; the
+   deployment selects (or composes) them. The axis is settled by refusing to pick
+   one — the seam makes carrying both affordable.
+2. **AC consistency model → eventual + attestation CRDT.** AC is a grow-only set of
+   signed attestations, confirmed at `k`-of-`n` agreement. No consensus, no lease.
+   This is also the ungameable-completion keystone — one mechanism, two payoffs.
+3. **Backend and face → both.** CAS is a new **backend** trait family (`CasBackend`
+   / `ActionCacheBackend`) beside the volume stack, and REAPI is a **gRPC face**
+   over it — symmetric with ONTAP-REST-over-`VolumeBackend`.
+4. **Native digest ↔ REAPI digest → multihash native, SHA-256 at the boundary.**
+   Self-describing multihash (BLAKE3 default) internally; the REAPI face pins
+   SHA-256 as its wire contract and translates at the boundary.
 
 ## First implementable slice (once the above are settled)
 
