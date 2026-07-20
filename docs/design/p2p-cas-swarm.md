@@ -1,7 +1,9 @@
 # Design: nessie-store as a P2P content-addressed swarm
 
-**Status:** design — P2P/CAS context open; the four gating decisions are
-**settled** (2026-07-20, operator — see [Decisions](#decisions--settled-2026-07-20-operator)).
+**Status:** design — P2P/CAS context open; the gating decisions are **settled**
+(2026-07-20, operator — see [Decisions](#decisions--settled-2026-07-20-operator)),
+including node storage modes (cache vs durable store of record). First code slice
+(the content `Digest` type) is in flight.
 Board card `knowledge/board/nessie-store/2026-07-20_p2p-cas-reapi-design-handoff.md`
 (P1) · supersedes the near-term REAPI listing in
 `knowledge/board/nessie-store/2026-05-17_direction.md`.
@@ -207,6 +209,85 @@ gains a `CasBlob { digest, providers: Vec<PeerAddr> }` variant, so a client fetc
 bytes *directly* from a holding peer (matching the repo's existing "daemon does not
 broker bytes" discipline). Only *discovery* differs between the two routers.
 
+## Node storage modes — cache vs durable store of record
+
+A nessie node runs its local disk in one of two modes. The two modes differ in
+their **retention rule** — *what is allowed to leave local disk, and why* — and
+the design deliberately borrows git's object-store model, because git already *is*
+a CAS (blobs/trees/commits keyed by hash, reachable from refs).
+
+- **Durable store-of-record mode — git-style reachability GC.** The node is a
+  source of truth: it retains every blob that is **reachable** and never relies on
+  a peer to restore anything. It is *not* "never delete" — it runs a **git-style
+  mark-and-sweep garbage collector** that reclaims only **unreachable** blobs
+  (garbage: aborted uploads, superseded intermediate trees, orphaned outputs no
+  root points at). Exactly `git gc`: reachable from the roots is kept, everything
+  else is swept.
+- **Cache mode — LRU, leaning on a durable node.** Local disk is a **bounded**
+  cache. Recently-used blobs stay local; cold blobs are **evicted by LRU** and
+  "float" to the swarm — even *reachable* blobs, because a later read re-fetches
+  them by digest. This is safe precisely because at least one **durable node**
+  holds the restore bits. Content-addressing makes the round trip trustworthy: a
+  re-fetched blob is self-verifying (`Digest::verify`), so restoring from *any*
+  peer is sound, and eviction stays a purely local decision.
+
+### Reachability — the root set
+
+A blob is **reachable** iff some **root**'s Merkle-DAG closure includes its digest
+(the transitive `root → … → tree → blob` walk, identical to git's
+`ref → commit → tree → blob`). The roots are the mutable pointers into the
+immutable DAG:
+
+- **confirmed AC entries** and the output DAGs they name (the ungameable-completion
+  keystone — these anchor the results worth keeping),
+- **named refs / tags / explicit pins**,
+- **agent-mesh identity material**,
+- **actively-referenced Merkle roots** (live workspaces, open sessions).
+
+GC marks from these roots and sweeps the rest. The root set is small and typed;
+the reachable closure is whatever the swarm's live work still points at.
+
+### The paired safety property
+
+Two rules, one guarantee — *no reachable blob is ever lost, swarm-wide*:
+
+1. **Durable GC never collects a reachable blob** (mark-and-sweep correctness: only
+   the unmarked, unreachable set is swept).
+2. **Cache eviction never loses a reachable blob**, because a durable node retains
+   it (eviction is gated on the
+   [`ContentRouter`](#content-routing--the-swarm-shape-decision) confirming ≥ 1
+   durable holder — or ≥ R providers where no durable node is present; an
+   otherwise-last copy is pinned and replicated outward before it may be evicted).
+
+So a swarm stays lossless as long as every reachable blob has a durable home (or
+R-way cache replication). That is a **deployment property the design surfaces and
+the testbed below measures** — not a hope. These two rules are stated as
+machine-checked obligations in the formal models (`formal/` — see the
+formal-methods PR track).
+
+### Mechanics and config
+
+Reachability GC and LRU eviction sit behind one seam over `CasBackend` — a
+`CasStore` wrapper carrying a `RetentionPolicy` (three-Cs: Configuration picks the
+*mode*, Composition picks the GC/eviction *policy*; LRU is the cache default). A
+`[cas]` block (workspace config law: lean core, typed knobs) selects
+`mode = "durable" | "cache"`, a GC schedule for durable mode, and — for cache mode
+— a byte budget, eviction `policy`, and replication factor `R`. This is a **later
+slice**: it needs the `ContentRouter` (to check durable/replica holders), so it
+lands after the swarm layer, not in the single-node first slice.
+
+### Validation testbed — nuc1 / nuc2 / gnuc
+
+The float-to-swarm and restore-from-durable behaviour is testable **for real** on
+the home swarm: run one node **durable** (the store of record, GC only) and the
+others **cache** (LRU, evicting under a tight byte budget), then assert that a
+blob evicted from a cache node is transparently restored by digest from the
+durable node, that durable GC reclaims only unreachable blobs, and that killing a
+cache node loses nothing. A three-node layout (**nuc1 + nuc2 + gnuc**) exercises
+multi-holder routing and the ≥ R path, not just a single durable fallback. This
+is the integration counterpart to the formal safety proofs — the proofs say the
+rules are sound; the testbed says the implementation obeys them.
+
 ## REAPI as a long-term face, not the core
 
 REAPI v2 (`build.bazel.remote.execution.v2`) is CAS + ActionCache + Execution +
@@ -270,6 +351,14 @@ These gated the first implementable slice; all four are now settled.
 4. **Native digest ↔ REAPI digest → multihash native, SHA-256 at the boundary.**
    Self-describing multihash (BLAKE3 default) internally; the REAPI face pins
    SHA-256 as its wire contract and translates at the boundary.
+5. **Node storage modes → cache and durable store of record.** A node runs local
+   disk either as a bounded **LRU cache** (cold blobs float to the swarm, restored
+   by digest from a durable node) or as a **durable store of record** that retains
+   all *reachable* blobs and runs **git-style reachability GC** to reclaim only
+   *unreachable* garbage. Paired safety: durable GC never collects a reachable
+   blob and cache eviction never loses one (a durable holder retains it) — so no
+   reachable blob is lost swarm-wide. Validated on the nuc1/nuc2/gnuc testbed.
+   See [Node storage modes](#node-storage-modes--cache-vs-durable-store-of-record).
 
 ## First implementable slice (once the above are settled)
 
@@ -300,3 +389,10 @@ each gated on the decision it depends on.
   its manifest (path → digest) ownership (kyln vs embedded) is still open there.
 - **Blob chunking** — fixed-size vs content-defined (Rabin) chunking for large-blob
   dedup and partial fetch. BitTorrent-style fixed pieces are the simpler v0.
+- **Eviction victim selection at scale** — LRU is the default policy, but the
+  replica-count check it depends on costs a `ContentRouter` round-trip per
+  candidate; batch the check, cache provider counts, or gossip a coarse replica
+  estimate? Settle when the `CasStore` slice is built.
+- **Durable-node sufficiency** — how does a swarm *know* it has enough durable
+  holders for its replication factor before cache nodes start evicting? A health
+  signal (monty-tui) vs a hard admission gate on the first eviction.
