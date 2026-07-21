@@ -11,7 +11,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use nessie_backend_core::VolumeBackend;
+use nessie_backend_core::{PeerId, VolumeBackend};
 use nessie_backend_mem::MemBackend;
 use nessie_backend_zfs::{SystemRunner, ZfsBackend, ZfsConfig};
 use nessie_store::config::{BackendKind, Config};
@@ -101,6 +101,18 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
                 tracing::error!(%e, "embedded NFS server exited");
             }
         });
+    }
+
+    // Optional content-addressed store node: run retention maintenance (durable GC
+    // or cache eviction) on a schedule. In-memory for now; a persistent backend and
+    // a real network router slot in behind the same seams.
+    if let Some(cas_cfg) = &cfg.cas {
+        // The node's swarm routing identity. `data_lif` is a reasonable placeholder
+        // until a dedicated peer-address config lands.
+        let me = PeerId::new(cfg.data_lif.clone());
+        let node = std::sync::Arc::new(nessie_store::cas_node::CasNode::from_config(cas_cfg, me)?);
+        tracing::info!(mode = ?cas_cfg.mode, "cas node enabled; scheduling retention maintenance");
+        nessie_store::cas_node::spawn_maintenance(node);
     }
 
     let listen = cfg.listen;

@@ -20,6 +20,8 @@ pub mod auth;
 #[cfg(feature = "daemon")]
 pub mod blocking;
 #[cfg(feature = "daemon")]
+pub mod cas_node;
+#[cfg(feature = "daemon")]
 pub mod error;
 #[cfg(feature = "daemon")]
 pub mod routes;
