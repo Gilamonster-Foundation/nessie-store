@@ -22,13 +22,16 @@ Run everything: `./check.sh` (needs `lake` on PATH; fetches `tla2tools.jar` into
 | **PO-AC-3** | Monotonic confirmation: the store only grows, so a confirmation is never revoked. | `tla/AcCrdt.tla` · `MonotoneStore` **+** `lean` · `confirmed_monotone`, `confirmed_stable_under_merge` | TLC + Lean | ✅ checked |
 | **PO-AC-4** | Convergence: the merge is a join-semilattice (commutative, associative, idempotent) ⇒ strong eventual consistency; duplicate delivery is harmless. | `lean` · `union_comm`/`union_assoc`/`union_idem`, `merge_confluent`, `merge_absorb_redelivery` | Lean | ✅ checked |
 | **PO-AC-B** | Boundary/tightness: at `\|Byzantine\| = K` the guarantee **breaks** — a Byzantine cohort of size `K` forges a confirmation. Proves the minority hypothesis is load-bearing, not decorative. | `tla/AcCrdt_ByzThreshold.cfg` · counterexample to `ForgeryFree` | TLC | ✅ demonstrated |
-| **PO-GC-1** | Durable-mode GC never collects a *reachable* blob (git-style mark-and-sweep correctness). | *(planned — `tla/Gc.tla`)* | — | ⏳ stated, not yet formalized |
-| **PO-GC-2** | Cache-mode eviction never loses a *reachable* blob (a durable holder retains it) ⇒ no reachable blob lost swarm-wide. | *(planned — `tla/Eviction.tla`)* | — | ⏳ stated, not yet formalized |
+| **PO-GC-1** | Durable-mode GC never collects a *reachable* blob (mark-and-sweep correctness): `swept ∩ reachable = ∅`, and a reachable held blob survives. | `lean/Gc.lean` · `swept_disjoint_reachable`, `reachable_survives`, `root_survives` | Lean | ✅ checked |
+| **PO-GC-1-op** | The put→reference *race* cannot sweep an in-flight blob — the in-process write-guard is load-bearing. | `tla/Gc.tla` · `InflightProtected`/`RootsStored` (**+** `tla/Gc_Unguarded.cfg` counterexample) | TLC | ✅ checked |
+| **PO-GC-2** | Cache-mode eviction never loses a *reachable* blob swarm-wide (a durable holder or ≥ R replicas retain it). | `tla/Eviction.tla` · `NoReachableLost` | TLC | ✅ checked |
+| **PO-GC-2-B** | Boundary/tightness: with no replica gate and no durable node, a pure cache swarm loses a blob — proving the gate is load-bearing. | `tla/Eviction_Unsafe.cfg` · counterexample to `NoReachableLost` | TLC | ✅ demonstrated |
 
-The ⏳ rows are the storage-mode safety pair from the design doc's
-[Node storage modes](../docs/design/p2p-cas-swarm.md) section. They are named here
-so the gap is visible; formalizing them is the next formal slice. Nothing above
-claims them as proved.
+The GC obligations are the storage-mode safety pair from the design doc's
+[Node storage modes](../docs/design/p2p-cas-swarm.md) section: the Lean side proves
+the sweep algebra preserves reachability, and the TLA+ side machine-checks the
+concurrency (put race) and swarm-wide (eviction) halves — each with a boundary
+counterexample proving its guard is not decorative.
 
 ## Assumptions (hypotheses, not proved here)
 
@@ -56,9 +59,14 @@ formal/
     AcCrdt.tla                 the AC attestation-CRDT + its safety properties
     AcCrdt.cfg                 main model: 2 nodes, 3 signers, 1 Byzantine, K=2 (PASS)
     AcCrdt_ByzThreshold.cfg    boundary model: 2 Byzantine, K=2 (FAILS by design)
+    Gc.tla                     durable GC put→reference race (write-guard)
+    Gc.cfg                     guard ON (PASS) · Gc_Unguarded.cfg  guard OFF (FAILS by design)
+    Eviction.tla               cache eviction: no reachable blob lost swarm-wide
+    Eviction.cfg               gated + durable (PASS) · Eviction_Unsafe.cfg  ungated (FAILS by design)
   lean/
-    NessieFormal.lean          semilattice + confirmation-monotonicity proofs
-    lakefile.toml              no deps (Lean core only)
+    NessieFormal.lean          AC semilattice + confirmation-monotonicity proofs
+    Gc.lean                    durable mark-and-sweep preserves reachability
+    lakefile.toml              no deps (Lean core only); libs NessieFormal + Gc
     lean-toolchain             pinned Lean 4.32.0
 ```
 

@@ -23,26 +23,51 @@ if [ ! -f "$JAR" ]; then
     https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 fi
 
-run_tlc() { # $1 = cfg ; captures output to $2
-  ( cd "$here/tla" && java -cp "$JAR" tlc2.TLC -config "$1" AcCrdt.tla ) >"$2" 2>&1 || true
+run_tlc() { # $1 = module ; $2 = cfg ; captures output to $3
+  # A unique metadir per run: TLC's default is timestamp-based and collides when
+  # several models run within the same second.
+  local md; md="$(mktemp -d)"
+  ( cd "$here/tla" && java -cp "$JAR" tlc2.TLC -metadir "$md" -config "$2" "$1.tla" ) >"$3" 2>&1 || true
+  rm -rf "$md"
 }
 
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 
-echo "== TLA+: AcCrdt main model (must find NO error) =="
-run_tlc AcCrdt.cfg "$out"
-if grep -q "No error has been found" "$out"; then
-  echo "   OK — NoForgery, Agreement, TypeOK, MonotoneStore all hold"
-else
-  echo "   FAIL: main model did not verify"; cat "$out"; exit 1
-fi
+# A model that must verify with no error.
+expect_pass() { # $1 module ; $2 cfg ; $3 description
+  echo "== TLA+: $3 (must find NO error) =="
+  run_tlc "$1" "$2" "$out"
+  if grep -q "No error has been found" "$out"; then
+    echo "   OK"
+  else
+    echo "   FAIL: $1/$2 did not verify"; cat "$out"; exit 1
+  fi
+}
 
-echo "== TLA+: AcCrdt Byzantine-threshold model (must EXHIBIT the forgery) =="
-run_tlc AcCrdt_ByzThreshold.cfg "$out"
-if grep -q "Invariant ForgeryFree is violated" "$out"; then
-  echo "   OK — boundary counterexample found (|Byzantine| = K forges), as designed"
-else
-  echo "   FAIL: boundary model did not exhibit the expected forgery"; cat "$out"; exit 1
-fi
+# A boundary model that must EXHIBIT a specific invariant violation.
+expect_violation() { # $1 module ; $2 cfg ; $3 invariant ; $4 description
+  echo "== TLA+: $4 (must EXHIBIT the violation) =="
+  run_tlc "$1" "$2" "$out"
+  if grep -q "Invariant $3 is violated" "$out"; then
+    echo "   OK — boundary counterexample found, as designed"
+  else
+    echo "   FAIL: $1/$2 did not violate $3 as expected"; cat "$out"; exit 1
+  fi
+}
+
+# --- AcCrdt (PO-AC-*) ---
+expect_pass      AcCrdt AcCrdt.cfg             "AcCrdt main (NoForgery/Agreement/TypeOK/MonotoneStore)"
+expect_violation AcCrdt AcCrdt_ByzThreshold.cfg ForgeryFree \
+                 "AcCrdt |Byzantine| = K forges"
+
+# --- Gc (PO-GC-1-op: the put->reference race guard) ---
+expect_pass      Gc Gc.cfg                     "Gc guarded (InflightProtected/RootsStored)"
+expect_violation Gc Gc_Unguarded.cfg InflightProtected \
+                 "Gc unguarded sweeps an in-flight blob"
+
+# --- Eviction (PO-GC-2 + PO-GC-2-B: no reachable blob lost swarm-wide) ---
+expect_pass      Eviction Eviction.cfg         "Eviction gated + durable (NoReachableLost)"
+expect_violation Eviction Eviction_Unsafe.cfg NoReachableLost \
+                 "Eviction ungated pure-cache loses a blob"
 
 echo "ALL FORMAL CHECKS PASSED"
