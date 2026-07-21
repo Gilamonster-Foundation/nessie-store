@@ -1,0 +1,16 @@
+[package]
+name = "nessie-cas-store"
+description = "Retention engine for nessie-store: reachability GC and replica-gated cache eviction over a CasBackend."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+
+[dev-dependencies]
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
