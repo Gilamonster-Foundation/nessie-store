@@ -14,6 +14,7 @@
 #![deny(missing_docs)]
 
 mod clock;
+mod evict;
 mod gc;
 mod policy;
 mod reach;
@@ -22,6 +23,7 @@ mod roots;
 mod store;
 
 pub use clock::{Clock, MockClock, SystemClock};
+pub use evict::{DurabilityOracle, EvictReport, NoDurableOracle, RefuseToReplicate, Replicator};
 pub use gc::GcReport;
 pub use policy::{CachePolicy, DurablePolicy, EvictionPolicy, RetentionPolicy, StorageMode};
 pub use reach::reachable_closure;

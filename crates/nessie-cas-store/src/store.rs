@@ -13,16 +13,26 @@ use std::io::Read;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// Per-blob write-time, for the durable/cache grace window.
+/// Per-blob write-time (durable/cache grace window) and recency (cache LRU order).
 #[derive(Default)]
 pub(crate) struct AccessLog {
     written_at: HashMap<Digest, Duration>,
+    last_touch: HashMap<Digest, u64>,
+    next_tick: u64,
 }
 
 impl AccessLog {
-    /// Record that `digest` was written at `now`.
+    /// Mark `digest` most-recently-used (a monotonic tick, so ordering is total).
+    pub(crate) fn touch(&mut self, digest: &Digest) {
+        let tick = self.next_tick;
+        self.next_tick += 1;
+        self.last_touch.insert(digest.clone(), tick);
+    }
+
+    /// Record a write at `now`: sets the grace-window start and marks it MRU.
     fn record_write(&mut self, digest: &Digest, now: Duration) {
         self.written_at.insert(digest.clone(), now);
+        self.touch(digest);
     }
 
     /// A snapshot of every known write-time, for a GC pass's grace check.
@@ -30,9 +40,15 @@ impl AccessLog {
         self.written_at.clone()
     }
 
-    /// Forget a blob's write-time (called after it is reclaimed).
+    /// The recency tick of `digest` (lower = colder; 0 = never touched = coldest).
+    pub(crate) fn last_touch(&self, digest: &Digest) -> u64 {
+        self.last_touch.get(digest).copied().unwrap_or(0)
+    }
+
+    /// Forget a blob's bookkeeping (called after it is reclaimed/evicted).
     pub(crate) fn forget(&mut self, digest: &Digest) {
         self.written_at.remove(digest);
+        self.last_touch.remove(digest);
     }
 }
 
@@ -117,7 +133,9 @@ impl<C: ReclaimableCas> CasBackend for CasStore<C> {
     }
 
     fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
-        self.inner.get(digest)
+        let reader = self.inner.get(digest)?;
+        self.state().access.touch(digest); // a read rewarms the blob (LRU)
+        Ok(reader)
     }
 
     fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
