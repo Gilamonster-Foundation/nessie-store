@@ -11,6 +11,7 @@
 
 use crate::digest::Digest;
 use crate::error::BackendError;
+use crate::references::Referenced;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -127,6 +128,18 @@ impl ActionResult {
             stdout_digest,
             stderr_digest,
         })
+    }
+}
+
+impl Referenced for ActionResult {
+    /// The exact blob digests this result references: every output file, plus the
+    /// captured stdout and stderr bodies (which live in CAS). These are the leaves
+    /// a confirmed action's body keeps reachable.
+    fn references(&self) -> Vec<Digest> {
+        let mut refs: Vec<Digest> = self.outputs.values().map(|f| f.digest.clone()).collect();
+        refs.extend(self.stdout_digest.clone());
+        refs.extend(self.stderr_digest.clone());
+        refs
     }
 }
 
@@ -301,6 +314,27 @@ mod tests {
         let before = r.result_digest();
         r.exit_code = 1;
         assert_ne!(before, r.result_digest());
+    }
+
+    #[test]
+    fn references_are_outputs_plus_stdout_stderr() {
+        let r = sample(); // one output "bin/app", one "README", stdout Some, stderr None
+        let refs = r.references();
+        assert_eq!(refs.len(), 3, "2 outputs + stdout, no stderr");
+        assert!(refs.contains(&Digest::compute(b"app-bytes")));
+        assert!(refs.contains(&Digest::compute(b"readme")));
+        assert!(refs.contains(&Digest::compute(b"stdout")));
+    }
+
+    #[test]
+    fn empty_result_has_no_references() {
+        let r = ActionResult {
+            outputs: BTreeMap::new(),
+            exit_code: 0,
+            stdout_digest: None,
+            stderr_digest: None,
+        };
+        assert!(r.references().is_empty());
     }
 
     #[test]

@@ -72,4 +72,52 @@ pub trait CasBackend: Send + Sync {
     fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {
         None
     }
+
+    /// Upcast to the reclaimable tier if this backend can enumerate and drop its
+    /// **local** replicas, else `None`. Same accessor idiom as `as_action_cache`.
+    /// A managed durable-GC or cache-eviction `CasStore` requires `Some`; a
+    /// read-through / remote view returns `None` and cannot host one.
+    fn as_reclaimable(&self) -> Option<&dyn ReclaimableCas> {
+        None
+    }
+}
+
+/// One locally-held blob replica: its digest and on-disk byte size. The unit
+/// [`ReclaimableCas::iter_local`] yields, consumed by durable-GC sweep accounting
+/// and cache-eviction byte-budget accounting alike.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBlob {
+    /// The blob's content digest.
+    pub digest: Digest,
+    /// The bytes this replica occupies locally.
+    pub size_bytes: u64,
+}
+
+/// A [`CasBackend`] whose **local replicas** can be enumerated and reclaimed — the
+/// extra capability durable GC and cache eviction both need.
+///
+/// Content is immutable and self-verifying, so a node dropping its local replica of
+/// a blob loses nothing recoverable: the blob can be re-fetched by digest from a
+/// peer (git prunes its local object store without changing object identity).
+/// Reclaiming is the **only** removal in the CAS family — `has`/`get`/`put` never
+/// delete — and a `CasStore` calls it only on a blob it has proven unreachable
+/// (durable GC) or sufficiently replicated and unpinned (cache eviction).
+pub trait ReclaimableCas: CasBackend {
+    /// Every digest held locally, with its byte size — the durable sweep domain and
+    /// the cache eviction candidate pool. A point-in-time snapshot; order is
+    /// unspecified.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the local store cannot be enumerated.
+    fn iter_local(&self) -> Result<Vec<LocalBlob>, BackendError>;
+
+    /// Drop this node's local replica of `digest`. Idempotent: `Ok(false)` if it was
+    /// already absent, `Ok(true)` if it was present and removed. Idempotency is what
+    /// makes an interrupted sweep safely resumable.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the removal fails for a reason other than absence.
+    fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError>;
 }

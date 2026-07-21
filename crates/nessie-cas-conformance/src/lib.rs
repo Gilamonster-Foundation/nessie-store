@@ -54,6 +54,44 @@ pub fn run_all(cas: &dyn CasBackend) {
     get_on_an_absent_digest_errors(cas);
     distinct_blobs_coexist(cas);
     the_empty_blob_roundtrips(cas);
+    reclaimable_round_trip_if_supported(cas);
+}
+
+/// If the backend advertises the reclaimable tier (`as_reclaimable() == Some`),
+/// `iter_local` reflects stored blobs with correct sizes and `reclaim` removes a
+/// blob idempotently. Backends without the tier skip this suite by design.
+fn reclaimable_round_trip_if_supported(cas: &dyn CasBackend) {
+    let Some(rec) = cas.as_reclaimable() else {
+        return;
+    };
+    let bytes = unique_bytes("reclaimable");
+    let digest = rec
+        .put(&mut Cursor::new(bytes.clone()))
+        .expect("put should succeed");
+
+    let local = rec.iter_local().expect("iter_local should succeed");
+    let entry = local
+        .iter()
+        .find(|b| b.digest == digest)
+        .expect("a just-put blob must be enumerated by iter_local");
+    assert_eq!(
+        entry.size_bytes,
+        bytes.len() as u64,
+        "iter_local must report the exact local byte size"
+    );
+
+    assert!(
+        rec.reclaim(&digest).expect("reclaim should succeed"),
+        "reclaim of a present blob returns true"
+    );
+    assert!(
+        !rec.has(&digest).expect("has should succeed"),
+        "a reclaimed blob is gone"
+    );
+    assert!(
+        !rec.reclaim(&digest).expect("reclaim should succeed"),
+        "reclaim is idempotent: an absent blob returns false"
+    );
 }
 
 /// `put` must return the digest *computed from the content*, not an arbitrary id.

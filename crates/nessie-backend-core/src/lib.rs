@@ -47,6 +47,7 @@ mod digest;
 mod error;
 mod hex;
 mod ids;
+mod references;
 mod router;
 mod traits;
 mod types;
@@ -63,10 +64,11 @@ pub use attestation::{
 };
 pub use attestation_set::{AcResolution, AttestationSet};
 pub use capabilities::Capabilities;
-pub use cas::CasBackend;
+pub use cas::{CasBackend, LocalBlob, ReclaimableCas};
 pub use digest::{Digest, DigestAlgo, DigestParseError};
 pub use error::BackendError;
 pub use ids::{SnapshotUuid, VolumeUuid};
+pub use references::Referenced;
 pub use router::{ContentRouter, PeerId, RouterError};
 pub use traits::{CloneBackend, ReplicationBackend, SnapshotBackend, VolumeBackend};
 pub use types::{
