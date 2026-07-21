@@ -14,17 +14,17 @@
 #[cfg(feature = "python")]
 mod python;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Cursor, Read};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use nessie_backend_core::{
     AcResolution, AccessHandle, ActionCacheBackend, ActionResult, AttestationSet, BackendError,
-    Capabilities, CasBackend, CloneBackend, CloneOrigin, Digest, ReplicationBackend,
-    SignatureVerifier, SignedAttestation, Snapshot, SnapshotBackend, SnapshotUuid, Volume,
-    VolumeBackend, VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType, VolumeUuid,
-    statement_signing_bytes,
+    Capabilities, CasBackend, CloneBackend, CloneOrigin, ContentRouter, Digest, PeerId,
+    ReplicationBackend, RouterError, SignatureVerifier, SignedAttestation, Snapshot,
+    SnapshotBackend, SnapshotUuid, Volume, VolumeBackend, VolumePatch, VolumeSpec, VolumeState,
+    VolumeStyle, VolumeType, VolumeUuid, statement_signing_bytes,
 };
 
 #[derive(Default)]
@@ -589,6 +589,80 @@ impl ActionCacheBackend for MemActionCache {
     }
 }
 
+/// An in-process swarm of [`ContentRouter`]s sharing one provider registry. Mint a
+/// per-node router with [`MemSwarm::node`]; an `announce` on one node is visible via
+/// `providers` on every node — so the storage layer's replica gate can be exercised
+/// with several logical nodes in a single test process, no network.
+#[derive(Clone, Default)]
+pub struct MemSwarm {
+    table: Arc<Mutex<HashMap<Digest, BTreeSet<PeerId>>>>,
+}
+
+impl MemSwarm {
+    /// A fresh, empty swarm registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A router for the node identified by `me`, sharing this swarm's registry.
+    #[must_use]
+    pub fn node(&self, me: PeerId) -> MemRouter {
+        MemRouter {
+            table: self.table.clone(),
+            me,
+        }
+    }
+}
+
+/// An in-process [`ContentRouter`]: this node's view of a shared [`MemSwarm`]
+/// provider registry.
+pub struct MemRouter {
+    table: Arc<Mutex<HashMap<Digest, BTreeSet<PeerId>>>>,
+    me: PeerId,
+}
+
+impl MemRouter {
+    /// A standalone single-node router (its own private registry).
+    #[must_use]
+    pub fn new(me: PeerId) -> Self {
+        MemSwarm::new().node(me)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<Digest, BTreeSet<PeerId>>> {
+        self.table.lock().expect("mem router mutex poisoned")
+    }
+}
+
+impl ContentRouter for MemRouter {
+    fn providers(&self, digest: &Digest) -> Result<Vec<PeerId>, RouterError> {
+        Ok(self
+            .lock()
+            .get(digest)
+            .map(|holders| holders.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    fn announce(&self, digest: &Digest) -> Result<(), RouterError> {
+        self.lock()
+            .entry(digest.clone())
+            .or_default()
+            .insert(self.me.clone());
+        Ok(())
+    }
+
+    fn withdraw(&self, digest: &Digest) -> Result<(), RouterError> {
+        let mut table = self.lock();
+        if let Some(holders) = table.get_mut(digest) {
+            holders.remove(&self.me);
+            if holders.is_empty() {
+                table.remove(digest);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,5 +850,57 @@ mod tests {
         let origin = c.clone.unwrap();
         assert_eq!(origin.parent_volume, "src");
         assert_eq!(origin.parent_snapshot, "base");
+    }
+
+    #[test]
+    fn mem_router_announce_is_visible_across_nodes() {
+        let swarm = MemSwarm::new();
+        let a = swarm.node(PeerId::new("node-a"));
+        let b = swarm.node(PeerId::new("node-b"));
+        let d = Digest::compute(b"blob");
+
+        assert!(
+            a.providers(&d).unwrap().is_empty(),
+            "unknown digest has no providers"
+        );
+        a.announce(&d).unwrap();
+        // b (a different node on the same swarm) sees a's announcement.
+        assert_eq!(b.providers(&d).unwrap(), vec![PeerId::new("node-a")]);
+
+        b.announce(&d).unwrap();
+        let mut holders = a.providers(&d).unwrap();
+        holders.sort();
+        assert_eq!(holders, vec![PeerId::new("node-a"), PeerId::new("node-b")]);
+    }
+
+    #[test]
+    fn mem_router_withdraw_removes_only_this_node() {
+        let swarm = MemSwarm::new();
+        let a = swarm.node(PeerId::new("a"));
+        let b = swarm.node(PeerId::new("b"));
+        let d = Digest::compute(b"blob");
+        a.announce(&d).unwrap();
+        b.announce(&d).unwrap();
+
+        a.withdraw(&d).unwrap();
+        assert_eq!(
+            b.providers(&d).unwrap(),
+            vec![PeerId::new("b")],
+            "only a withdrew"
+        );
+
+        b.withdraw(&d).unwrap();
+        assert!(a.providers(&d).unwrap().is_empty(), "no holders remain");
+        // Withdrawing again is an idempotent no-op.
+        a.withdraw(&d).unwrap();
+    }
+
+    #[test]
+    fn mem_router_announce_is_idempotent() {
+        let r = MemRouter::new(PeerId::new("solo"));
+        let d = Digest::compute(b"x");
+        r.announce(&d).unwrap();
+        r.announce(&d).unwrap();
+        assert_eq!(r.providers(&d).unwrap(), vec![PeerId::new("solo")]);
     }
 }

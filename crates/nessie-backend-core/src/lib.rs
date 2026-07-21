@@ -47,6 +47,7 @@ mod digest;
 mod error;
 mod hex;
 mod ids;
+mod router;
 mod traits;
 mod types;
 
@@ -66,6 +67,7 @@ pub use cas::CasBackend;
 pub use digest::{Digest, DigestAlgo, DigestParseError};
 pub use error::BackendError;
 pub use ids::{SnapshotUuid, VolumeUuid};
+pub use router::{ContentRouter, PeerId, RouterError};
 pub use traits::{CloneBackend, ReplicationBackend, SnapshotBackend, VolumeBackend};
 pub use types::{
     CloneOrigin, Snapshot, Volume, VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType,
