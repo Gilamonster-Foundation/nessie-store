@@ -9,6 +9,50 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// The retention mode for an optional content-addressed store node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CasMode {
+    /// Durable store of record: reachability GC only, never evicts a reachable blob.
+    #[default]
+    Durable,
+    /// Bounded cache: replica-gated LRU eviction; cold blobs float to the swarm.
+    Cache,
+}
+
+/// Optional `[cas]` node configuration. When present, the daemon runs a
+/// content-addressed store and periodically performs retention maintenance
+/// (durable GC or cache eviction). Fields are plain values so this crate stays
+/// free of the retention-engine dependency; `cas_node` turns it into a policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CasConfig {
+    /// Durable store-of-record or bounded cache.
+    pub mode: CasMode,
+    /// Grace window (seconds) before an unreachable/cold blob may be reclaimed —
+    /// the cross-restart backstop for the put→reference race.
+    pub gc_grace_secs: u64,
+    /// How often (seconds) to run a retention maintenance pass.
+    pub maintenance_interval_secs: u64,
+    /// Cache mode only: the local byte ceiling that triggers eviction.
+    pub byte_budget: Option<u64>,
+    /// Cache mode only: `R`, the number of other holders required before a
+    /// reachable blob may be evicted (defaults to 2).
+    pub replication_factor: Option<usize>,
+}
+
+impl Default for CasConfig {
+    fn default() -> Self {
+        Self {
+            mode: CasMode::Durable,
+            gc_grace_secs: 300,
+            maintenance_interval_secs: 300,
+            byte_budget: None,
+            replication_factor: None,
+        }
+    }
+}
+
 /// Which storage substrate the daemon dispatches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +107,11 @@ pub struct Config {
     pub nfs_export_root: PathBuf,
     /// Export path clients mount (`<host>:/<name>`); empty serves the bare root.
     pub nfs_export_name: String,
+
+    /// Optional content-addressed store node. Absent (`None`) = the daemon runs no
+    /// CAS node. Present = it runs one and schedules retention maintenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cas: Option<CasConfig>,
 }
 
 impl Default for Config {
@@ -86,6 +135,7 @@ impl Default for Config {
             nfs_listen: "0.0.0.0:2049".to_string(),
             nfs_export_root: PathBuf::from("/srv"),
             nfs_export_name: String::new(),
+            cas: None,
         }
     }
 }
@@ -163,6 +213,32 @@ mod tests {
         assert_eq!(back.backend, BackendKind::Zfs);
         assert_eq!(back.zfs_pool, "tank");
         assert_eq!(back.zfs_nfs_clients, ["10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn cas_node_is_absent_by_default_and_parses_when_present() {
+        // Absent by default, and omitted from serialized TOML.
+        let def = Config::default();
+        assert!(def.cas.is_none());
+        assert!(!def.to_toml().contains("[cas]"));
+
+        // A cache-mode node parses with its params.
+        let cfg: Config = toml::from_str(
+            "[cas]\nmode = \"cache\"\nbyte_budget = 1048576\nreplication_factor = 3\ngc_grace_secs = 60\nmaintenance_interval_secs = 30\n",
+        )
+        .expect("parse");
+        let cas = cfg.cas.expect("cas present");
+        assert_eq!(cas.mode, CasMode::Cache);
+        assert_eq!(cas.byte_budget, Some(1_048_576));
+        assert_eq!(cas.replication_factor, Some(3));
+        assert_eq!(cas.gc_grace_secs, 60);
+
+        // A durable node fills the sensible defaults.
+        let durable: Config = toml::from_str("[cas]\nmode = \"durable\"\n").expect("parse");
+        let cas = durable.cas.expect("cas present");
+        assert_eq!(cas.mode, CasMode::Durable);
+        assert_eq!(cas.gc_grace_secs, 300);
+        assert_eq!(cas.byte_budget, None);
     }
 
     #[test]
