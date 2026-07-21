@@ -16,12 +16,15 @@ mod python;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
-use std::sync::{Mutex, MutexGuard};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use nessie_backend_core::{
-    AccessHandle, BackendError, Capabilities, CasBackend, CloneBackend, CloneOrigin, Digest,
-    ReplicationBackend, Snapshot, SnapshotBackend, SnapshotUuid, Volume, VolumeBackend,
-    VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType, VolumeUuid,
+    AcResolution, AccessHandle, ActionCacheBackend, ActionResult, AttestationSet, BackendError,
+    Capabilities, CasBackend, CloneBackend, CloneOrigin, Digest, ReplicationBackend,
+    SignatureVerifier, SignedAttestation, Snapshot, SnapshotBackend, SnapshotUuid, Volume,
+    VolumeBackend, VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType, VolumeUuid,
+    statement_signing_bytes,
 };
 
 #[derive(Default)]
@@ -477,6 +480,112 @@ impl CasBackend for MemCas {
         // Idempotent: an existing identical blob is left untouched.
         self.lock().entry(digest.clone()).or_insert(bytes);
         Ok(digest)
+    }
+}
+
+/// An in-memory [`ActionCacheBackend`]: a [`MemCas`] for blob bodies plus a
+/// per-action grow-only [`AttestationSet`] CRDT, gated by a [`SignatureVerifier`]
+/// and a k-of-n threshold. The state (`HashMap<action, AttestationSet>`) is exactly
+/// the formal model. There is deliberately **no** insecure default — a verifier is
+/// a required constructor argument, so a backend cannot exist without an explicit
+/// trust boundary.
+pub struct MemActionCache {
+    cas: MemCas,
+    entries: Mutex<HashMap<Digest, AttestationSet>>,
+    verifier: Arc<dyn SignatureVerifier>,
+    k: NonZeroUsize,
+}
+
+impl MemActionCache {
+    /// Create an empty action cache over a fresh `MemCas`, verifying attestations
+    /// with `verifier` and confirming at `k` distinct signers.
+    #[must_use]
+    pub fn new(cas: MemCas, verifier: Arc<dyn SignatureVerifier>, k: NonZeroUsize) -> Self {
+        Self {
+            cas,
+            entries: Mutex::new(HashMap::new()),
+            verifier,
+            k,
+        }
+    }
+}
+
+impl CasBackend for MemActionCache {
+    fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.cas.has(digest)
+    }
+
+    fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
+        self.cas.get(digest)
+    }
+
+    fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
+        self.cas.put(source)
+    }
+
+    fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {
+        Some(self)
+    }
+}
+
+impl ActionCacheBackend for MemActionCache {
+    fn confirmation_threshold(&self) -> NonZeroUsize {
+        self.k
+    }
+
+    fn get_action_result(&self, action: &Digest) -> Result<Option<ActionResult>, BackendError> {
+        let resolution = {
+            let entries = self
+                .entries
+                .lock()
+                .expect("mem action-cache mutex poisoned");
+            match entries.get(action) {
+                None => return Ok(None),
+                Some(set) => set.resolve(self.k),
+            }
+        };
+        match resolution {
+            AcResolution::Unconfirmed => Ok(None),
+            AcResolution::Conflicting(_) => Err(BackendError::ActionResultConflict {
+                action: action.clone(),
+            }),
+            AcResolution::Confirmed(digest) => {
+                // Materialize the confirmed body from CAS. A `BlobNotFound` here
+                // means "confirmed but not held locally" (cache mode) — propagated
+                // as-is so the caller re-fetches by digest, never read as a miss.
+                let mut bytes = Vec::new();
+                self.cas
+                    .get(&digest)?
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| BackendError::Internal(format!("ac read body: {e}")))?;
+                Ok(Some(ActionResult::from_canonical_bytes(&bytes)?))
+            }
+        }
+    }
+
+    fn attest_action_result(
+        &self,
+        action: &Digest,
+        signed: SignedAttestation,
+    ) -> Result<(), BackendError> {
+        // Verify strictly BEFORE insert: an unverified attestation never enters the
+        // set and so never counts toward k.
+        let message = statement_signing_bytes(action, &signed.attestation.result);
+        if !self
+            .verifier
+            .verify(&signed.attestation.signer, &message, &signed.signature)
+        {
+            return Err(BackendError::AttestationUnverified {
+                signer: signed.attestation.signer,
+            });
+        }
+        self.entries
+            .lock()
+            .expect("mem action-cache mutex poisoned")
+            .entry(action.clone())
+            .or_default()
+            .insert(signed.attestation);
+        Ok(())
     }
 }
 

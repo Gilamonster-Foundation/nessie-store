@@ -1115,6 +1115,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nessie-ac-conformance"
+version = "0.3.1"
+dependencies = [
+ "nessie-backend-core",
+ "nessie-cas-conformance",
+]
+
+[[package]]
 name = "nessie-backend-conformance"
 version = "0.3.1"
 dependencies = [
@@ -1144,6 +1152,7 @@ dependencies = [
 name = "nessie-backend-mem"
 version = "0.3.1"
 dependencies = [
+ "nessie-ac-conformance",
  "nessie-backend-conformance",
  "nessie-backend-core",
  "nessie-cas-conformance",
