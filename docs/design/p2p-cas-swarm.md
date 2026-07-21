@@ -385,18 +385,21 @@ merge each slice on green, in dependency order).
 |---|---|---|
 | Design | this doc + machine-checked formal model | ✅ #80, #82, #83 |
 | CAS spine | `Digest`, `CasBackend`, `MemCas`+conformance, `AccessHandle::CasBlob` | ✅ #81, #84, #85, #86 |
-| **AC CRDT** | `Attestation`, grow-only set, k-of-n `Confirmed`, `ActionCacheBackend` + mem + conformance (signature verification behind a seam) | 🔜 next |
-| Merkle DAG | tree objects + `references()` (for GC + REAPI) | ⏳ |
-| Content routing | `ContentRouter` seam + in-process `MemRouter` | ⏳ |
-| — NATS router | `async-nats` rendezvous provider records | ⏳ |
-| — Kademlia router | `libp2p` DHT | ⏳ |
-| Storage modes | `CasStore` + reachability GC + LRU eviction (+ formal PO-GC-1/2) | ⏳ |
-| REAPI face | gRPC CAS + ActionCache subset (`tonic`) | ⏳ |
-| Daemon wiring | `[cas]` config + dispatch through `nessie-store` | ⏳ |
+| AC CRDT | `Attestation`, grow-only set, k-of-n `Confirmed`, `ActionCacheBackend` + mem + conformance (signature verification behind a seam) | ✅ #88, #89 |
+| Content routing | `ContentRouter` seam + in-process `MemRouter`/`MemSwarm` | ✅ #90 |
+| Reachability | `Referenced` + `ReclaimableCas` seams; `ReferenceResolver` + `RootSource` + `reachable_closure` (a general Merkle `Tree` deferred to the REAPI slice) | ✅ #91, #92 |
+| Storage modes | `CasStore` + durable reachability GC + cache replica-gated LRU eviction | ✅ #93, #94 |
+| Formal PO-GC | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
+| **Daemon wiring** | `[cas]` config + dispatch + schedule GC/evict through `nessie-store`; nuc1/nuc2/gnuc testbed | 🔜 next |
+| REAPI face | gRPC CAS + ActionCache subset (`tonic`); SHA-256 at the boundary; a Merkle `Tree` type | ⏳ |
+| — NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ |
+| — Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 
-The AC CRDT is next because it is self-contained (an in-process data structure the
-formal model already covers) and does not need the network or agent-mesh — its
-signature/identity checks sit behind a seam the shared swarm-join primitive fills.
+The single-node substrate is complete and machine-checked: the CAS spine, the
+ActionCache attestation-CRDT (the ungameable-completion keystone), the content-router
+seam, and both storage modes (durable reachability GC + cache replica-gated eviction),
+with the paired safety property proved in `formal/`. What remains is *reach*: wiring
+the engine into the daemon, the REAPI protocol face, and the two real network routers.
 
 ## Open questions (deferred, tracked)
 
