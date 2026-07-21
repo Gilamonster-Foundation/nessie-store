@@ -21,10 +21,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use nessie_backend_core::{
     AcResolution, AccessHandle, ActionCacheBackend, ActionResult, AttestationSet, BackendError,
-    Capabilities, CasBackend, CloneBackend, CloneOrigin, ContentRouter, Digest, PeerId,
-    ReplicationBackend, RouterError, SignatureVerifier, SignedAttestation, Snapshot,
-    SnapshotBackend, SnapshotUuid, Volume, VolumeBackend, VolumePatch, VolumeSpec, VolumeState,
-    VolumeStyle, VolumeType, VolumeUuid, statement_signing_bytes,
+    Capabilities, CasBackend, CloneBackend, CloneOrigin, ContentRouter, Digest, LocalBlob, PeerId,
+    ReclaimableCas, ReplicationBackend, RouterError, SignatureVerifier, SignedAttestation,
+    Snapshot, SnapshotBackend, SnapshotUuid, Volume, VolumeBackend, VolumePatch, VolumeSpec,
+    VolumeState, VolumeStyle, VolumeType, VolumeUuid, statement_signing_bytes,
 };
 
 #[derive(Default)]
@@ -480,6 +480,27 @@ impl CasBackend for MemCas {
         // Idempotent: an existing identical blob is left untouched.
         self.lock().entry(digest.clone()).or_insert(bytes);
         Ok(digest)
+    }
+
+    fn as_reclaimable(&self) -> Option<&dyn ReclaimableCas> {
+        Some(self)
+    }
+}
+
+impl ReclaimableCas for MemCas {
+    fn iter_local(&self) -> Result<Vec<LocalBlob>, BackendError> {
+        Ok(self
+            .lock()
+            .iter()
+            .map(|(digest, bytes)| LocalBlob {
+                digest: digest.clone(),
+                size_bytes: bytes.len() as u64,
+            })
+            .collect())
+    }
+
+    fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
+        Ok(self.lock().remove(digest).is_some())
     }
 }
 
