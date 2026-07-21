@@ -1187,6 +1187,7 @@ version = "0.3.1"
 dependencies = [
  "nessie-backend-core",
  "nessie-backend-mem",
+ "nessie-cas-conformance",
 ]
 
 [[package]]
