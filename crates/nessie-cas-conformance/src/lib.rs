@@ -20,7 +20,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use nessie_backend_core::{CasBackend, Digest, VolumeUuid};
+use nessie_backend_core::{BackendError, CasBackend, Digest, DigestAlgo, VolumeUuid};
 use std::io::{Cursor, Read};
 
 /// Distinct blob content per assertion, so suites never collide with prior state
@@ -55,6 +55,71 @@ pub fn run_all(cas: &dyn CasBackend) {
     distinct_blobs_coexist(cas);
     the_empty_blob_roundtrips(cas);
     reclaimable_round_trip_if_supported(cas);
+    size_reports_stored_bytes(cas);
+    put_keyed_and_sha256_native_if_supported(cas);
+}
+
+/// `size` reports a stored blob's byte length and `None` for an absent digest.
+fn size_reports_stored_bytes(cas: &dyn CasBackend) {
+    let bytes = unique_bytes("size");
+    let digest = store(cas, &bytes);
+    assert_eq!(
+        cas.size(&digest).expect("size should succeed"),
+        Some(bytes.len() as u64),
+        "size reports the stored byte length"
+    );
+    let absent = Digest::compute(&unique_bytes("size-absent"));
+    assert_eq!(
+        cas.size(&absent).expect("size should succeed"),
+        None,
+        "size of an absent blob is None"
+    );
+}
+
+/// If keyed storage is supported, `put_keyed` verifies the bytes against the
+/// caller's digest, is idempotent, rejects a mismatch, and round-trips a
+/// **SHA-256-keyed** blob (the REAPI-native path) through has/get/size.
+fn put_keyed_and_sha256_native_if_supported(cas: &dyn CasBackend) {
+    let bytes = unique_bytes("put-keyed");
+    let digest = Digest::compute(&bytes);
+    match cas.put_keyed(&digest, &mut Cursor::new(bytes.clone())) {
+        Err(BackendError::FeatureNotSupported { .. }) => return, // backend declines; skip
+        Err(e) => panic!("put_keyed returned an unexpected error: {e}"),
+        Ok(()) => {}
+    }
+    assert!(cas.has(&digest).expect("has"), "keyed blob is present");
+    assert_eq!(fetch(cas, &digest), bytes, "keyed blob reads back exactly");
+    // Idempotent re-put.
+    cas.put_keyed(&digest, &mut Cursor::new(bytes.clone()))
+        .expect("re-put is idempotent");
+    // A digest the bytes do not hash to is rejected, nothing stored.
+    let wrong = Digest::compute(&unique_bytes("put-keyed-wrong"));
+    assert!(
+        matches!(
+            cas.put_keyed(&wrong, &mut Cursor::new(bytes.clone())),
+            Err(BackendError::InvalidArgument(_))
+        ),
+        "a digest mismatch is rejected"
+    );
+    assert!(
+        !cas.has(&wrong).expect("has"),
+        "a rejected keyed put stores nothing"
+    );
+
+    // The REAPI-native path: store under a SHA-256 digest (not the BLAKE3 default).
+    let native = unique_bytes("sha256-native");
+    let sha = Digest::compute_with(DigestAlgo::Sha256, &native);
+    cas.put_keyed(&sha, &mut Cursor::new(native.clone()))
+        .expect("sha256-keyed put");
+    assert_eq!(sha.algo(), DigestAlgo::Sha256);
+    assert!(cas.has(&sha).expect("has"));
+    assert_eq!(cas.size(&sha).expect("size"), Some(native.len() as u64));
+    let out = fetch(cas, &sha);
+    assert_eq!(out, native);
+    assert!(
+        sha.verify(&out),
+        "sha256-keyed bytes verify against their digest"
+    );
 }
 
 /// If the backend advertises the reclaimable tier (`as_reclaimable() == Some`),
