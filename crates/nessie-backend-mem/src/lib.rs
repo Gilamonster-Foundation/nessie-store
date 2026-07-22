@@ -482,6 +482,24 @@ impl CasBackend for MemCas {
         Ok(digest)
     }
 
+    fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
+        let mut bytes = Vec::new();
+        source.read_to_end(&mut bytes).map_err(|e| {
+            BackendError::Internal(format!("cas put_keyed: reading source failed: {e}"))
+        })?;
+        if !expected.verify(&bytes) {
+            return Err(BackendError::InvalidArgument(format!(
+                "put_keyed: bytes do not hash to {expected}"
+            )));
+        }
+        self.lock().entry(expected.clone()).or_insert(bytes);
+        Ok(())
+    }
+
+    fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
+        Ok(self.lock().get(digest).map(|b| b.len() as u64))
+    }
+
     fn as_reclaimable(&self) -> Option<&dyn ReclaimableCas> {
         Some(self)
     }

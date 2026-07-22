@@ -64,6 +64,51 @@ pub trait CasBackend: Send + Sync {
     /// Returns [`BackendError`] if reading `source` or persisting the blob fails.
     fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError>;
 
+    /// Store bytes under a **caller-supplied** `expected` digest, re-verifying they
+    /// hash to it before committing. This is the write-side dual of
+    /// [`get`](CasBackend::get)'s read verification, needed by a protocol face
+    /// (REAPI) whose clients key blobs by a digest the face did not compute — the
+    /// digest's own algorithm decides how to verify, so a SHA-256-keyed blob is
+    /// stored under its SHA-256 digest with no index or recompute.
+    ///
+    /// Defaults to [`BackendError::FeatureNotSupported`] (the honest decline, like
+    /// the accessor idioms); a backend that can honor keyed storage overrides it.
+    /// Idempotent: an already-present blob is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::InvalidArgument`] if the bytes do not hash to `expected`;
+    /// [`BackendError::FeatureNotSupported`] if the backend does not support keyed
+    /// storage; other [`BackendError`]s from reading or persisting.
+    fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
+        let _ = (expected, source);
+        Err(BackendError::FeatureNotSupported {
+            capability: "put_keyed",
+        })
+    }
+
+    /// The stored byte length of the blob for `digest`, or `None` if absent.
+    ///
+    /// The default reads and counts the blob (correct for any backend); backends
+    /// that track sizes cheaply override it. A protocol face needs this to fill the
+    /// `size_bytes` a content digest does not itself carry.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the size cannot be determined (an I/O error other than
+    /// absence).
+    fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
+        match self.get(digest) {
+            Ok(mut reader) => {
+                let n = std::io::copy(&mut reader, &mut std::io::sink())
+                    .map_err(|e| BackendError::Internal(format!("cas size of {digest}: {e}")))?;
+                Ok(Some(n))
+            }
+            Err(BackendError::BlobNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Upcast to the action-cache tier if this backend attests results, else
     /// `None`. Mirrors [`VolumeBackend::as_snapshot`](crate::VolumeBackend::as_snapshot):
     /// the default `None` is the honest decline, and `as_action_cache().is_some()`

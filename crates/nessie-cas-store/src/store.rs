@@ -150,6 +150,21 @@ impl<C: ReclaimableCas> CasBackend for CasStore<C> {
         let _ = self.router.announce(&digest);
         Ok(digest)
     }
+
+    fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
+        self.inner.put_keyed(expected, source)?;
+        {
+            let mut state = self.state();
+            state.in_flight.insert(expected.clone()); // same write-guard as put
+            state.access.record_write(expected, self.clock.now());
+        }
+        let _ = self.router.announce(expected);
+        Ok(())
+    }
+
+    fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
+        self.inner.size(digest)
+    }
 }
 
 #[cfg(test)]
