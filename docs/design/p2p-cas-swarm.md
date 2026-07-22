@@ -390,16 +390,18 @@ merge each slice on green, in dependency order).
 | Reachability | `Referenced` + `ReclaimableCas` seams; `ReferenceResolver` + `RootSource` + `reachable_closure` (a general Merkle `Tree` deferred to the REAPI slice) | ✅ #91, #92 |
 | Storage modes | `CasStore` + durable reachability GC + cache replica-gated LRU eviction | ✅ #93, #94 |
 | Formal PO-GC | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
-| **Daemon wiring** | `[cas]` config + dispatch + schedule GC/evict through `nessie-store`; nuc1/nuc2/gnuc testbed | 🔜 next |
-| REAPI face | gRPC CAS + ActionCache subset (`tonic`); SHA-256 at the boundary; a Merkle `Tree` type | ⏳ |
-| — NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ |
-| — Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
+| Daemon wiring | `[cas]` config + `cas_node` + scheduled GC/evict maintenance in `nessie-store` (in-memory node; persistent backend + face are follow-ups) | ✅ #97 |
+| **NATS router** | `async-nats` rendezvous provider records (a real `ContentRouter`) | 🔜 next |
+| Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
+| REAPI face | gRPC CAS + ActionCache subset (`tonic`); SHA-256 at the boundary; a Merkle `Tree` type | ⏳ (long-term) |
 
-The single-node substrate is complete and machine-checked: the CAS spine, the
-ActionCache attestation-CRDT (the ungameable-completion keystone), the content-router
-seam, and both storage modes (durable reachability GC + cache replica-gated eviction),
-with the paired safety property proved in `formal/`. What remains is *reach*: wiring
-the engine into the daemon, the REAPI protocol face, and the two real network routers.
+The single-node substrate is complete, machine-checked, **and runnable**: the CAS
+spine, the ActionCache attestation-CRDT (the ungameable-completion keystone), the
+content-router seam, both storage modes (durable reachability GC + cache replica-gated
+eviction) with the paired safety property proved in `formal/`, and the daemon that runs
+a configured CAS node with scheduled maintenance. What remains is *distribution and a
+protocol face*: the two real network routers (so the swarm finds peers off-box), and the
+REAPI face (the long-term Bazel-customer unlock).
 
 ## Open questions (deferred, tracked)
 
