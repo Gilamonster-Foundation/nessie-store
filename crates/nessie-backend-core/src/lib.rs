@@ -50,6 +50,7 @@ mod ids;
 mod references;
 mod router;
 mod traits;
+mod tree;
 mod types;
 
 #[cfg(feature = "python")]
@@ -71,6 +72,7 @@ pub use ids::{SnapshotUuid, VolumeUuid};
 pub use references::Referenced;
 pub use router::{ContentRouter, PeerId, RouterError};
 pub use traits::{CloneBackend, ReplicationBackend, SnapshotBackend, VolumeBackend};
+pub use tree::{Tree, TreeEntry, TreeKind};
 pub use types::{
     CloneOrigin, Snapshot, Volume, VolumePatch, VolumeSpec, VolumeState, VolumeStyle, VolumeType,
 };
