@@ -387,21 +387,23 @@ merge each slice on green, in dependency order).
 | CAS spine | `Digest`, `CasBackend`, `MemCas`+conformance, `AccessHandle::CasBlob` | ✅ #81, #84, #85, #86 |
 | AC CRDT | `Attestation`, grow-only set, k-of-n `Confirmed`, `ActionCacheBackend` + mem + conformance (signature verification behind a seam) | ✅ #88, #89 |
 | Content routing | `ContentRouter` seam + in-process `MemRouter`/`MemSwarm` | ✅ #90 |
-| Reachability | `Referenced` + `ReclaimableCas` seams; `ReferenceResolver` + `RootSource` + `reachable_closure` (a general Merkle `Tree` deferred to the REAPI slice) | ✅ #91, #92 |
+| Reachability | `Referenced` + `ReclaimableCas` seams; `ReferenceResolver` + `RootSource` + `reachable_closure` | ✅ #91, #92 |
 | Storage modes | `CasStore` + durable reachability GC + cache replica-gated LRU eviction | ✅ #93, #94 |
 | Formal PO-GC | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
-| Daemon wiring | `[cas]` config + `cas_node` + scheduled GC/evict maintenance in `nessie-store` (in-memory node; persistent backend + face are follow-ups) | ✅ #97 |
-| **NATS router** | `async-nats` rendezvous provider records (a real `ContentRouter`) | 🔜 next |
+| Daemon wiring | `[cas]` config + `cas_node` + scheduled GC/evict maintenance | ✅ #97 |
+| Merkle DAG | `Tree` directory objects → transitive reachability + REAPI `Directory` | ✅ #99 |
+| REAPI seams | `CasBackend::put_keyed` + `size` (SHA-256-native path; no index) | ✅ #100 |
+| **REAPI gRPC face** | `nessie-reapi` crate: tonic + vendored protos; CAS/ByteStream/ActionCache/Capabilities over the backends; SHA-256 boundary. **Design: 13-slice plan** (design panel 2026-07-22) | 🔜 next |
+| NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
-| REAPI face | gRPC CAS + ActionCache subset (`tonic`); SHA-256 at the boundary; a Merkle `Tree` type | ⏳ (long-term) |
 
 The single-node substrate is complete, machine-checked, **and runnable**: the CAS
 spine, the ActionCache attestation-CRDT (the ungameable-completion keystone), the
 content-router seam, both storage modes (durable reachability GC + cache replica-gated
-eviction) with the paired safety property proved in `formal/`, and the daemon that runs
-a configured CAS node with scheduled maintenance. What remains is *distribution and a
-protocol face*: the two real network routers (so the swarm finds peers off-box), and the
-REAPI face (the long-term Bazel-customer unlock).
+eviction) with the paired safety property proved in `formal/`, the Merkle-DAG `Tree`
+objects, the REAPI write/emit seams, and the daemon that runs a configured CAS node
+with scheduled maintenance. What remains is a *protocol face and distribution*: the
+REAPI gRPC face (designed; the Bazel-customer unlock) and the two real network routers.
 
 ## Open questions (deferred, tracked)
 
