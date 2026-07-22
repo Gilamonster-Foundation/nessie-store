@@ -132,6 +132,67 @@ mod tests {
     }
 
     #[test]
+    fn closure_walks_nested_trees_transitively() {
+        use nessie_backend_core::{Tree, TreeEntry, TreeKind};
+        use std::collections::BTreeMap;
+
+        let cas = MemCas::new();
+        let deep_leaf = store(&cas, b"deep-leaf");
+
+        // A sub-tree referencing the deep leaf.
+        let mut sub_entries = BTreeMap::new();
+        sub_entries.insert(
+            "file".to_string(),
+            TreeEntry {
+                digest: deep_leaf.clone(),
+                kind: TreeKind::File {
+                    is_executable: false,
+                },
+            },
+        );
+        let subtree = Tree {
+            entries: sub_entries,
+        };
+        let subtree_digest = store(&cas, &subtree.to_canonical_bytes());
+        assert_eq!(subtree_digest, subtree.tree_digest());
+
+        // A root tree referencing the sub-tree (Dir) plus a direct file blob.
+        let direct = store(&cas, b"direct-file");
+        let mut root_entries = BTreeMap::new();
+        root_entries.insert(
+            "sub".to_string(),
+            TreeEntry {
+                digest: subtree_digest.clone(),
+                kind: TreeKind::Dir,
+            },
+        );
+        root_entries.insert(
+            "top".to_string(),
+            TreeEntry {
+                digest: direct.clone(),
+                kind: TreeKind::File {
+                    is_executable: false,
+                },
+            },
+        );
+        let root = Tree {
+            entries: root_entries,
+        };
+        let root_digest = store(&cas, &root.to_canonical_bytes());
+        let orphan = store(&cas, b"orphan");
+
+        let seed: BTreeSet<Digest> = [root_digest.clone()].into_iter().collect();
+        let reach = reachable_closure(&seed, &cas, &CanonicalResolver).unwrap();
+
+        // Depth-2 transitive: root -> subtree -> deep_leaf, plus root -> direct.
+        for d in [&root_digest, &subtree_digest, &deep_leaf, &direct] {
+            assert!(reach.contains(d), "reachable through the tree DAG: {d}");
+        }
+        assert!(!reach.contains(&orphan));
+        assert_eq!(reach.len(), 4);
+    }
+
+    #[test]
     fn dedup_and_shared_children_are_safe() {
         // Two result bodies sharing a leaf; both seeded — the leaf is visited once.
         let cas = MemCas::new();

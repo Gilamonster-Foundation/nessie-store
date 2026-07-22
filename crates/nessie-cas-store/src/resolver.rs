@@ -8,7 +8,7 @@
 //! CAS types, so the walk stays type-agnostic — a future REAPI `Tree` decoder is
 //! added *here* and nothing in the walker, GC, or eviction changes.
 
-use nessie_backend_core::{ActionResult, Digest, Referenced};
+use nessie_backend_core::{ActionResult, Digest, Referenced, Tree};
 
 /// Turns an opaque local blob into its DAG out-edges.
 ///
@@ -21,20 +21,24 @@ pub trait ReferenceResolver: Send + Sync {
     fn references_of(&self, digest: &Digest, bytes: &[u8]) -> Vec<Digest>;
 }
 
-/// Resolves references by trying each known canonical type in turn. Today the
-/// catalog is a single type: a blob that decodes as a canonical [`ActionResult`]
-/// yields that result's references; anything else is treated as an opaque leaf.
+/// Resolves references by trying each known canonical type in turn: a blob that
+/// decodes as a canonical [`ActionResult`] or [`Tree`] yields that value's
+/// references; anything else is an opaque leaf. The domain tags make the decode
+/// attempts unambiguous — at most one succeeds.
 ///
-/// Adding a REAPI `Tree` is one more decode arm here.
+/// This is the entire type catalog; a new structured CAS type adds one more arm.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CanonicalResolver;
 
 impl ReferenceResolver for CanonicalResolver {
     fn references_of(&self, _digest: &Digest, bytes: &[u8]) -> Vec<Digest> {
-        match ActionResult::from_canonical_bytes(bytes) {
-            Ok(result) => result.references(),
-            Err(_) => Vec::new(), // not a known structured type => leaf
+        if let Ok(result) = ActionResult::from_canonical_bytes(bytes) {
+            return result.references();
         }
+        if let Ok(tree) = Tree::from_canonical_bytes(bytes) {
+            return tree.references(); // walk directory structure transitively
+        }
+        Vec::new() // not a known structured type => leaf
     }
 }
 
