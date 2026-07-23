@@ -39,3 +39,14 @@ nfs_listen = "0.0.0.0:2049"
 nfs_export_root = "/srv"
 # Export path clients mount (<host>:/<name>); empty serves the bare root.
 nfs_export_name = ""
+
+# Optional REAPI (Bazel remote cache) gRPC face, beside the ONTAP control plane —
+# a Bazel remote cache with no BuildBarn to stand up. SHA-256-native (a blob the
+# client uploads by its SHA-256 digest is stored under that digest, no index/recompute),
+# self-attesting (k=1 write-through). Absent = no REAPI server. Point Bazel at it with:
+#   build --remote_cache=grpc://<host>:8980
+# [reapi]
+# enabled = true
+# listen = "0.0.0.0:8980"        # gRPC bind (distinct from the HTTPS `listen` above)
+# instance_name = ""             # "" = the default instance
+# ac_update_enabled = true       # allow UpdateActionResult (also needs an AC backend + signer)

@@ -115,6 +115,14 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
         nessie_store::cas_node::spawn_maintenance(node);
     }
 
+    // Optional REAPI (Bazel remote cache) gRPC face, beside the ONTAP control plane —
+    // a Bazel remote cache with no BuildBarn to stand up. SHA-256-native, self-attesting
+    // (k=1 write-through). A persistent backend and real ed25519 signers slot in behind
+    // the same seams later.
+    if let Some(rc) = cfg.reapi.clone().filter(|r| r.enabled) {
+        spawn_reapi(rc)?;
+    }
+
     let listen = cfg.listen;
     let tls_dir = cfg.tls_dir();
     let router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
@@ -135,5 +143,54 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
             .serve(router.into_make_service())
             .await?;
     }
+    Ok(())
+}
+
+/// Verify the wired REAPI backend honors `put_keyed` (the SHA-256-native write seam)
+/// at startup, so a misconfigured backend fails loudly here instead of per-request.
+fn probe_put_keyed(cas: &dyn nessie_backend_core::CasBackend) -> anyhow::Result<()> {
+    use nessie_backend_core::{Digest, DigestAlgo};
+    let probe = b"nessie-reapi put_keyed startup probe";
+    let digest = Digest::compute_with(DigestAlgo::Sha256, probe);
+    cas.put_keyed(&digest, &mut probe.as_slice())
+        .map_err(|e| anyhow::anyhow!("REAPI backend does not support put_keyed: {e}"))?;
+    Ok(())
+}
+
+/// Build the in-memory, self-attesting REAPI cache backend and spawn the tonic server.
+fn spawn_reapi(rc: nessie_store::config::ReapiServerConfig) -> anyhow::Result<()> {
+    use nessie_backend_core::CasBackend;
+    use nessie_backend_mem::{MemActionCache, MemCas};
+    use std::num::NonZeroUsize;
+
+    // The signer and the AC backend's verifier are one matched dev keypair (k=1
+    // write-through); a real ed25519 signer from agent-mesh replaces DevSelfSigner in
+    // a swarm.
+    let signer = nessie_reapi::DevSelfSigner::new("nessie-reapi-self");
+    let verifier = signer.verifier();
+    let k1 = NonZeroUsize::new(1).expect("1 is nonzero");
+    let backend: Arc<dyn CasBackend> = Arc::new(MemActionCache::new(MemCas::new(), verifier, k1));
+    probe_put_keyed(backend.as_ref())?;
+
+    let reapi_cfg = nessie_reapi::ReapiConfig {
+        instance_name: rc.instance_name.clone(),
+        ac_update_enabled: rc.ac_update_enabled,
+        ..Default::default()
+    };
+    let signer: Arc<dyn nessie_reapi::AttestationSigner> = Arc::new(signer);
+    let router = nessie_reapi::build_router(backend, Some(signer), reapi_cfg);
+
+    let addr = rc.listen;
+    tracing::info!(
+        %addr,
+        instance = %rc.instance_name,
+        ac_update = rc.ac_update_enabled,
+        "REAPI cache face enabled (SHA-256-native, self-attesting)"
+    );
+    tokio::spawn(async move {
+        if let Err(e) = router.serve(addr).await {
+            tracing::error!(%e, "REAPI gRPC server exited");
+        }
+    });
     Ok(())
 }

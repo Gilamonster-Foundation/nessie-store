@@ -400,17 +400,20 @@ merge each slice on green, in dependency order).
 | REAPI ByteStream | large-blob `Read`/`Write`/`QueryWriteStatus` (spawn_blocking pump ↔ bounded mpsc) | ✅ #107 |
 | REAPI ActionCache | `GetActionResult` (confirmed AC → `ar_to_reapi`) + `UpdateActionResult` (store body → self-attest, k=1) + `AttestationSigner`/`DevSelfSigner` seam | ✅ #108 |
 | REAPI GetTree | breadth-first `Directory` DAG walk re-emitting stored proto blobs; resume-token pagination; blocking-pool walk → bounded channel | ✅ #109 |
-| REAPI daemon wiring | `[reapi]` config + tonic server beside axum in `serve()` | 🔜 next |
+| REAPI daemon wiring | `[reapi]` config + `build_router` seam + tonic server spawned beside axum in `serve()`; SHA-256-native self-attesting in-mem cache; startup `put_keyed` probe | ✅ #110 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 
-The single-node substrate is complete, machine-checked, **and runnable**: the CAS
-spine, the ActionCache attestation-CRDT (the ungameable-completion keystone), the
-content-router seam, both storage modes (durable reachability GC + cache replica-gated
-eviction) with the paired safety property proved in `formal/`, the Merkle-DAG `Tree`
-objects, the REAPI write/emit seams, and the daemon that runs a configured CAS node
-with scheduled maintenance. What remains is a *protocol face and distribution*: the
-REAPI gRPC face (designed; the Bazel-customer unlock) and the two real network routers.
+The single-node substrate is complete, machine-checked, runnable, **and now speaks a
+real protocol**: the CAS spine, the ActionCache attestation-CRDT (the ungameable-completion
+keystone), the content-router seam, both storage modes (durable reachability GC + cache
+replica-gated eviction) with the paired safety property proved in `formal/`, the Merkle-DAG
+`Tree` objects, the REAPI write/emit seams, the daemon that runs a configured CAS node with
+scheduled maintenance, and the full **REAPI gRPC cache face** (Capabilities + CAS +
+ByteStream + ActionCache + GetTree over a SHA-256 boundary) wired beside axum and gated on a
+`[reapi]` config block — *a Bazel remote cache with no BuildBarn to stand up*. What remains
+is *distribution*: the two real network routers (NATS rendezvous + Kademlia DHT) that turn
+the single node into a swarm.
 
 ## Open questions (deferred, tracked)
 

@@ -1337,6 +1337,7 @@ dependencies = [
  "nessie-cas-store",
  "nessie-nfs",
  "nessie-ontap-protocol",
+ "nessie-reapi",
  "pyo3",
  "pythonize",
  "rcgen",
