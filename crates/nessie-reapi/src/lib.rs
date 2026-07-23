@@ -30,6 +30,6 @@ pub use config::ReapiConfig;
 pub use map::{ar_from_reapi, ar_to_reapi, dir_child_digests};
 pub use proto::{build, bytestream, google, reapi, rpc};
 pub use resource::ResourceName;
-pub use services::{CapabilitiesSvc, CasV2Svc};
+pub use services::{ByteStreamSvc, CapabilitiesSvc, CasV2Svc};
 pub use size::{CasSizeSource, SizeSource};
 pub use status::status_from_backend;

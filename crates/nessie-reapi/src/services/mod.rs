@@ -4,8 +4,10 @@
 //! translation layer. `Capabilities` lands first (the smallest RPC); CAS,
 //! ByteStream, and ActionCache follow.
 
+mod bytestream;
 mod capabilities;
 mod cas;
 
+pub use bytestream::ByteStreamSvc;
 pub use capabilities::CapabilitiesSvc;
 pub use cas::CasV2Svc;
