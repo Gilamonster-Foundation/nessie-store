@@ -1310,10 +1310,12 @@ name = "nessie-reapi"
 version = "0.3.1"
 dependencies = [
  "nessie-backend-core",
+ "nessie-backend-mem",
  "prost",
  "prost-types",
  "protoc-bin-vendored",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
 ]

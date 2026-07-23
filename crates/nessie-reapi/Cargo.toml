@@ -20,6 +20,8 @@ nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
 tonic = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
@@ -27,3 +29,4 @@ protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
