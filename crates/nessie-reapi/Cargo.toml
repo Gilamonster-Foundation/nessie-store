@@ -1,0 +1,28 @@
+[package]
+name = "nessie-reapi"
+description = "Bazel Remote Execution API v2 (cache subset) gRPC face over the nessie CAS/ActionCache backends."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+# The prost-generated modules carry the .proto comments verbatim; some contain
+# pseudo-code fences rustdoc would try to run. There are no hand-written doctests
+# in this crate, so disable doctests wholesale.
+doctest = false
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

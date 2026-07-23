@@ -84,6 +84,7 @@ cannot silently drift out of sync.
 | `nessie-cas-conformance` | conformance suite for the `CasBackend` contract |
 | `nessie-ac-conformance` | conformance suite for the `ActionCacheBackend` contract |
 | `nessie-cas-store` | retention engine: reachability GC + replica-gated cache eviction |
+| `nessie-reapi` | Bazel REAPI v2 (cache subset) gRPC face over the CAS/AC backends |
 | `nessie-backend-mem` | HashMap reference backend |
 | `nessie-backend-zfs` | ZFS substrate — native snapshot + clone |
 | `nessie-ontap-protocol` | HAL / ONTAP REST wire shapes |

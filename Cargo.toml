@@ -15,6 +15,7 @@ members = [
     "crates/nessie-cas-conformance",
     "crates/nessie-ac-conformance",
     "crates/nessie-cas-store",
+    "crates/nessie-reapi",
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",
@@ -89,6 +90,13 @@ chrono = { version = "0.4", features = ["serde"] }
 # Hashing — BLAKE3 for content-addressed substrates, SHA-256 where ONTAP needs it
 blake3 = { version = "1", features = ["rayon"] }
 sha2 = "0.10"
+
+# gRPC (the REAPI / Bazel remote-cache face). tonic 0.12 tracks the workspace
+# hyper 1 / http 1 / tokio 1 pins; prost 0.13 is its codegen runtime.
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tonic-build = "0.12"
 
 # Multi-threaded helpers (used where measurement justifies them)
 rayon = "1"
