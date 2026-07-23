@@ -8,6 +8,14 @@
 //! `google/protobuf/*` well-known types map to `prost_types`.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Point prost-build at a vendored `protoc` so codegen needs no system install
+    // (the CI runners have none). Safe here: build scripts are single-threaded and
+    // this runs before any other code that reads the environment.
+    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    unsafe {
+        std::env::set_var("PROTOC", &protoc);
+    }
+
     let protos = [
         "proto/build/bazel/remote/execution/v2/remote_execution.proto",
         "proto/google/bytestream/bytestream.proto",

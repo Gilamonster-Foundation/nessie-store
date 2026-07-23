@@ -97,6 +97,9 @@ tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 tonic-build = "0.12"
+# A vendored protoc binary so codegen needs no system `protoc` (the ARC CI runners
+# have none). build.rs points prost-build at it.
+protoc-bin-vendored = "3"
 
 # Multi-threaded helpers (used where measurement justifies them)
 rayon = "1"
