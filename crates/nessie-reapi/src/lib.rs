@@ -22,6 +22,7 @@ mod map;
 mod proto;
 mod resource;
 mod services;
+mod signer;
 mod size;
 mod status;
 
@@ -30,6 +31,7 @@ pub use config::ReapiConfig;
 pub use map::{ar_from_reapi, ar_to_reapi, dir_child_digests};
 pub use proto::{build, bytestream, google, reapi, rpc};
 pub use resource::ResourceName;
-pub use services::{ByteStreamSvc, CapabilitiesSvc, CasV2Svc};
+pub use services::{ActionCacheSvc, ByteStreamSvc, CapabilitiesSvc, CasV2Svc};
+pub use signer::{AttestationSigner, DevSelfSigner};
 pub use size::{CasSizeSource, SizeSource};
 pub use status::status_from_backend;
