@@ -1,16 +1,17 @@
 //! The `ContentAddressableStorage` service — the dedup + inline-blob workhorse.
 //!
-//! v0 implements `FindMissingBlobs` (the pre-upload dedup check) and
-//! `BatchUpdateBlobs` (inline upload) over the SHA-256-native `CasBackend`. Reads
-//! (`BatchReadBlobs`, `GetTree`) and the split/splice extensions are later slices.
-//! The sync `CasBackend` ops run on the blocking pool so the async control plane is
-//! never stalled.
+//! Implements `FindMissingBlobs` (pre-upload dedup), `BatchUpdateBlobs` (inline
+//! upload), and `BatchReadBlobs` (inline download) over the SHA-256-native
+//! `CasBackend`. `GetTree` (a following slice) and the split/splice extensions are
+//! stubbed. The sync `CasBackend` ops run on the blocking pool so the async control
+//! plane is never stalled.
 
 use crate::boundary::Sha256Boundary;
 use crate::config::ReapiConfig;
 use crate::status::status_from_backend;
 use crate::{reapi, rpc};
 use nessie_backend_core::CasBackend;
+use std::io::Read;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -78,6 +79,39 @@ fn update_one(
         .map_err(|e| status_from_backend(&e))
 }
 
+/// Read one batch item: `get` (self-verifying) the blob and echo it, or a per-item
+/// error status with empty data.
+fn read_one(
+    cas: &dyn CasBackend,
+    boundary: &Sha256Boundary,
+    reapi_digest: &reapi::Digest,
+) -> reapi::batch_read_blobs_response::Response {
+    let identity = reapi::compressor::Value::Identity as i32;
+    let outcome = (|| -> Result<Vec<u8>, Status> {
+        let native = boundary.to_native(reapi_digest)?;
+        let mut reader = cas.get(&native).map_err(|e| status_from_backend(&e))?;
+        let mut data = Vec::new();
+        reader
+            .read_to_end(&mut data)
+            .map_err(|e| Status::internal(format!("reading blob: {e}")))?;
+        Ok(data)
+    })();
+    match outcome {
+        Ok(data) => reapi::batch_read_blobs_response::Response {
+            digest: Some(reapi_digest.clone()),
+            data,
+            compressor: identity,
+            status: Some(rpc_status(Ok(()))),
+        },
+        Err(status) => reapi::batch_read_blobs_response::Response {
+            digest: Some(reapi_digest.clone()),
+            data: Vec::new(),
+            compressor: identity,
+            status: Some(rpc_status(Err(status))),
+        },
+    }
+}
+
 #[tonic::async_trait]
 impl reapi::content_addressable_storage_server::ContentAddressableStorage for CasV2Svc {
     async fn find_missing_blobs(
@@ -135,11 +169,21 @@ impl reapi::content_addressable_storage_server::ContentAddressableStorage for Ca
 
     async fn batch_read_blobs(
         &self,
-        _request: Request<reapi::BatchReadBlobsRequest>,
+        request: Request<reapi::BatchReadBlobsRequest>,
     ) -> Result<Response<reapi::BatchReadBlobsResponse>, Status> {
-        Err(Status::unimplemented(
-            "BatchReadBlobs lands in a following slice",
-        ))
+        let req = request.into_inner();
+        let cas = self.cas.clone();
+        let boundary = self.boundary;
+        tokio::task::spawn_blocking(move || {
+            let responses = req
+                .digests
+                .iter()
+                .map(|d| read_one(&*cas, &boundary, d))
+                .collect();
+            Ok(Response::new(reapi::BatchReadBlobsResponse { responses }))
+        })
+        .await
+        .map_err(|e| Status::internal(format!("batch_read_blobs task panicked: {e}")))?
     }
 
     /// Streamed; filled in the GetTree slice. The concrete stream type is named here
@@ -225,6 +269,46 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(missing.missing_blob_digests, vec![reapi_digest(&absent)]);
+    }
+
+    #[tokio::test]
+    async fn batch_update_then_read_is_byte_identical() {
+        let svc = svc();
+        let blob = b"round-trip me".to_vec();
+        svc.batch_update_blobs(Request::new(reapi::BatchUpdateBlobsRequest {
+            requests: vec![reapi::batch_update_blobs_request::Request {
+                digest: Some(reapi_digest(&blob)),
+                data: blob.clone(),
+                compressor: reapi::compressor::Value::Identity as i32,
+            }],
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        let missing_digest = reapi_digest(b"not stored");
+        let read = svc
+            .batch_read_blobs(Request::new(reapi::BatchReadBlobsRequest {
+                digests: vec![reapi_digest(&blob), missing_digest.clone()],
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(read.responses.len(), 2);
+        // Present: byte-identical, OK.
+        assert_eq!(read.responses[0].data, blob);
+        assert_eq!(
+            read.responses[0].status.as_ref().unwrap().code,
+            tonic::Code::Ok as i32
+        );
+        // Absent: NOT_FOUND, empty data.
+        assert!(read.responses[1].data.is_empty());
+        assert_eq!(
+            read.responses[1].status.as_ref().unwrap().code,
+            tonic::Code::NotFound as i32
+        );
     }
 
     #[tokio::test]
