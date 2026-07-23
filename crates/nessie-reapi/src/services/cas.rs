@@ -10,10 +10,15 @@ use crate::boundary::Sha256Boundary;
 use crate::config::ReapiConfig;
 use crate::status::status_from_backend;
 use crate::{reapi, rpc};
-use nessie_backend_core::CasBackend;
+use nessie_backend_core::{CasBackend, Digest};
+use prost::Message;
 use std::io::Read;
 use std::sync::Arc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
+
+/// Directories per `GetTreeResponse` page when the client does not pin `page_size`.
+const DEFAULT_GET_TREE_PAGE_SIZE: usize = 1000;
 
 /// The CAS gRPC service over a SHA-256-native [`CasBackend`].
 pub struct CasV2Svc {
@@ -112,6 +117,48 @@ fn read_one(
     }
 }
 
+/// Fully read a stored blob's bytes (`BlobNotFound` → `NotFound`).
+fn read_blob_bytes(cas: &dyn CasBackend, digest: &Digest) -> Result<Vec<u8>, Status> {
+    let mut reader = cas.get(digest).map_err(|e| status_from_backend(&e))?;
+    let mut buf = Vec::new();
+    reader
+        .read_to_end(&mut buf)
+        .map_err(|e| Status::internal(format!("reading Directory blob: {e}")))?;
+    Ok(buf)
+}
+
+/// Breadth-first walk of the `Directory` DAG rooted at `root`, returning the stored
+/// `Directory` protos in BFS order (shared subtrees visited once). We **decode and
+/// re-emit the stored proto** — never re-derive a tree — so the returned messages are
+/// exactly what the client uploaded, and only child *directory* nodes are followed
+/// (files are leaves). A missing/corrupt blob aborts the walk with a `Status`.
+fn collect_tree(
+    cas: &dyn CasBackend,
+    boundary: &Sha256Boundary,
+    root: &Digest,
+) -> Result<Vec<reapi::Directory>, Status> {
+    use std::collections::{HashSet, VecDeque};
+    let mut visited: HashSet<Digest> = HashSet::new();
+    let mut queue: VecDeque<Digest> = VecDeque::new();
+    let mut out: Vec<reapi::Directory> = Vec::new();
+    queue.push_back(root.clone());
+    while let Some(dg) = queue.pop_front() {
+        if !visited.insert(dg.clone()) {
+            continue;
+        }
+        let bytes = read_blob_bytes(cas, &dg)?;
+        let dir = reapi::Directory::decode(bytes.as_slice())
+            .map_err(|e| Status::invalid_argument(format!("blob is not a REAPI Directory: {e}")))?;
+        for node in &dir.directories {
+            if let Some(child) = &node.digest {
+                queue.push_back(boundary.to_native(child)?);
+            }
+        }
+        out.push(dir);
+    }
+    Ok(out)
+}
+
 #[tonic::async_trait]
 impl reapi::content_addressable_storage_server::ContentAddressableStorage for CasV2Svc {
     async fn find_missing_blobs(
@@ -186,16 +233,68 @@ impl reapi::content_addressable_storage_server::ContentAddressableStorage for Ca
         .map_err(|e| Status::internal(format!("batch_read_blobs task panicked: {e}")))?
     }
 
-    /// Streamed; filled in the GetTree slice. The concrete stream type is named here
-    /// so the trait is satisfied, but this stub never constructs one.
-    type GetTreeStream =
-        tokio_stream::wrappers::ReceiverStream<Result<reapi::GetTreeResponse, Status>>;
+    type GetTreeStream = ReceiverStream<Result<reapi::GetTreeResponse, Status>>;
 
+    /// Stream the `Directory` DAG rooted at `root_digest`, breadth-first, in pages of
+    /// `page_size` (`next_page_token` = the count already delivered, so a fresh call
+    /// with that token resumes exactly there). The whole walk runs on the blocking pool
+    /// and feeds a bounded channel; a missing root or corrupt Directory aborts the
+    /// stream with a `Status`.
     async fn get_tree(
         &self,
-        _request: Request<reapi::GetTreeRequest>,
+        request: Request<reapi::GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
-        Err(Status::unimplemented("GetTree lands in a following slice"))
+        let req = request.into_inner();
+        let root = req
+            .root_digest
+            .ok_or_else(|| Status::invalid_argument("missing root_digest"))?;
+        let root = self.boundary.to_native(&root)?;
+        let page_size = if req.page_size <= 0 {
+            DEFAULT_GET_TREE_PAGE_SIZE
+        } else {
+            req.page_size as usize
+        };
+        let skip: usize = if req.page_token.is_empty() {
+            0
+        } else {
+            req.page_token
+                .parse()
+                .map_err(|_| Status::invalid_argument("invalid page_token"))?
+        };
+        let cas = self.cas.clone();
+        let boundary = self.boundary;
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::task::spawn_blocking(move || {
+            let all = match collect_tree(&*cas, &boundary, &root) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
+            };
+            let total = all.len();
+            let start = skip.min(total);
+            let mut remaining: Vec<reapi::Directory> = all.into_iter().skip(start).collect();
+            let mut delivered = start;
+            loop {
+                let take = page_size.min(remaining.len());
+                let chunk: Vec<reapi::Directory> = remaining.drain(..take).collect();
+                delivered += take;
+                let is_final = remaining.is_empty();
+                let resp = reapi::GetTreeResponse {
+                    directories: chunk,
+                    next_page_token: if is_final {
+                        String::new()
+                    } else {
+                        delivered.to_string()
+                    },
+                };
+                if tx.blocking_send(Ok(resp)).is_err() || is_final {
+                    return;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     async fn split_blob(
@@ -334,5 +433,115 @@ mod tests {
             resp.responses[0].status.as_ref().unwrap().code,
             tonic::Code::InvalidArgument as i32
         );
+    }
+
+    fn sha(bytes: &[u8]) -> Digest {
+        Digest::compute_with(DigestAlgo::Sha256, bytes)
+    }
+
+    /// A CAS holding a `root → sub → file` tree; returns `(cas, root reapi::Digest)`.
+    fn store_small_tree() -> (Arc<dyn CasBackend>, reapi::Digest) {
+        let cas: Arc<dyn CasBackend> = Arc::new(MemCas::new());
+        let b = Sha256Boundary;
+
+        let file_bytes = b"hello".to_vec();
+        let file = sha(&file_bytes);
+        cas.put_keyed(&file, &mut file_bytes.as_slice()).unwrap();
+
+        let sub = reapi::Directory {
+            files: vec![reapi::FileNode {
+                name: "f".to_string(),
+                digest: Some(b.to_reapi(&file, file_bytes.len() as u64)),
+                is_executable: false,
+                node_properties: None,
+            }],
+            ..Default::default()
+        };
+        let sub_bytes = sub.encode_to_vec();
+        let sub_digest = sha(&sub_bytes);
+        cas.put_keyed(&sub_digest, &mut sub_bytes.as_slice())
+            .unwrap();
+
+        let root = reapi::Directory {
+            directories: vec![reapi::DirectoryNode {
+                name: "sub".to_string(),
+                digest: Some(b.to_reapi(&sub_digest, sub_bytes.len() as u64)),
+            }],
+            ..Default::default()
+        };
+        let root_bytes = root.encode_to_vec();
+        let root_digest = sha(&root_bytes);
+        cas.put_keyed(&root_digest, &mut root_bytes.as_slice())
+            .unwrap();
+
+        (cas, b.to_reapi(&root_digest, root_bytes.len() as u64))
+    }
+
+    async fn drain_tree(svc: &CasV2Svc, req: reapi::GetTreeRequest) -> Vec<reapi::GetTreeResponse> {
+        use tokio_stream::StreamExt as _;
+        let mut stream = svc.get_tree(Request::new(req)).await.unwrap().into_inner();
+        let mut pages = Vec::new();
+        while let Some(item) = stream.next().await {
+            pages.push(item.unwrap());
+        }
+        pages
+    }
+
+    #[tokio::test]
+    async fn get_tree_walks_the_dag_breadth_first() {
+        let (cas, root) = store_small_tree();
+        let svc = CasV2Svc::new(cas, Arc::new(ReapiConfig::default()));
+        let pages = drain_tree(
+            &svc,
+            reapi::GetTreeRequest {
+                root_digest: Some(root),
+                ..Default::default()
+            },
+        )
+        .await;
+        let dirs: Vec<_> = pages.into_iter().flat_map(|p| p.directories).collect();
+        assert_eq!(dirs.len(), 2, "root + sub, each visited once");
+        // BFS order: root first (has one child dir named "sub"), then sub (has one file).
+        assert_eq!(dirs[0].directories.len(), 1);
+        assert_eq!(dirs[0].directories[0].name, "sub");
+        assert_eq!(dirs[1].files.len(), 1);
+        assert_eq!(dirs[1].files[0].name, "f");
+    }
+
+    #[tokio::test]
+    async fn get_tree_paginates_with_a_resume_token() {
+        let (cas, root) = store_small_tree();
+        let svc = CasV2Svc::new(cas, Arc::new(ReapiConfig::default()));
+        let pages = drain_tree(
+            &svc,
+            reapi::GetTreeRequest {
+                root_digest: Some(root),
+                page_size: 1,
+                ..Default::default()
+            },
+        )
+        .await;
+        // Two directories, one per page: first page carries a resume token, last is empty.
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].directories.len(), 1);
+        assert_eq!(pages[0].next_page_token, "1");
+        assert_eq!(pages[1].directories.len(), 1);
+        assert_eq!(pages[1].next_page_token, "");
+    }
+
+    #[tokio::test]
+    async fn get_tree_on_a_missing_root_is_not_found() {
+        let svc = svc();
+        let mut stream = svc
+            .get_tree(Request::new(reapi::GetTreeRequest {
+                root_digest: Some(reapi_digest(b"never stored")),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        use tokio_stream::StreamExt as _;
+        let first = stream.next().await.unwrap();
+        assert_eq!(first.unwrap_err().code(), tonic::Code::NotFound);
     }
 }
