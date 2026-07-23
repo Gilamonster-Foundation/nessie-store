@@ -61,3 +61,6 @@ config.local.toml
 # ── Captured event streams (replay material is committed; live drops aren't) ──
 *.ndjson
 !fixtures/**/*.ndjson
+
+# Vendored REAPI protos live under proto/build/... — keep them (the broad build/ rule above would otherwise hide the main remote_execution.proto).
+!crates/nessie-reapi/proto/build/
