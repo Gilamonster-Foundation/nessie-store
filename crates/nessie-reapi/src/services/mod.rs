@@ -5,5 +5,7 @@
 //! ByteStream, and ActionCache follow.
 
 mod capabilities;
+mod cas;
 
 pub use capabilities::CapabilitiesSvc;
+pub use cas::CasV2Svc;
