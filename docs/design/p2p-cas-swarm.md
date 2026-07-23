@@ -399,8 +399,8 @@ merge each slice on green, in dependency order).
 | REAPI CAS | `FindMissingBlobs` + `BatchUpdateBlobs` (`put_keyed`) + `BatchReadBlobs` | ✅ #105, #106 |
 | REAPI ByteStream | large-blob `Read`/`Write`/`QueryWriteStatus` (spawn_blocking pump ↔ bounded mpsc) | ✅ #107 |
 | REAPI ActionCache | `GetActionResult` (confirmed AC → `ar_to_reapi`) + `UpdateActionResult` (store body → self-attest, k=1) + `AttestationSigner`/`DevSelfSigner` seam | ✅ #108 |
-| REAPI GetTree | breadth-first `Directory` walk re-emitting stored proto blobs (pagination) | 🔜 next |
-| REAPI daemon wiring | `[reapi]` config + tonic server beside axum in `serve()` | 🔜 |
+| REAPI GetTree | breadth-first `Directory` DAG walk re-emitting stored proto blobs; resume-token pagination; blocking-pool walk → bounded channel | ✅ #109 |
+| REAPI daemon wiring | `[reapi]` config + tonic server beside axum in `serve()` | 🔜 next |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 
