@@ -29,6 +29,7 @@ daemon = [
     "dep:nessie-backend-zfs",
     "dep:nessie-ontap-protocol",
     "dep:nessie-nfs",
+    "dep:nessie-reapi",
     "dep:tokio",
     "dep:axum",
     "dep:axum-server",
@@ -60,6 +61,9 @@ nessie-cas-store = { path = "../nessie-cas-store", version = "0.3.1", optional =
 nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.3.1", optional = true }
 nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.3.1", optional = true }
 nessie-nfs = { path = "../nessie-nfs", version = "0.3.1", optional = true }
+# REAPI (Bazel remote cache) gRPC face — pulled in by the `daemon` feature, wired
+# beside axum in `serve()` when `[reapi]` is enabled. Excluded from the light wheel.
+nessie-reapi = { path = "../nessie-reapi", version = "0.3.1", optional = true }
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 axum-server = { workspace = true, optional = true }

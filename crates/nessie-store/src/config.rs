@@ -53,6 +53,35 @@ impl Default for CasConfig {
     }
 }
 
+/// Optional REAPI (Bazel remote cache) gRPC face. Absent = the daemon serves no
+/// REAPI. Present + `enabled` spins up a SHA-256-native cache beside the ONTAP
+/// control plane — *a Bazel remote cache with no BuildBarn to stand up*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReapiServerConfig {
+    /// Serve the REAPI face. `false` = present-but-off (the config can be staged).
+    pub enabled: bool,
+    /// Address the gRPC server binds (distinct from the HTTP `listen`).
+    pub listen: SocketAddr,
+    /// The instance name this face serves (`""` = the default instance).
+    pub instance_name: String,
+    /// Allow `UpdateActionResult` (also gated on an AC-capable backend + a signer).
+    pub ac_update_enabled: bool,
+}
+
+impl Default for ReapiServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: "0.0.0.0:8980"
+                .parse()
+                .expect("valid default reapi listen addr"),
+            instance_name: String::new(),
+            ac_update_enabled: true,
+        }
+    }
+}
+
 /// Which storage substrate the daemon dispatches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +141,10 @@ pub struct Config {
     /// CAS node. Present = it runs one and schedules retention maintenance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cas: Option<CasConfig>,
+
+    /// Optional REAPI (Bazel remote cache) gRPC face. Absent = no REAPI server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reapi: Option<ReapiServerConfig>,
 }
 
 impl Default for Config {
@@ -136,6 +169,7 @@ impl Default for Config {
             nfs_export_root: PathBuf::from("/srv"),
             nfs_export_name: String::new(),
             cas: None,
+            reapi: None,
         }
     }
 }
@@ -239,6 +273,33 @@ mod tests {
         assert_eq!(cas.mode, CasMode::Durable);
         assert_eq!(cas.gc_grace_secs, 300);
         assert_eq!(cas.byte_budget, None);
+    }
+
+    #[test]
+    fn reapi_face_is_absent_by_default_and_parses_when_present() {
+        // Absent by default and omitted from serialized TOML.
+        let def = Config::default();
+        assert!(def.reapi.is_none());
+        assert!(!def.to_toml().contains("[reapi]"));
+
+        // A present block parses; unspecified keys take the ReapiServerConfig defaults.
+        let cfg: Config = toml::from_str(
+            "[reapi]\nenabled = true\nlisten = \"0.0.0.0:9092\"\ninstance_name = \"ci\"\nac_update_enabled = false\n",
+        )
+        .expect("parse");
+        let rc = cfg.reapi.expect("reapi present");
+        assert!(rc.enabled);
+        assert_eq!(rc.listen, "0.0.0.0:9092".parse().unwrap());
+        assert_eq!(rc.instance_name, "ci");
+        assert!(!rc.ac_update_enabled);
+
+        // Present-but-minimal: enabled defaults to false, listen to :8980.
+        let staged: Config =
+            toml::from_str("[reapi]\ninstance_name = \"staged\"\n").expect("parse");
+        let rc = staged.reapi.expect("reapi present");
+        assert!(!rc.enabled);
+        assert_eq!(rc.listen, "0.0.0.0:8980".parse().unwrap());
+        assert!(rc.ac_update_enabled);
     }
 
     #[test]
