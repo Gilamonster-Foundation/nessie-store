@@ -17,15 +17,19 @@
 #![allow(clippy::result_large_err)]
 
 mod boundary;
+mod config;
 mod map;
 mod proto;
 mod resource;
+mod services;
 mod size;
 mod status;
 
 pub use boundary::Sha256Boundary;
+pub use config::ReapiConfig;
 pub use map::{ar_from_reapi, ar_to_reapi, dir_child_digests};
 pub use proto::{build, bytestream, google, reapi, rpc};
 pub use resource::ResourceName;
+pub use services::CapabilitiesSvc;
 pub use size::{CasSizeSource, SizeSource};
 pub use status::status_from_backend;
