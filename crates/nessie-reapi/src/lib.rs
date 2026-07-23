@@ -12,8 +12,20 @@
 //! `Sha256Boundary`, the four services, and the daemon wiring land in later slices.
 
 #![forbid(unsafe_code)]
+// Every handler returns `Result<_, tonic::Status>`, and `Status` is a large type —
+// that is the required gRPC error, so boxing it would be non-idiomatic noise.
+#![allow(clippy::result_large_err)]
 
+mod boundary;
+mod map;
 mod proto;
+mod resource;
+mod size;
+mod status;
 
-pub use proto::build;
-pub use proto::{bytestream, google, reapi, rpc};
+pub use boundary::Sha256Boundary;
+pub use map::{ar_from_reapi, ar_to_reapi, dir_child_digests};
+pub use proto::{build, bytestream, google, reapi, rpc};
+pub use resource::ResourceName;
+pub use size::{CasSizeSource, SizeSource};
+pub use status::status_from_backend;
