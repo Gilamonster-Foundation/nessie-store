@@ -393,7 +393,14 @@ merge each slice on green, in dependency order).
 | Daemon wiring | `[cas]` config + `cas_node` + scheduled GC/evict maintenance | ✅ #97 |
 | Merkle DAG | `Tree` directory objects → transitive reachability + REAPI `Directory` | ✅ #99 |
 | REAPI seams | `CasBackend::put_keyed` + `size` (SHA-256-native path; no index) | ✅ #100 |
-| **REAPI gRPC face** | `nessie-reapi` crate: tonic + vendored protos; CAS/ByteStream/ActionCache/Capabilities over the backends; SHA-256 boundary. **Design: 13-slice plan** (design panel 2026-07-22) | 🔜 next |
+| REAPI crate | `nessie-reapi`: tonic + vendored trimmed protos + codegen (`protoc-bin-vendored`, self-contained) | ✅ #102 |
+| REAPI translation | `Sha256Boundary` (SHA-256 ↔ multihash at the wire), `ResourceName`, `status_from_backend`, `ar_*`/`dir_child_digests` map | ✅ #103 |
+| REAPI Capabilities | SHA-256-only, IDENTITY-only, symlinks-disallowed, execution-off cache handshake | ✅ #104 |
+| REAPI CAS | `FindMissingBlobs` + `BatchUpdateBlobs` (`put_keyed`) + `BatchReadBlobs` | ✅ #105, #106 |
+| REAPI ByteStream | large-blob `Read`/`Write`/`QueryWriteStatus` (spawn_blocking pump ↔ bounded mpsc) | ✅ #107 |
+| REAPI ActionCache | `GetActionResult` (confirmed AC → `ar_to_reapi`) + `UpdateActionResult` (store body → self-attest, k=1) + `AttestationSigner`/`DevSelfSigner` seam | ✅ #108 |
+| REAPI GetTree | breadth-first `Directory` walk re-emitting stored proto blobs (pagination) | 🔜 next |
+| REAPI daemon wiring | `[reapi]` config + tonic server beside axum in `serve()` | 🔜 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 

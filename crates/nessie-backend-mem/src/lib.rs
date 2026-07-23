@@ -562,6 +562,14 @@ impl CasBackend for MemActionCache {
         self.cas.put(source)
     }
 
+    fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
+        self.cas.put_keyed(expected, source)
+    }
+
+    fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
+        self.cas.size(digest)
+    }
+
     fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {
         Some(self)
     }
