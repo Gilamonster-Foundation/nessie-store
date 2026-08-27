@@ -156,4 +156,10 @@ async fn network_interface_reports_data_lif() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["records"][0]["name"], "data_nfs");
     assert_eq!(body["records"][0]["ip"]["address"], "127.0.0.1");
+    // Trident's ontap-nas driver filters LIF candidates on both fields;
+    // absent (vs. explicitly false) `enabled` unmarshals to the Go zero
+    // value client-side and the LIF gets silently dropped, failing backend
+    // init with "no NAS data LIFs found" even though the record is present.
+    assert_eq!(body["records"][0]["state"], "up");
+    assert_eq!(body["records"][0]["enabled"], true);
 }

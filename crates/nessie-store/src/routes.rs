@@ -123,6 +123,14 @@ async fn interfaces(State(s): State<AppState>) -> Json<Value> {
             "uuid": s.identity.lif_uuid,
             "name": "data_nfs",
             "ip": { "address": s.config.data_lif },
+            // Trident's ontap-nas driver filters LIF candidates on both
+            // fields; absent (not merely false) `enabled` unmarshals to the
+            // Go zero value (false) client-side, so the LIF is silently
+            // dropped and backend init fails with "no NAS data LIFs found"
+            // even though the record itself is present with the right
+            // service tag.
+            "state": "up",
+            "enabled": true,
             "services": ["data_nfs"],
             "svm": { "name": s.config.svm_name, "uuid": s.identity.svm_uuid },
             "_links": { "self": { "href": format!("/api/network/ip/interfaces/{}", s.identity.lif_uuid) } },
