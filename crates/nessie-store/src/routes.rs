@@ -68,6 +68,11 @@ fn svm_obj(s: &AppState) -> Value {
         "uuid": s.identity.svm_uuid,
         "name": s.config.svm_name,
         "state": "running",
+        // Trident's ontap-nas driver resolves storage pools by walking the
+        // SVM's assigned aggregates; an SVM with no aggregates listed here
+        // fails backend init with "SVM <name> has no assigned aggregates"
+        // even though /api/storage/aggregates itself is populated.
+        "aggregates": [aggregate_obj(s)],
         "_links": { "self": { "href": format!("/api/svm/svms/{}", s.identity.svm_uuid) } },
     })
 }

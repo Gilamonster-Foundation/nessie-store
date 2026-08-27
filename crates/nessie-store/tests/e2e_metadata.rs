@@ -126,6 +126,22 @@ async fn svm_lookup_hits_and_misses() {
 }
 
 #[tokio::test]
+async fn svm_lists_its_assigned_aggregates() {
+    // Trident's ontap-nas driver walks the SVM's `aggregates` array to
+    // discover storage pools; without it, backend init fails with
+    // "SVM <name> has no assigned aggregates" even though
+    // /api/storage/aggregates itself returns a record.
+    let (app, s) = test_app();
+    let (status, body) = get(&app, "/api/svm/svms", Some(ADMIN)).await;
+    assert_eq!(status, StatusCode::OK);
+    let aggregates = body["records"][0]["aggregates"]
+        .as_array()
+        .expect("svm record must include an aggregates array");
+    assert!(!aggregates.is_empty(), "svm must list at least one aggregate");
+    assert_eq!(aggregates[0]["uuid"], s.identity.aggregate_uuid);
+}
+
+#[tokio::test]
 async fn job_poll_always_succeeds() {
     let (app, _s) = test_app();
     let (status, body) = get(&app, "/api/cluster/jobs/any-uuid-123", Some(ADMIN)).await;
