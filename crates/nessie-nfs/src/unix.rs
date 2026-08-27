@@ -511,6 +511,22 @@ impl NFSFileSystem for PassthroughFs {
         Ok(nfspath3::from(target.as_os_str().as_bytes()))
     }
 
+    async fn link(
+        &self,
+        id: fileid3,
+        dirid: fileid3,
+        linkname: &filename3,
+    ) -> Result<fattr3, nfsstat3> {
+        let existing = self.path_of(id)?;
+        let dir = self.path_of(dirid)?;
+        let new_path = self.child_path(&dir, linkname.as_ref())?;
+        tokio::fs::hard_link(&existing, &new_path)
+            .await
+            .map_err(|e| io_to_nfs(&e))?;
+        let (new_id, meta) = self.register(&new_path)?;
+        Ok(metadata_to_fattr3(new_id, &meta))
+    }
+
     // --- Stable file handles: encode the fileid with no generation number, and
     // a fixed serverid, so handles survive a daemon restart. ---
 
