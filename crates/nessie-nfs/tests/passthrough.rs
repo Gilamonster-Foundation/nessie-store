@@ -337,3 +337,57 @@ async fn stable_handle_resolves_same_inode() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// --- LINK (NFSPROC3_LINK) --------------------------------------------------
+
+#[tokio::test]
+async fn link_creates_a_second_name_for_the_same_inode() {
+    // Regression: NFSPROC3_LINK was entirely unimplemented (fell into the
+    // dispatch table's catch-all), so any client relying on hard links —
+    // e.g. git's object-store dedup between forked repos — failed every
+    // link() with NFS3ERR_NOTSUPP / "Operation not supported".
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+
+    let (fid, _) = fs
+        .create(root, &name("original"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(fid, 0, b"shared-bytes").await.unwrap();
+
+    let attr = fs.link(fid, root, &name("linked")).await.unwrap();
+    assert_eq!(attr.size, 12);
+
+    // Same underlying inode: nlink is now 2, and both paths read identical bytes.
+    let orig_meta = std::fs::metadata(dir.join("original")).unwrap();
+    let link_meta = std::fs::metadata(dir.join("linked")).unwrap();
+    assert_eq!(orig_meta.ino(), link_meta.ino());
+    assert_eq!(link_meta.nlink(), 2);
+    assert_eq!(std::fs::read(dir.join("linked")).unwrap(), b"shared-bytes");
+
+    // Writing through the original is visible through the link (one inode).
+    fs.write(fid, 0, b"changed-bytes").await.unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("linked")).unwrap(),
+        b"changed-bytes"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn link_into_missing_directory_is_an_error() {
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (fid, _) = fs
+        .create(root, &name("f"), sattr3::default())
+        .await
+        .unwrap();
+
+    // 999_999_999 is never a real fileid in a fresh scratch dir.
+    assert!(fs.link(fid, 999_999_999, &name("f2")).await.is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
