@@ -106,12 +106,7 @@ cannot silently drift out of sync.
 | `nessie-client` | typed Rust client + PyO3 wheel | #72 |
 <!-- crate-inventory:planned END -->
 
-> **SnapMirror is control-plane only today.** Relationships, peers, and transfers
-> are tracked and a real source snapshot is taken per transfer, but the
-> cross-instance `zfs send → zfs receive` data movement is not yet wired (#69).
-> The current PyO3 wheels are per-crate bindings, not the unified `nessie-client`
-> above. Two experimental demand-paged NFS gateways (git-LFS, Perforce) are
-> designed but unbuilt (#71).
+> **Known gaps and in-flight caveats:** see [docs/status.md](docs/status.md).
 
 ## What this is not
 
