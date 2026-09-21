@@ -401,6 +401,8 @@ merge each slice on green, in dependency order).
 | REAPI ActionCache | `GetActionResult` (confirmed AC → `ar_to_reapi`) + `UpdateActionResult` (store body → self-attest, k=1) + `AttestationSigner`/`DevSelfSigner` seam | ✅ #108 |
 | REAPI GetTree | breadth-first `Directory` DAG walk re-emitting stored proto blobs; resume-token pagination; blocking-pool walk → bounded channel | ✅ #109 |
 | REAPI daemon wiring | `[reapi]` config + `build_router` seam + tonic server spawned beside axum in `serve()`; SHA-256-native self-attesting in-mem cache; startup `put_keyed` probe | ✅ #110 |
+| S3 face crate | `nessie-s3`: `PutObject`/`GetObject`/`HeadObject` over `s3s`; key *is* the digest; refuses framed `cas.v2` and non-content-addressed `ac`/`raw` | ✅ #118 |
+| S3 daemon wiring | `[s3]` config + `faces` module: **one** CAS backend shared by both faces, S3 mounted as an axum fallback beside the ONTAP surface | ✅ #119 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 
@@ -411,9 +413,15 @@ replica-gated eviction) with the paired safety property proved in `formal/`, the
 `Tree` objects, the REAPI write/emit seams, the daemon that runs a configured CAS node with
 scheduled maintenance, and the full **REAPI gRPC cache face** (Capabilities + CAS +
 ByteStream + ActionCache + GetTree over a SHA-256 boundary) wired beside axum and gated on a
-`[reapi]` config block — *a Bazel remote cache with no BuildBarn to stand up*. What remains
-is *distribution*: the two real network routers (NATS rendezvous + Kademlia DHT) that turn
-the single node into a swarm.
+`[reapi]` config block — *a Bazel remote cache with no BuildBarn to stand up* — plus a
+second face over the **same** blobs: the **S3 object API**, for the many cache clients that
+speak S3 rather than gRPC. The two faces are not integrated with each other and do not need
+to be; a blob written over one is readable over the other because both name it by the same
+digest and the daemon hands them one backend. The S3 face serves the content-addressed
+prefix only, and *refuses* a write whose bytes do not hash to the key naming it — so a
+client configured to send framed or name-addressed objects gets an error that names the
+setting, not silent corruption. What remains is *distribution*: the two real network routers
+(NATS rendezvous + Kademlia DHT) that turn the single node into a swarm.
 
 ## Open questions (deferred, tracked)
 
