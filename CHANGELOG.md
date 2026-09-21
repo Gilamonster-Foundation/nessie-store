@@ -24,8 +24,6 @@ All notable changes to nessie-store are documented here. The format follows
   a misconfigured client degrades to a cold cache rather than failing builds.
   Listing and mutable names — what a general-purpose S3 client needs — are not in
   this slice. Daemon wiring (`[s3]`) follows separately.
-
-### Added
 - **SnapMirror live data plane (#69).** Cross-instance replication now moves real
   bytes. A new `ReplicationBackend` capability tier (`send_stream` / `receive_stream`,
   reached via `SnapshotBackend::as_replication`) is implemented by the `mem` and
@@ -38,6 +36,18 @@ All notable changes to nessie-store are documented here. The format follows
   [docs/REPLICATION.md](docs/REPLICATION.md) to run two instances, and
   `docs/design/snapmirror-data-plane.md` for the design (incl. fan-out / cascade
   topology). A two-instance integration test proves it end to end.
+
+### Changed
+- **MSRV raised to 1.96** (`rust-toolchain.toml` 1.88.0 → 1.96.1, workspace
+  `rust-version` 1.88 → 1.96, builder image `rust:1.88-bookworm` →
+  `rust:1.96-bookworm`). Required by `s3s` 0.16, and the reason to take it now
+  rather than pin around it: under the old 1.88 ceiling the MSRV-constrained
+  resolver dragged the SigV4 and checksum path down onto **release-candidate**
+  crypto crates (`sha2 0.11.0-rc.3`, `hmac 0.13.0-rc.3`, `md-5 0.11.0-rc.3`, plus a
+  hand-pinned `digest 0.11.0-rc.4` to make them compile together). On 1.96 all four
+  resolve to final releases and the pins are gone. One new clippy lint
+  (`manual_is_multiple_of`) fixed in `nessie-backend-core`; the rest of the
+  workspace is unchanged and the full suite passes.
 
 ### Documentation
 - **Durable-docs honesty pass.** The README now carries a machine-checked **crate
