@@ -7,6 +7,25 @@ All notable changes to nessie-store are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **S3 object-API face over the CAS (`nessie-s3`).** A second protocol face beside
+  the REAPI one, over the *same* content-addressed store: a blob written over REAPI
+  gRPC is the blob an S3 client reads, because both name it by the same digest.
+  Serves object keys of the form `{prefix}/cas/{xx}/{sha256-hex}` — the layout used
+  by cache clients that key blobs by their own digest, bazel-remote's S3 backend
+  being the one this was built against — so the S3 key *is* the digest and the face
+  needs no bucket index, no name→digest table and no configuration. Three of
+  `s3s`'s trait methods are implemented (`PutObject`, `GetObject`, `HeadObject`);
+  the rest keep the trait's default `NotImplemented`. Writes go through
+  `CasBackend::put_keyed`, so a body that does not hash to the digest in its key is
+  **refused, not stored**; that makes two client misconfigurations visible as errors
+  instead of silent corruption — framed `cas.v2/` objects (refused on write with a
+  message naming `--s3.storage_mode uncompressed`) and non-content-addressed `ac/` /
+  `raw/` keys (reported absent). Read paths report both as a plain cache *miss*, so
+  a misconfigured client degrades to a cold cache rather than failing builds.
+  Listing and mutable names — what a general-purpose S3 client needs — are not in
+  this slice. Daemon wiring (`[s3]`) follows separately.
+
+### Added
 - **SnapMirror live data plane (#69).** Cross-instance replication now moves real
   bytes. A new `ReplicationBackend` capability tier (`send_stream` / `receive_stream`,
   reached via `SnapshotBackend::as_replication`) is implemented by the `mem` and

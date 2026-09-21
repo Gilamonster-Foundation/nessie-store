@@ -1,0 +1,25 @@
+[package]
+name = "nessie-s3"
+description = "S3 object-API face over the nessie content-addressed store, for cache clients that key blobs by their own digest."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+s3s = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
+http = { workspace = true }
+tokio = { workspace = true }

@@ -16,6 +16,7 @@ members = [
     "crates/nessie-ac-conformance",
     "crates/nessie-cas-store",
     "crates/nessie-reapi",
+    "crates/nessie-s3",
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",
@@ -100,6 +101,18 @@ tonic-build = "0.12"
 # A vendored protoc binary so codegen needs no system `protoc` (the ARC CI runners
 # have none). build.rs points prost-build at it.
 protoc-bin-vendored = "3"
+
+# S3 protocol adapter (the S3 face). Supplies routing, SigV4 and the XML wire
+# shapes behind a trait whose methods all default to NotImplemented, so the face
+# implements only the three a digest-keyed cache client calls.
+#
+# PINNED TO 0.12 BY THE MSRV, not by preference: s3s 0.13+ requires rustc 1.92
+# and 0.15+ requires 1.96, while this workspace pins 1.88 (rust-toolchain.toml).
+# 0.12 is the newest release that builds on 1.88, and the surface this face uses
+# — the three S3 trait methods, StreamingBlob::wrap, SimpleAuth::from_single,
+# S3ServiceBuilder — is byte-identical to 0.16's. Revisit when the workspace
+# MSRV moves, which is its own decision and not this face's to force.
+s3s = "0.12"
 
 # Multi-threaded helpers (used where measurement justifies them)
 rayon = "1"
