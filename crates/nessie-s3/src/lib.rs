@@ -50,6 +50,10 @@ pub use error::s3_error_from_backend;
 pub use key::ObjectKey;
 pub use service::NessieS3;
 
+/// The transport-level error `S3Service` surfaces, re-exported so a daemon can name
+/// it in an error handler without depending on `s3s` directly.
+pub use s3s::HttpError;
+
 use nessie_backend_core::CasBackend;
 use s3s::auth::{SecretKey, SimpleAuth};
 use s3s::service::{S3Service, S3ServiceBuilder};
