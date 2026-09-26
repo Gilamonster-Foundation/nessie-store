@@ -10,7 +10,7 @@
 //! All traits are `Send + Sync` so the daemon can hold a backend behind an
 //! `Arc<dyn VolumeBackend>` and dispatch from many async tasks. Supertrait
 //! upcasting (`&dyn CloneBackend` → `&dyn VolumeBackend`) is relied upon and is
-//! stable on the repo MSRV (1.88).
+//! stable since 1.86, below the repo MSRV.
 
 use crate::access::AccessHandle;
 use crate::capabilities::Capabilities;
@@ -339,7 +339,7 @@ mod tests {
     fn replication_upcasts_to_snapshot_and_volume() {
         let b = FullTier;
         let repl: &dyn ReplicationBackend = b.as_snapshot().unwrap().as_replication().unwrap();
-        // Upcast through the supertrait edge (stable on MSRV 1.88).
+        // Upcast through the supertrait edge (stable since 1.86).
         let as_snap: &dyn SnapshotBackend = repl;
         let as_vol: &dyn VolumeBackend = as_snap;
         assert!(as_vol.capabilities().replication);
@@ -349,7 +349,7 @@ mod tests {
     fn supertrait_upcast_clone_to_volume() {
         let b = FullTier;
         let clone: &dyn CloneBackend = b.as_snapshot().unwrap().as_clone().unwrap();
-        // Upcast through both supertrait edges (stable on MSRV 1.88).
+        // Upcast through both supertrait edges (stable since 1.86).
         let as_snap: &dyn SnapshotBackend = clone;
         let as_vol: &dyn VolumeBackend = as_snap;
         assert!(as_vol.capabilities().clones);

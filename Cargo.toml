@@ -16,6 +16,7 @@ members = [
     "crates/nessie-ac-conformance",
     "crates/nessie-cas-store",
     "crates/nessie-reapi",
+    "crates/nessie-s3",
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",
@@ -40,7 +41,7 @@ members = [
 [workspace.package]
 version = "0.3.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.96"
 authors = ["Shawn Hartsock <hartsock@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Gilamonster-Foundation/nessie-store"
@@ -100,6 +101,12 @@ tonic-build = "0.12"
 # A vendored protoc binary so codegen needs no system `protoc` (the ARC CI runners
 # have none). build.rs points prost-build at it.
 protoc-bin-vendored = "3"
+
+# S3 protocol adapter (the S3 face). Supplies routing, SigV4 and the XML wire
+# shapes behind a trait whose methods all default to NotImplemented, so the face
+# implements only the three a digest-keyed cache client calls. Its rustc 1.96
+# requirement is what sets the workspace MSRV above.
+s3s = "0.16"
 
 # Multi-threaded helpers (used where measurement justifies them)
 rayon = "1"
