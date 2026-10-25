@@ -20,7 +20,7 @@ mod peers;
 mod router;
 mod swarm;
 
-pub use durable::{HttpReplicator, StaticDurabilityOracle};
+pub use durable::{HttpReplicator, Pushed, StaticDurabilityOracle};
 pub use peers::{Peer, PeerSet};
 pub use router::StaticRouter;
 pub use swarm::SwarmCas;

@@ -198,6 +198,17 @@ impl<C: ReclaimableCas> CasStore<C> {
         }
     }
 
+    /// Stop counting `digest`: its bytes left the store (quarantined or reclaimed), so
+    /// a restore is admitted by the capacity gate like any new write. Counted iff in
+    /// `accounted`, so removing a digest twice subtracts once.
+    pub(crate) fn unaccount(&self, digest: &Digest, size: u64) {
+        let mut state = self.state();
+        if state.accounted.remove(digest) {
+            state.committed = state.committed.saturating_sub(size);
+            self.committed.store(state.committed, Ordering::SeqCst);
+        }
+    }
+
     /// Write-only `put_keyed`: a blob already held is a no-op (never refused);
     /// otherwise the write streams through the capacity gate.
     fn put_keyed_write_only(

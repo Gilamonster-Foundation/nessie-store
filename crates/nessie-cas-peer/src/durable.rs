@@ -62,7 +62,22 @@ impl HttpReplicator {
     ///
     /// [`BackendError`] if the local blob cannot be read.
     pub fn push(&self, digest: &Digest, target: NonZeroUsize) -> Result<usize, BackendError> {
+        self.push_counting(digest, target).map(|p| p.held)
+    }
+
+    /// As [`push`](Self::push), also reporting how many copies this call had to send —
+    /// zero means the peers already held it, which is what a repair pass tells apart.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the local blob cannot be read.
+    pub fn push_counting(
+        &self,
+        digest: &Digest,
+        target: NonZeroUsize,
+    ) -> Result<Pushed, BackendError> {
         let mut held = 0;
+        let mut sent = 0;
         for peer in self.peers.peers().iter().filter(|p| p.durable) {
             if held >= target.get() {
                 break;
@@ -74,11 +89,21 @@ impl HttpReplicator {
                 {
                     continue;
                 }
+                sent += 1;
             }
             held += 1;
         }
-        Ok(held)
+        Ok(Pushed { held, sent })
     }
+}
+
+/// What a [`push_counting`](HttpReplicator::push_counting) call achieved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pushed {
+    /// Peers confirmed holding the blob durably when the call returned.
+    pub held: usize,
+    /// Copies this call sent that landed and were confirmed.
+    pub sent: usize,
 }
 
 impl Replicator for HttpReplicator {

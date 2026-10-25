@@ -25,6 +25,7 @@ mod policy;
 mod reach;
 mod resolver;
 mod roots;
+mod scrub;
 mod store;
 
 pub use clock::{Clock, MockClock, SystemClock};
