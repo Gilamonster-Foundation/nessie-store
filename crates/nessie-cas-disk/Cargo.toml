@@ -1,0 +1,16 @@
+[package]
+name = "nessie-cas-disk"
+description = "Persistent on-disk CasBackend for nessie-store: write-then-rename commit, verified reads, reclaimable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+
+[dev-dependencies]
+nessie-cas-conformance = { path = "../nessie-cas-conformance", version = "0.3.1" }
