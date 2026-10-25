@@ -18,9 +18,12 @@ use nessie_backend_core::{
 };
 use nessie_backend_mem::{MemCas, MemRouter};
 use nessie_cas_disk::DiskCas;
+use nessie_cas_peer::{
+    HttpReplicator, Peer, PeerSet, StaticDurabilityOracle, StaticRouter, SwarmCas,
+};
 use nessie_cas_store::{
-    CasStore, Clock, NoDurableOracle, RefuseToReplicate, RetentionPolicy, RootRegistry,
-    StorageMode, SystemClock,
+    CasStore, Clock, DurabilityOracle, NoDurableOracle, RefuseToReplicate, Replicator,
+    RetentionPolicy, RootRegistry, StorageMode, SystemClock,
 };
 
 use crate::config::{CasBackendKind, CasConfig, CasMode};
@@ -63,6 +66,11 @@ pub struct CasNode {
     store: CasStore<Box<dyn ReclaimableCas>>,
     roots: RootRegistry,
     interval: Duration,
+    oracle: Box<dyn DurabilityOracle>,
+    replicator: Box<dyn Replicator>,
+    /// The blobs held here, without peer fallback (`None`: no peers, the store is
+    /// already local-only).
+    local: Option<Arc<dyn CasBackend>>,
 }
 
 impl CasNode {
@@ -88,10 +96,44 @@ impl CasNode {
                 )
             }
         };
+        // With peers: fetch-through beneath the store, and the static router /
+        // oracle / replicator in place of the in-process ones.
+        let peer_list = cfg.effective_peers()?;
+        let (blobs, router, oracle, replicator, local): (_, Arc<dyn ContentRouter>, _, _, _) =
+            if peer_list.is_empty() {
+                (
+                    blobs,
+                    Arc::new(MemRouter::new(me.clone())),
+                    Box::new(NoDurableOracle) as Box<dyn DurabilityOracle>,
+                    Box::new(RefuseToReplicate) as Box<dyn Replicator>,
+                    None,
+                )
+            } else {
+                let peers = Arc::new(PeerSet::new(
+                    peer_list
+                        .iter()
+                        .map(|p| Peer {
+                            url: p.url.clone(),
+                            durable: p.durable,
+                        })
+                        .collect(),
+                )?);
+                // write_only: serve fetched bytes without storing them (capacity gate).
+                let swarm = SwarmCas::new(blobs, peers.clone())
+                    .with_cache_fills(matches!(policy.mode, StorageMode::Lru(_)));
+                let local: Arc<dyn CasBackend> = swarm.local();
+                (
+                    Box::new(swarm) as Box<dyn ReclaimableCas>,
+                    Arc::new(StaticRouter::new(peers.clone())),
+                    Box::new(StaticDurabilityOracle::new(peers.clone())),
+                    Box::new(HttpReplicator::new(peers, local.clone())),
+                    Some(local),
+                )
+            };
         let store = CasStore::new(
             blobs,
             policy,
-            Arc::new(MemRouter::new(me.clone())) as Arc<dyn ContentRouter>,
+            router,
             Arc::new(SystemClock) as Arc<dyn Clock>,
             me,
         )?;
@@ -99,6 +141,9 @@ impl CasNode {
             store,
             roots: RootRegistry::new(),
             interval: Duration::from_secs(cfg.maintenance_interval_secs),
+            oracle,
+            replicator,
+            local,
         })
     }
 
@@ -114,8 +159,8 @@ impl CasNode {
             StorageMode::Lru(_) => {
                 let report = self.store.evict_to_budget(
                     &self.roots,
-                    &NoDurableOracle,
-                    &RefuseToReplicate,
+                    self.oracle.as_ref(),
+                    self.replicator.as_ref(),
                 )?;
                 Ok(MaintenanceReport::Evict {
                     evicted: report.evicted,
@@ -129,6 +174,23 @@ impl CasNode {
     #[must_use]
     pub fn store(&self) -> &CasStore<Box<dyn ReclaimableCas>> {
         &self.store
+    }
+
+    /// The blobs held on this node **only** — no fetch-through, no peer probing. The
+    /// peer routes answer from this, so two nodes listing each other cannot recurse.
+    #[must_use]
+    pub fn local(&self) -> &dyn CasBackend {
+        self.local.as_deref().unwrap_or(&self.store)
+    }
+
+    /// This node's retention mode as peers see it in `x-nessie-mode`. A peer's
+    /// `durable` hint is trusted only when it reports `write_only`.
+    #[must_use]
+    pub fn mode_name(&self) -> &'static str {
+        match self.store.policy().mode {
+            StorageMode::WriteOnly(_) => "write_only",
+            StorageMode::Lru(_) => "lru",
+        }
     }
 
     /// The node's root registry (register confirmed AC entries / pins here).

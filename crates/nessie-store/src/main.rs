@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -123,7 +124,16 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
 
     let listen = cfg.listen;
     let tls_dir = cfg.tls_dir();
-    let router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
+    let peer_api = cfg.cas.as_ref().is_some_and(|c| c.peer_api);
+    let mut router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
+    if peer_api {
+        let node = faces
+            .node
+            .clone()
+            .context("[cas] peer_api = true requires a [cas] node")?;
+        tracing::warn!("cas peer API mounted UNAUTHENTICATED (lab only; mTLS is the fast-follow)");
+        router = router.merge(nessie_store::cas_routes::peer_routes(node));
+    }
 
     if no_tls {
         let listener = tokio::net::TcpListener::bind(listen).await?;

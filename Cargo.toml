@@ -12,6 +12,7 @@ members = [
     "crates/nessie-backend-core",
     "crates/nessie-backend-mem",
     "crates/nessie-cas-disk",
+    "crates/nessie-cas-peer",
     "crates/nessie-backend-conformance",
     "crates/nessie-cas-conformance",
     "crates/nessie-ac-conformance",
@@ -128,7 +129,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rcgen = "0.13"
 
 # HTTP client (ontap-passthrough backend; s3 backend uses object_store)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 # Base64 (HTTP Basic auth credential decode)
 base64 = "0.22"

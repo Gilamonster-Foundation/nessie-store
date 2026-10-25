@@ -1615,6 +1615,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nessie-cas-peer"
+version = "0.3.1"
+dependencies = [
+ "axum",
+ "nessie-backend-core",
+ "nessie-backend-mem",
+ "nessie-cas-store",
+ "reqwest 0.12.28",
+ "tokio",
+]
+
+[[package]]
 name = "nessie-cas-store"
 version = "0.3.1"
 dependencies = [
@@ -1710,6 +1722,7 @@ dependencies = [
  "nessie-backend-mem",
  "nessie-backend-zfs",
  "nessie-cas-disk",
+ "nessie-cas-peer",
  "nessie-cas-store",
  "nessie-nfs",
  "nessie-ontap-protocol",

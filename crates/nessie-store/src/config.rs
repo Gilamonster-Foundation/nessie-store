@@ -33,6 +33,18 @@ pub enum CasBackendKind {
     Disk,
 }
 
+/// One static peer in `[cas] peers`: another nessie-store node's base URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CasPeer {
+    /// Base URL of the peer's `/cas/v1` surface, e.g. `http://host:8443`.
+    pub url: String,
+    /// A hint that this peer is a permanent home: it is probed by the durability
+    /// oracle and is a replication target. The hint is **verified** — the peer counts
+    /// as a durable holder only if it reports `x-nessie-mode: write_only` itself.
+    #[serde(default)]
+    pub durable: bool,
+}
+
 /// Optional `[cas]` node configuration. When present, the daemon runs a
 /// content-addressed store and periodically performs retention maintenance
 /// (LRU eviction, or none in write-only mode). Fields are plain values so this crate stays
@@ -54,6 +66,41 @@ pub struct CasConfig {
     /// Required. `lru`: the local byte ceiling that triggers eviction.
     /// `write_only`: the hard capacity past which writes are refused.
     pub byte_budget: Option<u64>,
+    /// Static peer list for fetch-through, the durability oracle and replication.
+    /// Empty = a standalone node.
+    pub peers: Vec<CasPeer>,
+    /// Serve `GET|HEAD|PUT /cas/v1/blobs/{digest}` so peers can reach this node.
+    /// **Lab only: the routes are unauthenticated; mTLS is the fast-follow.**
+    pub peer_api: bool,
+    /// This node's own peer URL, as other nodes list it. A `peers` entry equal to
+    /// it is ignored, so one shared peer list can be deployed to every node.
+    pub advertise_url: Option<String>,
+}
+
+impl CasConfig {
+    /// The peers this node should talk to: trailing slashes normalised, this node's
+    /// own [`advertise_url`](CasConfig::advertise_url) removed.
+    ///
+    /// # Errors
+    ///
+    /// A URL listed twice — the duplicate would be counted as a second holder.
+    pub fn effective_peers(&self) -> anyhow::Result<Vec<CasPeer>> {
+        let norm = |u: &str| u.trim_end_matches('/').to_owned();
+        let me = self.advertise_url.as_deref().map(norm);
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for p in &self.peers {
+            let url = norm(&p.url);
+            anyhow::ensure!(seen.insert(url.clone()), "[cas] peers lists {url} twice");
+            if me.as_deref() != Some(url.as_str()) {
+                out.push(CasPeer {
+                    url,
+                    durable: p.durable,
+                });
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl Default for CasConfig {
@@ -65,6 +112,9 @@ impl Default for CasConfig {
             gc_grace_secs: 300,
             maintenance_interval_secs: 300,
             byte_budget: None,
+            peers: Vec::new(),
+            peer_api: false,
+            advertise_url: None,
         }
     }
 }
@@ -242,6 +292,9 @@ impl Config {
         let mut cfg: Config = toml::from_str(&text)
             .map_err(|e| anyhow::anyhow!("parsing config {}: {e}", path.display()))?;
         cfg.apply_env();
+        if let Some(cas) = &cfg.cas {
+            cas.effective_peers()?;
+        }
         Ok(cfg)
     }
 
@@ -336,6 +389,58 @@ mod tests {
         assert_eq!(cas.mode, CasMode::Lru);
         assert_eq!(cas.gc_grace_secs, 300);
         assert_eq!(cas.byte_budget, None);
+    }
+
+    #[test]
+    fn cas_peers_parse_and_peer_api_defaults_off() {
+        let bare: Config = toml::from_str("[cas]\n").expect("parse");
+        let cas = bare.cas.expect("cas present");
+        assert!(cas.peers.is_empty());
+        assert!(!cas.peer_api, "peer routes are off unless asked for");
+
+        let cfg: Config = toml::from_str(
+            "[cas]\npeer_api = true\npeers = [{ url = \"http://a:1\", durable = true }, { url = \"http://b:2\" }]\n",
+        )
+        .expect("parse");
+        let cas = cfg.cas.expect("cas present");
+        assert!(cas.peer_api);
+        assert_eq!(
+            cas.peers,
+            vec![
+                CasPeer {
+                    url: "http://a:1".into(),
+                    durable: true
+                },
+                CasPeer {
+                    url: "http://b:2".into(),
+                    durable: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_peers_are_rejected_and_self_is_dropped() {
+        let peer = |u: &str| CasPeer {
+            url: u.into(),
+            durable: true,
+        };
+        let dup = CasConfig {
+            peers: vec![peer("http://a:1"), peer("http://a:1/")],
+            ..CasConfig::default()
+        };
+        let err = dup.effective_peers().unwrap_err().to_string();
+        assert!(
+            err.contains("http://a:1 twice"),
+            "names the duplicate: {err}"
+        );
+
+        let shared = CasConfig {
+            peers: vec![peer("http://me:1"), peer("http://b:2")],
+            advertise_url: Some("http://me:1/".into()),
+            ..CasConfig::default()
+        };
+        assert_eq!(shared.effective_peers().unwrap(), vec![peer("http://b:2")]);
     }
 
     #[test]
