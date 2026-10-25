@@ -241,7 +241,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(d.to_string(), b"x".to_vec());
-        // A mislabelled lru peer counts whether or not it already had the blob.
+        // A mislabelled lru peer does NOT count, whether or not it already had the blob.
         assert_eq!(rep.push(&d, NonZeroUsize::new(3).unwrap()).unwrap(), 1);
         assert!(wo_blobs.lock().unwrap().contains_key(&d.to_string()));
         assert!(

@@ -20,17 +20,17 @@ All notable changes to nessie-store are documented here. The format follows
   model are removed.
 
 ### Added
+- **`nessie-cas-disk`: a persistent `ReclaimableCas`.** Git-loose-object layout
+  (digest-fanned files); a blob is written to a temp file and renamed into place before
+  it is visible, temp files are swept on open, and reads are verified. Select it with
+  `[cas] backend = "disk"`.
 - **`[cas] backend = "mem"|"disk"` + `path`; one store behind both faces.** `CasNode`
   now holds a `CasStore<Box<dyn ReclaimableCas>>` (in-memory or `DiskCas`), and with
   `[cas]` present REAPI, S3 and retention maintenance share that single store
   (`faces::build_faces`, the entry point `main` calls). `MemActionCache` keeps result
   bodies in any shared `CasBackend` (`MemActionCache::shared`); attestations stay in
   memory. `backend = "disk"` without `path` is a config error. The daemon now refuses
-  to start the S3 face while its secret is the default `nessie`. A durable `[cas]`
-  node with REAPI or S3 enabled is **retain-all**: face writes have no persistent
-  roots, so the GC sweep is disabled (it would delete them after a restart) until
-  persistent roots land (#137). In cache mode a completed face write releases its
-  in-flight guard, so it is a normal replica-gated eviction candidate.
+  to start the S3 face while its secret is the default `nessie`.
 - **S3 face accepts flat `{prefix}{sha256}` keys** (kyln's layout, no `cas/{xx}/` shard): a final segment of exactly 64 lowercase hex maps to the same digest as the sharded form; `ac/`, `raw/` and `cas.v2/` unchanged.
 - **S3 object-API face over the CAS (`nessie-s3`).** A second protocol face beside
   the REAPI one, over the *same* content-addressed store: a blob written over REAPI
@@ -94,6 +94,10 @@ All notable changes to nessie-store are documented here. The format follows
   experimental NFS gateways (#71).
 
 ### Fixed
+- **Restart keeps young blobs inside the grace window.** `CasStore::new` seeds every
+  local blob's write-time with the current clock, so after a restart `lru` eviction
+  treats existing blobs as fresh for one `gc_grace` instead of as old. `new` returns
+  `Result` and fails closed if enumeration fails.
 - **Windows workspace build.** `nessie-nfs` is Unix-only (it relies on
   `std::os::unix`, `tokio::fs::symlink`, and AUTH_UNIX `chown`) but was not gated,
   so `cargo build/test --workspace` failed to compile on Windows (the nightly

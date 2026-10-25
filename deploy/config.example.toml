@@ -67,6 +67,16 @@ mode = "lru"
 byte_budget = 107374182400   # 100 GiB
 backend = "disk"
 path = "/var/lib/nessie-store/cas"
+#
+# Static peers (lab only: plain http, unauthenticated; mTLS is the fast-follow).
+# A miss is fetched from peers and verified against its digest; `durable = true` is
+# a hint of whom to probe and replicate to, believed only if that peer reports
+# x-nessie-mode: write_only. List each URL once; advertise_url is this node's own
+# URL (that entry is ignored, so one list can be shared). peer_api serves
+# GET|HEAD|PUT /cas/v1/blobs/{algo}:{hex} so other nodes can reach this one.
+# peers = [{ url = "http://nessie-2:8443", durable = true }, { url = "http://nessie-3:8443" }]
+# peer_api = true
+# advertise_url = "http://nessie-1:8443"
 
 # Optional S3 object face over the same store. The daemon REFUSES to start it while
 # secret_key is still the default: set NESSIE_S3_SECRET_KEY (see environment.example).
