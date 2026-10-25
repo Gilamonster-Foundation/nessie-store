@@ -22,9 +22,9 @@ Run everything: `./check.sh` (needs `lake` on PATH; fetches `tla2tools.jar` into
 | **PO-AC-3** | Monotonic confirmation: the store only grows, so a confirmation is never revoked. | `tla/AcCrdt.tla` · `MonotoneStore` **+** `lean` · `confirmed_monotone`, `confirmed_stable_under_merge` | TLC + Lean | ✅ checked |
 | **PO-AC-4** | Convergence: the merge is a join-semilattice (commutative, associative, idempotent) ⇒ strong eventual consistency; duplicate delivery is harmless. | `lean` · `union_comm`/`union_assoc`/`union_idem`, `merge_confluent`, `merge_absorb_redelivery` | Lean | ✅ checked |
 | **PO-AC-B** | Boundary/tightness: at `\|Byzantine\| = K` the guarantee **breaks** — a Byzantine cohort of size `K` forges a confirmation. Proves the minority hypothesis is load-bearing, not decorative. | `tla/AcCrdt_ByzThreshold.cfg` · counterexample to `ForgeryFree` | TLC | ✅ demonstrated |
-| **PO-GC-1** | Durable-mode GC never collects a *reachable* blob (mark-and-sweep correctness): `swept ∩ reachable = ∅`, and a reachable held blob survives. | `lean/Gc.lean` · `swept_disjoint_reachable`, `reachable_survives`, `root_survives` | Lean | ✅ checked |
-| **PO-GC-1-op** | The put→reference *race* cannot sweep an in-flight blob — the in-process write-guard is load-bearing. | `tla/Gc.tla` · `InflightProtected`/`RootsStored` (**+** `tla/Gc_Unguarded.cfg` counterexample) | TLC | ✅ checked |
-| **PO-GC-2** | Cache-mode eviction never loses a *reachable* blob swarm-wide (a durable holder or ≥ R replicas retain it). | `tla/Eviction.tla` · `NoReachableLost` | TLC | ✅ checked |
+| **PO-GC-1** | _The durable sweep is retired (#138); the reachability algebra stays with `reachable_closure`._ Durable-mode GC never collects a *reachable* blob (mark-and-sweep correctness): `swept ∩ reachable = ∅`, and a reachable held blob survives. | `lean/Gc.lean` · `swept_disjoint_reachable`, `reachable_survives`, `root_survives` | Lean | ✅ checked |
+| **PO-GC-1-op** | _Retired (#138)._ The durable sweep's put→reference race model (`tla/Gc.tla`) was deleted with the sweep; `lru` protects in-flight writes in `evict.rs`, covered by a unit test. | — | — | retired |
+| **PO-GC-2** | _Models the retired replica-gated policy (#138): the `lru` mode drops sole copies by design, so this is no longer a property of the daemon._ Cache-mode eviction never loses a *reachable* blob swarm-wide (a durable holder or ≥ R replicas retain it). | `tla/Eviction.tla` · `NoReachableLost` | TLC | ✅ checked |
 | **PO-GC-2-B** | Boundary/tightness: with no replica gate and no durable node, a pure cache swarm loses a blob — proving the gate is load-bearing. | `tla/Eviction_Unsafe.cfg` · counterexample to `NoReachableLost` | TLC | ✅ demonstrated |
 
 The GC obligations are the storage-mode safety pair from the design doc's
@@ -59,8 +59,6 @@ formal/
     AcCrdt.tla                 the AC attestation-CRDT + its safety properties
     AcCrdt.cfg                 main model: 2 nodes, 3 signers, 1 Byzantine, K=2 (PASS)
     AcCrdt_ByzThreshold.cfg    boundary model: 2 Byzantine, K=2 (FAILS by design)
-    Gc.tla                     durable GC put→reference race (write-guard)
-    Gc.cfg                     guard ON (PASS) · Gc_Unguarded.cfg  guard OFF (FAILS by design)
     Eviction.tla               cache eviction: no reachable blob lost swarm-wide
     Eviction.cfg               gated + durable (PASS) · Eviction_Unsafe.cfg  ungated (FAILS by design)
   lean/

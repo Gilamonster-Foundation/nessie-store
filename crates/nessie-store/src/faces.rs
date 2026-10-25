@@ -46,12 +46,6 @@ pub fn build_faces(cfg: &Config) -> anyhow::Result<Faces> {
         .map(|c| CasNode::from_config(c, PeerId::new(cfg.data_lif.clone())).map(Arc::new))
         .transpose()?;
     let backend = if reapi_on || s3_on {
-        if let Some(n) = &node {
-            n.mark_face_backed();
-            tracing::info!(
-                "durable CAS serves a protocol face: retain-all, GC sweep disabled until persistent roots exist"
-            );
-        }
         Some(build_cas_backend(node.clone())?)
     } else {
         None
@@ -105,9 +99,14 @@ fn probe_put_keyed(cas: &dyn CasBackend) -> anyhow::Result<()> {
     use nessie_backend_core::{Digest, DigestAlgo};
     let probe = b"nessie cache-face put_keyed startup probe";
     let digest = Digest::compute_with(DigestAlgo::Sha256, probe);
-    cas.put_keyed(&digest, &mut probe.as_slice())
-        .map_err(|e| anyhow::anyhow!("cache backend does not support put_keyed: {e}"))?;
-    Ok(())
+    match cas.put_keyed(&digest, &mut probe.as_slice()) {
+        // A full write-only store refusing the probe still proves `put_keyed` exists;
+        // it must not keep a full-but-healthy node from restarting.
+        Ok(()) | Err(nessie_backend_core::BackendError::CapacityExceeded { .. }) => Ok(()),
+        Err(e) => Err(anyhow::anyhow!(
+            "cache backend does not support put_keyed: {e}"
+        )),
+    }
 }
 
 /// Spawn the tonic REAPI server over the shared backend.

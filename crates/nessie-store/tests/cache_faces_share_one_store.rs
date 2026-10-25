@@ -40,6 +40,7 @@ fn faces_config(disk: Option<&std::path::Path>) -> Config {
         cas: disk.map(|path| CasConfig {
             backend: CasBackendKind::Disk,
             path: Some(path.to_owned()),
+            byte_budget: Some(1 << 30),
             ..Default::default()
         }),
         ..Default::default()
@@ -279,7 +280,7 @@ fn the_default_s3_secret_is_refused() {
     assert!(build_faces(&cfg).is_ok());
 }
 
-/// Zero grace so a single maintenance pass may sweep anything unreachable.
+/// Zero grace so a single maintenance pass may evict anything unpinned.
 fn zero_grace(cfg: &mut Config, mode: CasMode) {
     let cas = cfg.cas.as_mut().expect("cas");
     cas.gc_grace_secs = 0;
@@ -291,12 +292,11 @@ fn blob_digest(hash: &str) -> nessie_backend_core::Digest {
 }
 
 #[tokio::test]
-async fn durable_gc_never_sweeps_face_written_blobs_after_restart() {
-    // Shepherd P1 on #136: nothing roots S3/REAPI blobs and roots are in memory, so
-    // after a restart durable GC would reclaim every uploaded blob.
+async fn write_only_maintenance_never_reclaims_face_written_blobs() {
     let dir = TempRoot::new();
     let mut cfg = faces_config(Some(dir.path()));
-    zero_grace(&mut cfg, CasMode::Durable);
+    zero_grace(&mut cfg, CasMode::WriteOnly);
+    cfg.cas.as_mut().expect("cas").byte_budget = Some(1 << 20);
     let hash = sha256_hex(BLOB);
     {
         let (backend, _faces) = shared_backend(&cfg);
@@ -306,52 +306,51 @@ async fn durable_gc_never_sweeps_face_written_blobs_after_restart() {
     node.maintain_once().expect("maintenance");
     assert!(
         node.store().has(&blob_digest(&hash)).expect("has"),
-        "a face-backed durable store must retain every blob"
-    );
-}
-
-#[test]
-fn durable_gc_without_a_face_still_sweeps_unreachable_blobs() {
-    let dir = TempRoot::new();
-    let mut cfg = Config {
-        cas: Some(CasConfig {
-            backend: CasBackendKind::Disk,
-            path: Some(dir.path().to_owned()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    zero_grace(&mut cfg, CasMode::Durable);
-    let digest = {
-        let node = build_faces(&cfg).expect("faces").node.expect("node");
-        node.put(&mut { BLOB }).expect("put")
-    };
-    let node = build_faces(&cfg).expect("restart").node.expect("node");
-    node.maintain_once().expect("maintenance");
-    assert!(
-        !node.store().has(&digest).expect("has"),
-        "no face: unreachable blobs are still collected"
+        "write_only retains every blob across a restart"
     );
 }
 
 #[tokio::test]
-async fn cache_mode_over_budget_keeps_a_sole_copy_face_blob() {
+async fn write_only_refuses_a_face_write_past_capacity() {
     let dir = TempRoot::new();
     let mut cfg = faces_config(Some(dir.path()));
-    zero_grace(&mut cfg, CasMode::Cache);
-    {
-        let cas = cfg.cas.as_mut().expect("cas");
-        cas.byte_budget = Some(0);
-        cas.replication_factor = Some(1);
-    }
+    zero_grace(&mut cfg, CasMode::WriteOnly);
+    // Too small for even the startup probe: a full store must still boot.
+    cfg.cas.as_mut().expect("cas").byte_budget = Some(1);
+    let (backend, faces) = shared_backend(&cfg);
+    let hash = sha256_hex(BLOB);
+    let res = backend.put_keyed(&blob_digest(&hash), &mut { BLOB });
+    assert!(
+        matches!(
+            res,
+            Err(nessie_backend_core::BackendError::CapacityExceeded { .. })
+        ),
+        "{res:?}"
+    );
+    assert!(
+        !faces
+            .node
+            .expect("node")
+            .store()
+            .has(&blob_digest(&hash))
+            .expect("has")
+    );
+}
+
+#[tokio::test]
+async fn lru_over_budget_evicts_a_sole_copy_face_blob() {
+    let dir = TempRoot::new();
+    let mut cfg = faces_config(Some(dir.path()));
+    zero_grace(&mut cfg, CasMode::Lru);
+    cfg.cas.as_mut().expect("cas").byte_budget = Some(0);
     let (backend, faces) = shared_backend(&cfg);
     let hash = sha256_hex(BLOB);
     s3_put(backend, &hash).await;
     let node = faces.node.expect("node");
     node.maintain_once().expect("maintenance");
     assert!(
-        node.store().has(&blob_digest(&hash)).expect("has"),
-        "no other holder: eviction must not drop the only copy"
+        !node.store().has(&blob_digest(&hash)).expect("has"),
+        "lru is a cache: a sole copy over budget goes"
     );
 }
 
@@ -372,7 +371,7 @@ async fn a_completed_face_write_becomes_evictable_without_a_restart() {
     // guard must be released; otherwise it is never a retention candidate in-process.
     let dir = TempRoot::new();
     let mut cfg = faces_config(Some(dir.path()));
-    zero_grace(&mut cfg, CasMode::Cache);
+    zero_grace(&mut cfg, CasMode::Lru);
     cfg.cas.as_mut().expect("cas").byte_budget = Some(0);
     let (backend, faces) = shared_backend(&cfg);
     let hash = sha256_hex(BLOB);
