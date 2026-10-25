@@ -15,7 +15,6 @@
 
 mod clock;
 mod evict;
-mod gc;
 mod policy;
 mod reach;
 mod resolver;
@@ -24,8 +23,7 @@ mod store;
 
 pub use clock::{Clock, MockClock, SystemClock};
 pub use evict::{DurabilityOracle, EvictReport, NoDurableOracle, RefuseToReplicate, Replicator};
-pub use gc::GcReport;
-pub use policy::{CachePolicy, DurablePolicy, EvictionPolicy, RetentionPolicy, StorageMode};
+pub use policy::{LruPolicy, RetentionPolicy, StorageMode, WriteOnlyPolicy};
 pub use reach::reachable_closure;
 pub use resolver::{CanonicalResolver, LeafResolver, ReferenceResolver};
 pub use roots::{RootRegistry, RootSet, RootSource};
