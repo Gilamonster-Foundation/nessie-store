@@ -9,7 +9,7 @@
 use std::io::Cursor;
 
 use nessie_backend_core::{BackendError, CasBackend, Digest, LocalBlob};
-use nessie_cas_store::StorageMode;
+use nessie_cas_store::{Quarantine, StorageMode};
 
 use super::CasNode;
 
@@ -32,12 +32,28 @@ pub struct ScrubReport {
     /// `write_only`: digests in quarantine with no live copy at the end of the
     /// pass — damage still waiting for a peer or for room.
     pub pending_restore: usize,
+    /// `write_only`: pending restores skipped this pass because the capacity gate
+    /// would refuse them; nothing was fetched for them.
+    pub pending_no_capacity: usize,
+    /// `write_only`: corrupt blobs left in place this pass because an ungated
+    /// re-put of the same digest was in flight; the next pass looks again.
+    pub deferred: usize,
     /// `lru`: corrupt blobs dropped from the cache.
     pub reclaimed: usize,
     /// Mirrored `write_only`: blobs still short of R copies after the push.
     pub under_replicated: usize,
     /// Mirrored `write_only`: blobs this pass brought up to R by sending copies.
     pub replicated: usize,
+}
+
+/// Whether a pending restore is worth fetching.
+enum Room {
+    /// No peer reports the blob.
+    NoPeer,
+    /// A peer has it but the capacity gate would refuse it.
+    NoCapacity,
+    /// A peer has it, this many bytes, and the gate would admit it.
+    Fits(u64),
 }
 
 impl CasNode {
@@ -51,14 +67,15 @@ impl CasNode {
             return Ok(ScrubReport::default());
         }
         let mut report = ScrubReport::default();
-        self.retry_pending(&mut report)?;
+        // Pending restores and the live scan draw on one budget.
+        let mut spent = 0u64;
+        self.retry_pending(&mut report, &mut spent)?;
         let mut blobs = self.store.local_blobs()?;
         blobs.sort_by_cached_key(|b| b.digest.to_string());
         let mut cursor = self.scrub_cursor.lock().expect("scrub cursor poisoned");
         let start = cursor.as_ref().map_or(0, |after| {
             blobs.partition_point(|b| b.digest.to_string() <= *after)
         });
-        let mut spent = 0u64;
         let mut next = start;
         while let Some(blob) = blobs.get(next) {
             if next > start && spent >= self.scrub_budget {
@@ -105,11 +122,15 @@ impl CasNode {
                 .reclaim_corrupt(digest)
                 .map(|_| report.reclaimed += 1)
                 .map(|()| false),
-            StorageMode::WriteOnly(_) => self
-                .store
-                .quarantine(digest)
-                .and_then(|_| self.restore(digest))
-                .map(|()| true),
+            StorageMode::WriteOnly(_) => match self.store.quarantine(digest) {
+                Ok(Quarantine::Moved(_)) => self.restore_if_room(digest).map(|()| true),
+                Ok(Quarantine::Absent) => Ok(false),
+                Ok(Quarantine::Deferred) => {
+                    report.deferred += 1;
+                    return false;
+                }
+                Err(e) => Err(e),
+            },
         };
         match result {
             Ok(restored) => {
@@ -124,6 +145,28 @@ impl CasNode {
         }
     }
 
+    /// As [`restore`](Self::restore), but fetch nothing when no peer reports the blob
+    /// or the capacity gate would refuse it anyway.
+    fn restore_if_room(&self, digest: &Digest) -> Result<(), BackendError> {
+        match self.room_for(digest) {
+            Room::Fits(_) => self.restore(digest),
+            Room::NoPeer => Err(BackendError::BlobNotFound(digest.clone())),
+            Room::NoCapacity => Err(BackendError::Internal(format!(
+                "no capacity to restore {digest}"
+            ))),
+        }
+    }
+
+    /// Ask a peer for the blob's length (a `HEAD`, no body) and the gate whether it
+    /// would be admitted.
+    fn room_for(&self, digest: &Digest) -> Room {
+        match self.store.size(digest) {
+            Ok(Some(n)) if self.store.admits(n) => Room::Fits(n),
+            Ok(Some(_)) => Room::NoCapacity,
+            _ => Room::NoPeer,
+        }
+    }
+
     /// `write_only`: refetch (digest-verified) and put back through the capacity
     /// gate, which reserves new room — the quarantined copy stays charged. Any
     /// failure leaves the blob quarantined.
@@ -135,17 +178,38 @@ impl CasNode {
     }
 
     /// `write_only`: every quarantined digest with no live copy is a restore that
-    /// failed earlier (peer down, no room); try again now.
-    fn retry_pending(&self, report: &mut ScrubReport) -> anyhow::Result<()> {
+    /// failed earlier (peer down, no room); try again now, drawing on the pass's
+    /// byte budget (`spent`) and resuming after the last digest tried. A restore the
+    /// gate would refuse is not fetched, and costs no budget.
+    fn retry_pending(&self, report: &mut ScrubReport, spent: &mut u64) -> anyhow::Result<()> {
         if !matches!(self.store.policy().mode, StorageMode::WriteOnly(_)) {
             return Ok(());
         }
-        for digest in self.pending_digests()? {
-            match self.restore(&digest) {
-                Ok(()) => report.restored += 1,
-                Err(e) => tracing::warn!(%digest, %e, "scrub: pending restore still failing"),
+        let mut pending = self.pending_digests()?;
+        pending.sort_by_cached_key(ToString::to_string);
+        let mut cursor = self.pending_cursor.lock().expect("pending cursor poisoned");
+        let start = cursor.as_ref().map_or(0, |after| {
+            pending.partition_point(|d| d.to_string() <= *after)
+        });
+        let mut next = start;
+        while let Some(digest) = pending.get(next) {
+            if *spent >= self.scrub_budget {
+                break;
+            }
+            next += 1;
+            match self.room_for(digest) {
+                Room::NoPeer => {}
+                Room::NoCapacity => report.pending_no_capacity += 1,
+                Room::Fits(n) => {
+                    *spent = spent.saturating_add(n);
+                    match self.restore(digest) {
+                        Ok(()) => report.restored += 1,
+                        Err(e) => tracing::warn!(%digest, %e, "scrub: pending restore failed"),
+                    }
+                }
             }
         }
+        *cursor = (next > start && next < pending.len()).then(|| pending[next - 1].to_string());
         Ok(())
     }
 

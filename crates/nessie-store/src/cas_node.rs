@@ -137,6 +137,8 @@ pub struct CasNode {
     /// The last digest the scrub verified; the next pass resumes after it. In memory,
     /// so a restart rescans from the start of the inventory.
     scrub_cursor: std::sync::Mutex<Option<String>>,
+    /// As `scrub_cursor`, over the quarantined digests awaiting a restore.
+    pending_cursor: std::sync::Mutex<Option<String>>,
 }
 
 impl CasNode {
@@ -219,6 +221,7 @@ impl CasNode {
             mirror,
             scrub_budget: cfg.scrub_bytes_per_pass,
             scrub_cursor: std::sync::Mutex::new(None),
+            pending_cursor: std::sync::Mutex::new(None),
         })
     }
 

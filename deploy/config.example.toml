@@ -73,7 +73,8 @@ nfs_export_name = ""
 #   reclaimed under lru (a later read refetches it). Under write_only it is moved to
 #   <path>/quarantine/ and restored from a peer; the quarantined file is kept and
 #   stays charged against byte_budget, so corruption costs capacity. A failed restore
-#   is retried every pass. A mirrored write_only node also pushes each scanned blob
+#   is retried every pass, within the same budget, and skipped without a fetch while
+#   there is no room. A mirrored write_only node also pushes each scanned blob
 #   back up to R copies.
 #   scrub_bytes_per_pass = 1073741824
 # `byte_budget` is required in both modes. The old mode = "durable" is gone: it is

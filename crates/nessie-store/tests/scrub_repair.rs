@@ -415,3 +415,85 @@ fn the_default_budget_is_one_gib_and_zero_turns_the_scrub_off() {
     assert_eq!(a.node.maintain_once().unwrap().scrub().scanned, 0);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Feeds `bytes`, but its first read waits for the test: `paused` says the writer is
+/// mid-read, `resume` lets it finish.
+struct PausedReader {
+    bytes: std::io::Cursor<Vec<u8>>,
+    gates: Option<(
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    )>,
+}
+
+impl std::io::Read for PausedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some((paused, resume)) = self.gates.take() {
+            paused.wait();
+            resume.wait();
+        }
+        self.bytes.read(buf)
+    }
+}
+
+/// Every byte on disk this node keeps: live blobs plus quarantine files.
+fn retained(node: &CasNode) -> u64 {
+    let live: u64 = node
+        .store()
+        .local_blobs()
+        .unwrap()
+        .iter()
+        .map(|b| b.size_bytes)
+        .sum();
+    let held: u64 = node
+        .store()
+        .quarantined()
+        .unwrap()
+        .iter()
+        .map(|q| q.size_bytes)
+        .sum();
+    live + held
+}
+
+/// Round 3 (P1): a re-put of a held digest is ungated. If scrub quarantines the digest
+/// while that write is paused mid-read, the write must not publish a live copy that
+/// nothing is charged for.
+#[test]
+fn a_reput_paused_across_a_quarantine_never_leaves_uncharged_bytes() {
+    use std::sync::{Arc, Barrier};
+    let root = fresh_root();
+    let body = b"re-put while rotting";
+    let n = body.len() as u64;
+    let cfg = CasConfig {
+        byte_budget: Some(n),
+        ..wo(1, &[])
+    };
+    let a = Daemon::start(&on_disk(cfg, &root));
+    let d = a.node.put(&mut &body[..]).unwrap();
+    corrupt(&root, &d);
+
+    let (paused, resume) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    let writer = {
+        let (node, d) = (a.node.clone(), d.clone());
+        let gates = Some((paused.clone(), resume.clone()));
+        std::thread::spawn(move || {
+            let mut src = PausedReader {
+                bytes: std::io::Cursor::new(body.to_vec()),
+                gates,
+            };
+            node.put_keyed_local(&d, &mut src)
+        })
+    };
+    paused.wait(); // the re-put has decided it is a duplicate and is mid-read
+    a.node.maintain_once().unwrap();
+    resume.wait();
+    writer.join().unwrap().unwrap();
+
+    assert_eq!(
+        a.node.store().committed_bytes(),
+        retained(&a.node),
+        "everything kept on disk is charged"
+    );
+    assert!(full(a.node.put(&mut &b"x"[..])), "no free byte at capacity");
+    let _ = std::fs::remove_dir_all(root);
+}
