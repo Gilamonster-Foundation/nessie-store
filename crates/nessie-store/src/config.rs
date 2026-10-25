@@ -31,6 +31,17 @@ pub enum CasBackendKind {
     Disk,
 }
 
+/// One static peer in `[cas] peers`: another nessie-store node's base URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CasPeer {
+    /// Base URL of the peer's `/cas/v1` surface, e.g. `http://host:8443`.
+    pub url: String,
+    /// Whether this peer is a durable store of record (counts toward the
+    /// durability oracle and is a replication target).
+    #[serde(default)]
+    pub durable: bool,
+}
+
 /// Optional `[cas]` node configuration. When present, the daemon runs a
 /// content-addressed store and periodically performs retention maintenance
 /// (durable GC or cache eviction). Fields are plain values so this crate stays
@@ -54,6 +65,12 @@ pub struct CasConfig {
     /// Cache mode only: `R`, the number of other holders required before a
     /// reachable blob may be evicted (defaults to 2).
     pub replication_factor: Option<usize>,
+    /// Static peer list for fetch-through, the durability oracle and replication.
+    /// Empty = a standalone node.
+    pub peers: Vec<CasPeer>,
+    /// Serve `GET|HEAD|PUT /cas/v1/blobs/{digest}` so peers can reach this node.
+    /// **Lab only: the routes are unauthenticated; mTLS is the fast-follow.**
+    pub peer_api: bool,
 }
 
 impl Default for CasConfig {
@@ -66,6 +83,8 @@ impl Default for CasConfig {
             maintenance_interval_secs: 300,
             byte_budget: None,
             replication_factor: None,
+            peers: Vec::new(),
+            peer_api: false,
         }
     }
 }
@@ -338,6 +357,34 @@ mod tests {
         assert_eq!(cas.mode, CasMode::Durable);
         assert_eq!(cas.gc_grace_secs, 300);
         assert_eq!(cas.byte_budget, None);
+    }
+
+    #[test]
+    fn cas_peers_parse_and_peer_api_defaults_off() {
+        let bare: Config = toml::from_str("[cas]\n").expect("parse");
+        let cas = bare.cas.expect("cas present");
+        assert!(cas.peers.is_empty());
+        assert!(!cas.peer_api, "peer routes are off unless asked for");
+
+        let cfg: Config = toml::from_str(
+            "[cas]\npeer_api = true\npeers = [{ url = \"http://a:1\", durable = true }, { url = \"http://b:2\" }]\n",
+        )
+        .expect("parse");
+        let cas = cfg.cas.expect("cas present");
+        assert!(cas.peer_api);
+        assert_eq!(
+            cas.peers,
+            vec![
+                CasPeer {
+                    url: "http://a:1".into(),
+                    durable: true
+                },
+                CasPeer {
+                    url: "http://b:2".into(),
+                    durable: false
+                },
+            ]
+        );
     }
 
     #[test]
