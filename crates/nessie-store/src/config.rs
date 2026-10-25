@@ -80,6 +80,10 @@ pub struct CasConfig {
     /// Default 2; 1 is a single-node archive with no redundancy. Setting it under
     /// `lru` is a startup error.
     pub replication_factor: Option<usize>,
+    /// Bytes a maintenance pass may re-read to verify blobs (scrub), in both modes. A
+    /// pass always verifies at least one blob and resumes where the last stopped.
+    /// Unset: verify the whole inventory every pass.
+    pub scrub_bytes_per_pass: Option<u64>,
 }
 
 impl CasConfig {
@@ -121,6 +125,7 @@ impl Default for CasConfig {
             peer_api: false,
             advertise_url: None,
             replication_factor: None,
+            scrub_bytes_per_pass: None,
         }
     }
 }

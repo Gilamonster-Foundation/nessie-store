@@ -1,96 +1,12 @@
 //! `write_only` acknowledges a write only after R digest-verified copies exist
 //! (`[cas] replication_factor`, #139). In-process nodes on loopback; no wall-clock.
 
-use std::net::TcpListener;
-use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
-use std::thread::JoinHandle;
+mod common;
 
+use common::{Daemon, dead_url, node_cfg, start_at, wo};
 use nessie_backend_core::{BackendError, CasBackend as _, Digest, PeerId};
 use nessie_store::cas_node::CasNode;
-use nessie_store::cas_routes::peer_routes;
-use nessie_store::config::{CasConfig, CasMode, CasPeer};
-
-struct Daemon {
-    url: String,
-    node: Arc<CasNode>,
-    stop: Option<Sender<()>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-fn reserve() -> (TcpListener, String) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    (listener, url)
-}
-
-/// A URL nothing listens on.
-fn dead_url() -> String {
-    reserve().1
-}
-
-impl Daemon {
-    fn serve(listener: TcpListener, url: String, cfg: &CasConfig) -> Self {
-        let node = Arc::new(CasNode::from_config(cfg, PeerId::new(&url)).unwrap());
-        let app = peer_routes(node.clone());
-        let (stop, rx) = channel::<()>();
-        let thread = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async move {
-                    let l = tokio::net::TcpListener::from_std(listener).unwrap();
-                    axum::serve(l, app)
-                        .with_graceful_shutdown(async move {
-                            let _ = tokio::task::spawn_blocking(move || rx.recv()).await;
-                        })
-                        .await
-                        .unwrap();
-                });
-        });
-        Self {
-            url,
-            node,
-            stop: Some(stop),
-            thread: Some(thread),
-        }
-    }
-
-    fn start(cfg: &CasConfig) -> Self {
-        let (l, url) = reserve();
-        Self::serve(l, url, cfg)
-    }
-
-    fn kill(&mut self) {
-        drop(self.stop.take());
-        self.thread.take().unwrap().join().unwrap();
-    }
-}
-
-fn peer(url: &str) -> CasPeer {
-    CasPeer {
-        url: url.to_owned(),
-        durable: true,
-    }
-}
-
-fn node_cfg(mode: CasMode, r: Option<usize>, peers: &[&str]) -> CasConfig {
-    CasConfig {
-        mode,
-        byte_budget: Some(1 << 20),
-        gc_grace_secs: 0,
-        peer_api: true,
-        replication_factor: r,
-        peers: peers.iter().map(|u| peer(u)).collect(),
-        ..CasConfig::default()
-    }
-}
-
-fn wo(r: usize, peers: &[&str]) -> CasConfig {
-    node_cfg(CasMode::WriteOnly, Some(r), peers)
-}
+use nessie_store::config::{CasConfig, CasMode};
 
 fn underreplicated(r: Result<Digest, BackendError>) -> (usize, usize) {
     match r {
@@ -174,14 +90,6 @@ fn replication_factor_is_rejected_in_lru() {
         .err()
         .expect("lru + replication_factor must fail");
     assert!(err.to_string().contains("replication_factor"), "{err}");
-}
-
-/// Bring a node up on the address a dead URL named, so "the peer comes back".
-fn start_at(url: &str, cfg: &CasConfig) -> Daemon {
-    let addr = url.trim_start_matches("http://");
-    let listener = TcpListener::bind(addr).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    Daemon::serve(listener, url.to_owned(), cfg)
 }
 
 fn faces_cfg(cas: CasConfig) -> nessie_store::config::Config {

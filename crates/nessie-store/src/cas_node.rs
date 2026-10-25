@@ -29,6 +29,9 @@ use nessie_cas_store::{
 
 use crate::config::{CasBackendKind, CasConfig, CasMode};
 
+mod scrub;
+pub use scrub::ScrubReport;
+
 /// Build a [`RetentionPolicy`] from `[cas]` config.
 ///
 /// # Errors
@@ -96,9 +99,24 @@ pub enum MaintenanceReport {
         evicted: usize,
         /// Bytes freed.
         bytes: u64,
+        /// The scrub that followed.
+        scrub: ScrubReport,
     },
-    /// Write-only mode: maintenance is a no-op — nothing is ever reclaimed.
-    Retained,
+    /// Write-only mode: nothing is ever reclaimed, so the pass only scrubs and repairs.
+    Retained {
+        /// The scrub and repair.
+        scrub: ScrubReport,
+    },
+}
+
+impl MaintenanceReport {
+    /// What the scrub half of the pass did, in either mode.
+    #[must_use]
+    pub fn scrub(&self) -> &ScrubReport {
+        match self {
+            Self::Evict { scrub, .. } | Self::Retained { scrub } => scrub,
+        }
+    }
 }
 
 /// A running CAS node: its retention-managed store, root registry, and schedule.
@@ -114,6 +132,11 @@ pub struct CasNode {
     /// `write_only` with `replication_factor > 1`: acknowledge a write only after
     /// the peers confirm.
     mirror: Option<Mirror>,
+    /// Bytes a scrub pass may verify before it stops (`u64::MAX`: no limit).
+    scrub_budget: u64,
+    /// The last digest the scrub verified; the next pass resumes after it. In memory,
+    /// so a restart rescans from the start of the inventory.
+    scrub_cursor: std::sync::Mutex<Option<String>>,
 }
 
 impl CasNode {
@@ -194,6 +217,8 @@ impl CasNode {
             replicator,
             local,
             mirror,
+            scrub_budget: cfg.scrub_bytes_per_pass.unwrap_or(u64::MAX),
+            scrub_cursor: std::sync::Mutex::new(None),
         })
     }
 
@@ -230,15 +255,18 @@ impl CasNode {
         Ok(())
     }
 
-    /// Run one retention maintenance pass, dispatching by mode. Write-only mode
-    /// never reaches the eviction engine, so nothing is reclaimed.
+    /// Run one maintenance pass, dispatching by mode: eviction first in `lru`
+    /// (write-only never reaches the eviction engine, so nothing is reclaimed), then
+    /// the scrub and repair in both.
     ///
     /// # Errors
     ///
-    /// Propagates eviction backend errors.
+    /// Propagates eviction and inventory backend errors.
     pub fn maintain_once(&self) -> anyhow::Result<MaintenanceReport> {
         match &self.store.policy().mode {
-            StorageMode::WriteOnly(_) => Ok(MaintenanceReport::Retained),
+            StorageMode::WriteOnly(_) => Ok(MaintenanceReport::Retained {
+                scrub: self.scrub_pass()?,
+            }),
             StorageMode::Lru(_) => {
                 let report = self.store.evict_to_budget(
                     &self.roots,
@@ -248,6 +276,7 @@ impl CasNode {
                 Ok(MaintenanceReport::Evict {
                     evicted: report.evicted,
                     bytes: report.bytes_evicted,
+                    scrub: self.scrub_pass()?,
                 })
             }
         }
@@ -407,7 +436,8 @@ mod tests {
             report,
             MaintenanceReport::Evict {
                 evicted: 1,
-                bytes: 9
+                bytes: 9,
+                scrub: ScrubReport::default()
             }
         );
         assert!(!node.has(&d).unwrap());
@@ -423,7 +453,9 @@ mod tests {
         };
         let node = CasNode::from_config(&cfg, PeerId::new("me")).unwrap();
         let d = node.put(&mut &b"keep-me"[..]).unwrap();
-        assert_eq!(node.maintain_once().unwrap(), MaintenanceReport::Retained);
+        let report = node.maintain_once().unwrap();
+        assert_eq!(report.scrub().scanned, 1);
+        assert!(matches!(report, MaintenanceReport::Retained { .. }));
         assert!(node.has(&d).unwrap());
     }
 

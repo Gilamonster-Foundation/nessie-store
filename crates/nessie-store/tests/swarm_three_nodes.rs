@@ -124,7 +124,8 @@ fn evicted_blob_is_restored_from_the_durable_node_by_digest() {
         evict(&a.node),
         MaintenanceReport::Evict {
             evicted: 1,
-            bytes: 32
+            bytes: 32,
+            scrub: Default::default(),
         }
     );
     assert!(
@@ -220,7 +221,8 @@ mod s3 {
             report,
             MaintenanceReport::Evict {
                 evicted: 1,
-                bytes: BLOB.len() as u64
+                bytes: BLOB.len() as u64,
+                scrub: Default::default(),
             }
         );
 
