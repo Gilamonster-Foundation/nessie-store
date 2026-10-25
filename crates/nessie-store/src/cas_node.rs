@@ -191,11 +191,17 @@ impl CasBackend for CasNode {
     }
 
     fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
-        self.store.put(source)
+        let digest = self.store.put(source)?;
+        // A protocol write is a complete operation (the upload *is* the op): release
+        // the in-flight guard so it does not pin the blob for the process lifetime.
+        self.store.committed(&digest);
+        Ok(digest)
     }
 
     fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
-        self.store.put_keyed(expected, source)
+        self.store.put_keyed(expected, source)?;
+        self.store.committed(expected); // see `put`
+        Ok(())
     }
 
     fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {

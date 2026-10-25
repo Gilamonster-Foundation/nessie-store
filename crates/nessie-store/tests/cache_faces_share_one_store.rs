@@ -354,3 +354,43 @@ async fn cache_mode_over_budget_keeps_a_sole_copy_face_blob() {
         "no other holder: eviction must not drop the only copy"
     );
 }
+
+struct HeldElsewhere;
+
+impl nessie_cas_store::DurabilityOracle for HeldElsewhere {
+    fn durably_held(
+        &self,
+        _: &nessie_backend_core::Digest,
+    ) -> Result<bool, nessie_backend_core::BackendError> {
+        Ok(true)
+    }
+}
+
+#[tokio::test]
+async fn a_completed_face_write_becomes_evictable_without_a_restart() {
+    // Reviewer P1 #2 on #136: a face write is a complete operation, so its in-flight
+    // guard must be released; otherwise it is never a retention candidate in-process.
+    let dir = TempRoot::new();
+    let mut cfg = faces_config(Some(dir.path()));
+    zero_grace(&mut cfg, CasMode::Cache);
+    cfg.cas.as_mut().expect("cas").byte_budget = Some(0);
+    let (backend, faces) = shared_backend(&cfg);
+    let hash = sha256_hex(BLOB);
+    s3_put(backend, &hash).await;
+
+    let node = faces.node.expect("node");
+    let report = node
+        .store()
+        .evict_to_budget(
+            node.roots(),
+            &HeldElsewhere,
+            &nessie_cas_store::RefuseToReplicate,
+        )
+        .expect("evict");
+    // (The startup `put_keyed` probe blob is evicted too, hence `>= 1`.)
+    assert!(
+        report.evicted >= 1,
+        "a durably-held, unreferenced blob goes"
+    );
+    assert!(!node.store().has(&blob_digest(&hash)).expect("has"));
+}
