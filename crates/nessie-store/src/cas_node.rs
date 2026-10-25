@@ -83,7 +83,7 @@ impl CasNode {
             Arc::new(MemRouter::new(me.clone())) as Arc<dyn ContentRouter>,
             Arc::new(SystemClock) as Arc<dyn Clock>,
             me,
-        );
+        )?;
         Ok(Self {
             store,
             roots: RootRegistry::new(),
