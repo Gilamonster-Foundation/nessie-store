@@ -22,6 +22,9 @@ pub fn s3_error_from_backend(err: &BackendError) -> S3Error {
         e.set_status_code(http::StatusCode::INSUFFICIENT_STORAGE);
         return e;
     }
+    if matches!(err, BackendError::Underreplicated { .. }) {
+        return S3Error::with_message(S3ErrorCode::ServiceUnavailable, err.to_string());
+    }
     let code = match err {
         // The miss. Must stay NoSuchKey — see the module note.
         BackendError::BlobNotFound(_) => S3ErrorCode::NoSuchKey,
@@ -48,6 +51,17 @@ mod tests {
             capacity: 2,
         });
         assert_eq!(e.status_code().map(|s| s.as_u16()), Some(507));
+    }
+
+    #[test]
+    fn underreplicated_is_503_with_the_counts() {
+        let e = s3_error_from_backend(&BackendError::Underreplicated {
+            confirmed: 1,
+            required: 2,
+        });
+        assert_eq!(*e.code(), S3ErrorCode::ServiceUnavailable);
+        assert_eq!(e.status_code().map(|s| s.as_u16()), Some(503));
+        assert!(e.message().is_some_and(|m| m.contains("1 of 2")));
     }
 
     #[test]

@@ -87,6 +87,21 @@ pub trait CasBackend: Send + Sync {
         })
     }
 
+    /// Confirm the blob is as replicated as this backend promises to acknowledge.
+    ///
+    /// A no-op by default. A mirroring backend (`write_only` with more than one
+    /// replica) re-pushes to its peers here, so a protocol that reports an earlier
+    /// write complete after a failed acknowledgement can revalidate first.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Underreplicated`] if too few verified copies exist;
+    /// [`BackendError::BlobNotFound`] if the blob is not held locally.
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        let _ = digest;
+        Ok(())
+    }
+
     /// The stored byte length of the blob for `digest`, or `None` if absent.
     ///
     /// The default reads and counts the blob (correct for any backend); backends
@@ -185,6 +200,10 @@ impl<T: CasBackend + ?Sized> CasBackend for Box<T> {
 
     fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
         (**self).put_keyed(expected, source)
+    }
+
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        (**self).ensure_replicated(digest)
     }
 
     fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {

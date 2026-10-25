@@ -285,6 +285,9 @@ fn zero_grace(cfg: &mut Config, mode: CasMode) {
     let cas = cfg.cas.as_mut().expect("cas");
     cas.gc_grace_secs = 0;
     cas.mode = mode;
+    if mode == CasMode::WriteOnly {
+        cas.replication_factor = Some(1); // single node: no peers to mirror to
+    }
 }
 
 fn blob_digest(hash: &str) -> nessie_backend_core::Digest {

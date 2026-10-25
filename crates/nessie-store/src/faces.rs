@@ -85,21 +85,32 @@ pub fn build_cas_backend(
     let signer = DevSelfSigner::new("nessie-reapi-self");
     let verifier = signer.verifier();
     let k1 = NonZeroUsize::new(1).expect("1 is nonzero");
+    let node_for_probe = node.clone();
     let bodies: Arc<dyn CasBackend> = match node {
         Some(n) => n,
         None => Arc::new(MemCas::new()),
     };
     let backend: Arc<dyn CasBackend> = Arc::new(MemActionCache::shared(bodies, verifier, k1));
-    probe_put_keyed(backend.as_ref())?;
+    // Probe the local store: the probe must not wait on peers (a cold mirrored
+    // cluster has none listening yet), but still passes the capacity gate.
+    match &node_for_probe {
+        Some(n) => probe_put_keyed(|d, src| n.put_keyed_local(d, src))?,
+        None => probe_put_keyed(|d, src| backend.put_keyed(d, src))?,
+    }
     Ok((backend, signer))
 }
 
 /// Verify the wired backend honors `put_keyed` at startup.
-fn probe_put_keyed(cas: &dyn CasBackend) -> anyhow::Result<()> {
+fn probe_put_keyed(
+    put_keyed: impl FnOnce(
+        &nessie_backend_core::Digest,
+        &mut dyn std::io::Read,
+    ) -> Result<(), nessie_backend_core::BackendError>,
+) -> anyhow::Result<()> {
     use nessie_backend_core::{Digest, DigestAlgo};
     let probe = b"nessie cache-face put_keyed startup probe";
     let digest = Digest::compute_with(DigestAlgo::Sha256, probe);
-    match cas.put_keyed(&digest, &mut probe.as_slice()) {
+    match put_keyed(&digest, &mut probe.as_slice()) {
         // A full write-only store refusing the probe still proves `put_keyed` exists;
         // it must not keep a full-but-healthy node from restarting.
         Ok(()) | Err(nessie_backend_core::BackendError::CapacityExceeded { .. }) => Ok(()),

@@ -585,6 +585,10 @@ impl CasBackend for MemActionCache {
         self.cas.put_keyed(expected, source)
     }
 
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        self.cas.ensure_replicated(digest)
+    }
+
     fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
         self.cas.size(digest)
     }

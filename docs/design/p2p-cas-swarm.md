@@ -411,7 +411,7 @@ merge each slice on green, in dependency order).
 | Flat S3 keys | `{prefix}{sha256}` accepted beside `cas/{xx}/{hex}` | ✅ #135 |
 | Static peers | `nessie-cas-peer`: static peer list, fetch-through, durability oracle | ⏳ #127 |
 | Retention modes | `[cas] mode = lru\|write_only`; reachability-GC `durable` retired | ✅ #142 |
-| Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ⏳ #139 |
+| Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ✅ #139 |
 | Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ⏳ #140 |
 | Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |

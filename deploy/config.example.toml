@@ -60,6 +60,12 @@ nfs_export_name = ""
 #   writes are never evicted.
 # mode = "write_only": never deletes. `byte_budget` is the capacity; a write past it
 #   is refused (S3 507 / REAPI RESOURCE_EXHAUSTED), never made room for.
+#   replication_factor = R (write_only only; default 2; an error under lru): a write
+#   is acknowledged only after R verified copies exist, this node included - i.e.
+#   R-1 peers marked `durable = true` that report write_only. Short of that the write
+#   fails (S3 503 / REAPI UNAVAILABLE) and the local copy stays for repair. R = 1 is a
+#   single-node archive with no redundancy. Startup refuses R-1 > durable peers.
+#   replication_factor = 2
 # `byte_budget` is required in both modes. The old mode = "durable" is gone: it is
 # now a config parse error.
 [cas]

@@ -6,6 +6,17 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`write_only` acknowledges a write only after R verified copies (#139).**
+  `[cas] replication_factor` is R, the total copies including this node (default 2;
+  an error under `lru`). After the local write `put`/`put_keyed` push to `durable`
+  peers that report `x-nessie-mode: write_only` and fail with the new
+  `BackendError::Underreplicated { confirmed, required }` (S3 `503 ServiceUnavailable`,
+  REAPI `UNAVAILABLE`) when fewer than R - 1 confirm; the local copy stays. A peer's
+  `PUT /cas/v1/blobs` writes locally only, so mirroring never recurses. Startup refuses
+  R - 1 above the number of `durable` peers, so a standalone `write_only` node now needs
+  `replication_factor = 1`.
+
 ### Changed
 - **BREAKING: `[cas] mode` is now `lru` (default) or `write_only`; `durable` is removed (#138).**
   A config that still says `mode = "durable"` (or `"cache"`) fails to parse, naming the

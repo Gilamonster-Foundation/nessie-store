@@ -15,6 +15,7 @@ pub fn status_from_backend(err: &BackendError) -> Status {
         BackendError::ActionResultConflict { .. } => Code::FailedPrecondition,
         BackendError::AttestationUnverified { .. } => Code::PermissionDenied,
         BackendError::CapacityExceeded { .. } => Code::ResourceExhausted,
+        BackendError::Underreplicated { .. } => Code::Unavailable,
         _ => Code::Internal,
     };
     Status::new(code, err.to_string())
@@ -24,6 +25,16 @@ pub fn status_from_backend(err: &BackendError) -> Status {
 mod tests {
     use super::*;
     use nessie_backend_core::Digest;
+
+    #[test]
+    fn underreplicated_is_unavailable_with_the_counts() {
+        let s = status_from_backend(&BackendError::Underreplicated {
+            confirmed: 0,
+            required: 1,
+        });
+        assert_eq!(s.code(), Code::Unavailable);
+        assert!(s.message().contains("0 of 1"));
+    }
 
     #[test]
     fn capacity_exceeded_is_resource_exhausted() {

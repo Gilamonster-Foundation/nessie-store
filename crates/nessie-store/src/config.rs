@@ -75,6 +75,11 @@ pub struct CasConfig {
     /// This node's own peer URL, as other nodes list it. A `peers` entry equal to
     /// it is ignored, so one shared peer list can be deployed to every node.
     pub advertise_url: Option<String>,
+    /// `write_only` only: **R**, the total verified copies of a write, this node
+    /// included. A write is acknowledged only once R - 1 `write_only` peers hold it.
+    /// Default 2; 1 is a single-node archive with no redundancy. Setting it under
+    /// `lru` is a startup error.
+    pub replication_factor: Option<usize>,
 }
 
 impl CasConfig {
@@ -115,6 +120,7 @@ impl Default for CasConfig {
             peers: Vec::new(),
             peer_api: false,
             advertise_url: None,
+            replication_factor: None,
         }
     }
 }

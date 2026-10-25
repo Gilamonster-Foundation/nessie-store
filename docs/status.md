@@ -13,10 +13,12 @@ the machine-checked list of what exists.
   in-flight blobs never. A sole copy can be dropped; it is a cache.
   `"write_only"` never deletes; `byte_budget` is a hard capacity and a write
   past it is refused (S3 507, REAPI `RESOURCE_EXHAUSTED`). `durable` is gone.
-- **Coming in v0.4.0.** The `write_only` mirror guarantee (a write is
-  acknowledged after R verified copies, #139) and scrub/repair (#140). Until
-  then `write_only` on one node has no redundancy. Pins persist across
-  restart only after #137.
+- **Mirror guarantee.** In `write_only`, `[cas] replication_factor` (R, default
+  2) means a write is acknowledged only after R - 1 `durable` `write_only`
+  peers hold a verified copy (S3 503 / REAPI `UNAVAILABLE` otherwise; the local
+  copy stays). R = 1 is a single-node archive. **Coming in v0.4.0:**
+  scrub/repair (#140) to finish a short write. Pins persist across restart
+  only after #137.
 - **Auth is lab-only.** S3 uses one static SigV4 key; the daemon refuses to
   start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI is
   unauthenticated and off by default. mTLS is not built.
