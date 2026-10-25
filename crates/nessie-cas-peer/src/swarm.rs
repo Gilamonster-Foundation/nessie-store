@@ -138,4 +138,13 @@ impl<C: ReclaimableCas> ReclaimableCas for SwarmCas<C> {
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
         self.inner.reclaim(digest)
     }
+
+    /// Local only: a peer's copy is that peer's to scrub.
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.inner.verify(digest)
+    }
+
+    fn quarantine(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.inner.quarantine(digest)
+    }
 }

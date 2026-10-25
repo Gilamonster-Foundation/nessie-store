@@ -180,6 +180,31 @@ pub trait ReclaimableCas: CasBackend {
     ///
     /// [`BackendError`] if the removal fails for a reason other than absence.
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError>;
+
+    /// Does the locally held copy of `digest` still hash to it? `Ok(false)` is
+    /// corruption (bit rot, a torn write, tampering); I/O trouble is an `Err`, not a
+    /// verdict. The default reads the blob through [`get`](CasBackend::get), which a
+    /// backend that verifies on read already fails closed on.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::BlobNotFound`] if the blob is not held; otherwise
+    /// [`BackendError`] if it cannot be read.
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.get(digest).map(|_| true)
+    }
+
+    /// Move the local copy of `digest` aside, to be neither served nor listed by
+    /// [`iter_local`](Self::iter_local), but **not deleted** — the evidence stays.
+    /// `Ok(false)` if it was not held. The default holds nothing aside and reports
+    /// `false`: a backend with no way to keep a bad copy never has one to move.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the move fails for a reason other than absence.
+    fn quarantine(&self, _digest: &Digest) -> Result<bool, BackendError> {
+        Ok(false)
+    }
 }
 
 /// Forwarding impl so a boxed backend (`Box<dyn ReclaimableCas>`) is itself a
@@ -227,5 +252,13 @@ impl<T: ReclaimableCas + ?Sized> ReclaimableCas for Box<T> {
 
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
         (**self).reclaim(digest)
+    }
+
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).verify(digest)
+    }
+
+    fn quarantine(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).quarantine(digest)
     }
 }

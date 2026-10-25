@@ -7,6 +7,7 @@
 //! ```text
 //! <root>/tmp/<pid>-<counter>                  in-flight writes
 //! <root>/<algo name>/<hex[0..2]>/<hex[2..]>   committed blobs
+//! <root>/quarantine/<algo name>/<hex>         blobs that failed verification
 //! ```
 //!
 //! Nothing is written in place under `<root>/<algo>/`; only `rename` lands a
@@ -230,6 +231,30 @@ impl ReclaimableCas for DiskCas {
             Err(e) => Err(io_err("reclaim", e)),
         }
     }
+
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        match fs::read(self.path(digest)) {
+            Ok(bytes) => Ok(digest.verify(&bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(BackendError::BlobNotFound(digest.clone()))
+            }
+            Err(e) => Err(io_err("read blob", e)),
+        }
+    }
+
+    /// Rename the blob under `<root>/quarantine/<algo>/<hex>`. An earlier quarantined
+    /// copy of the same digest is replaced.
+    fn quarantine(&self, digest: &Digest) -> Result<bool, BackendError> {
+        let hex = digest.to_string();
+        let hex = hex.split_once(':').map_or("", |(_, h)| h);
+        let dir = self.root.join("quarantine").join(digest.algo().name());
+        fs::create_dir_all(&dir).map_err(|e| io_err("create quarantine", e))?;
+        match fs::rename(self.path(digest), dir.join(hex)) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io_err("quarantine", e)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +333,40 @@ mod tests {
         let d = cas.put(&mut &b"pristine"[..]).unwrap();
         std::fs::write(blob_path(&root, &d), b"tampered").unwrap();
         assert!(cas.get(&d).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_reports_corruption_and_absence_apart() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"pristine"[..]).unwrap();
+        assert!(cas.verify(&d).unwrap());
+        std::fs::write(blob_path(&root, &d), b"tampered").unwrap();
+        assert!(!cas.verify(&d).unwrap());
+        assert!(matches!(
+            cas.verify(&Digest::compute(b"never stored")),
+            Err(BackendError::BlobNotFound(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quarantine_moves_the_blob_aside_without_deleting_it() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"suspect"[..]).unwrap();
+        assert!(cas.quarantine(&d).unwrap());
+        assert!(!cas.has(&d).unwrap());
+        assert!(cas.get(&d).is_err(), "never served");
+        assert!(cas.iter_local().unwrap().is_empty(), "never listed");
+        let hex = d.to_string().split_once(':').unwrap().1.to_owned();
+        let kept = root.join("quarantine").join(d.algo().name()).join(hex);
+        assert_eq!(std::fs::read(kept).unwrap(), b"suspect");
+        assert!(!cas.quarantine(&d).unwrap(), "idempotent once moved");
+        // A restore is a normal put_keyed and lands the blob again.
+        cas.put_keyed(&d, &mut &b"suspect"[..]).unwrap();
+        assert!(cas.has(&d).unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
 
