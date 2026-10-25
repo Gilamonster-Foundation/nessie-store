@@ -94,10 +94,10 @@ All notable changes to nessie-store are documented here. The format follows
   experimental NFS gateways (#71).
 
 ### Fixed
-- **Restart no longer exposes young blobs to GC.** `CasStore::new` seeds every local
-  blob's write-time with the current clock (and now returns `Result`, failing closed if
-  enumeration fails), so the first sweep after a restart is delayed one grace window
-  instead of treating unknown write-times as old.
+- **Restart keeps young blobs inside the grace window.** `CasStore::new` seeds every
+  local blob's write-time with the current clock, so after a restart `lru` eviction
+  treats existing blobs as fresh for one `gc_grace` instead of as old. `new` returns
+  `Result` and fails closed if enumeration fails.
 - **Windows workspace build.** `nessie-nfs` is Unix-only (it relies on
   `std::os::unix`, `tokio::fs::symlink`, and AUTH_UNIX `chown`) but was not gated,
   so `cargo build/test --workspace` failed to compile on Windows (the nightly
