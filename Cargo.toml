@@ -11,6 +11,7 @@ members = [
     # Phase 1 — Foundation:
     "crates/nessie-backend-core",
     "crates/nessie-backend-mem",
+    "crates/nessie-cas-disk",
     "crates/nessie-backend-conformance",
     "crates/nessie-cas-conformance",
     "crates/nessie-ac-conformance",
