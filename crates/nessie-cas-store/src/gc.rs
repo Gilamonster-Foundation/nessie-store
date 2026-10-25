@@ -212,6 +212,40 @@ mod tests {
     }
 
     #[test]
+    fn restart_does_not_sweep_young_blobs() {
+        // #126: write-times are in memory, so a rebuilt store must re-seed them from
+        // the backend or the first post-restart pass sweeps blobs written seconds ago.
+        let clock = Arc::new(MockClock::new());
+        let first = CasStore::new(
+            MemCas::new(),
+            RetentionPolicy::durable(Duration::from_secs(100)),
+            Arc::new(MemRouter::new(PeerId::new("me"))),
+            clock.clone(),
+            PeerId::new("me"),
+        );
+        let garbage = put(&first, b"garbage");
+        first.committed(&garbage);
+        let CasStore { inner, .. } = first; // "restart": same backend, empty AccessLog
+        let store = CasStore::new(
+            inner,
+            RetentionPolicy::durable(Duration::from_secs(100)),
+            Arc::new(MemRouter::new(PeerId::new("me"))),
+            clock.clone(),
+            PeerId::new("me"),
+        );
+        let roots = RootRegistry::new();
+
+        store.gc(&roots, &CanonicalResolver).unwrap();
+        assert!(
+            store.has(&garbage).unwrap(),
+            "within grace after restart: kept"
+        );
+        clock.advance(Duration::from_secs(101));
+        store.gc(&roots, &CanonicalResolver).unwrap();
+        assert!(!store.has(&garbage).unwrap(), "past grace: swept");
+    }
+
+    #[test]
     fn gc_is_idempotent() {
         let f = fixture(0);
         let orphan = put(&f.store, b"orphan");

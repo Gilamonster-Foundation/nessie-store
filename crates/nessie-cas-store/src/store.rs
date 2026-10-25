@@ -35,6 +35,11 @@ impl AccessLog {
         self.touch(digest);
     }
 
+    /// Seed `digest`'s write-time without touching recency (restart re-seeding).
+    fn seed_written(&mut self, digest: &Digest, now: Duration) {
+        self.written_at.insert(digest.clone(), now);
+    }
+
     /// A snapshot of every known write-time, for a GC pass's grace check.
     pub(crate) fn written_snapshot(&self) -> HashMap<Digest, Duration> {
         self.written_at.clone()
@@ -84,13 +89,22 @@ impl<C: ReclaimableCas> CasStore<C> {
         clock: Arc<dyn Clock>,
         me: PeerId,
     ) -> Self {
+        // The AccessLog is in memory, so after a restart every surviving blob has an
+        // unknown write-time, which GC treats as outside the grace window. Seed them
+        // all as "written now": the first sweep is delayed by one grace window.
+        // Best-effort: if enumeration fails, GC's own `iter_local` will surface it.
+        let mut state = StoreState::default();
+        let now = clock.now();
+        for blob in inner.iter_local().unwrap_or_default() {
+            state.access.seed_written(&blob.digest, now);
+        }
         Self {
             inner,
             policy,
             router,
             clock,
             me,
-            state: Mutex::new(StoreState::default()),
+            state: Mutex::new(state),
         }
     }
 
