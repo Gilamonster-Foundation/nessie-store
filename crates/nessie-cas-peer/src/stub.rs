@@ -21,12 +21,17 @@ async fn get_blob(State(b): State<Blobs>, Path(d): Path<String>) -> Result<Vec<u
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-async fn head_blob(State(b): State<Blobs>, Path(d): Path<String>) -> StatusCode {
-    if b.lock().unwrap().contains_key(&d) {
-        StatusCode::OK
-    } else {
-        StatusCode::NOT_FOUND
-    }
+async fn head_blob(
+    State(b): State<Blobs>,
+    Path(d): Path<String>,
+) -> Result<[(&'static str, String); 1], StatusCode> {
+    let n = b
+        .lock()
+        .unwrap()
+        .get(&d)
+        .map(Vec::len)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok([("content-length", n.to_string())])
 }
 
 async fn put_blob(State(b): State<Blobs>, Path(d): Path<String>, body: Bytes) -> StatusCode {

@@ -84,9 +84,9 @@ mod tests {
         let (url, blobs) = stub::spawn();
         let d = plant(&blobs, b"restore me");
         let swarm = SwarmCas::new(MemCas::new(), set(&[(&url, true)]));
-        assert!(!swarm.has(&d).unwrap());
+        assert!(!swarm.local().has(&d).unwrap());
         assert_eq!(read(swarm.get(&d).unwrap()), b"restore me");
-        assert!(swarm.has(&d).unwrap(), "fetched blob is now local");
+        assert!(swarm.local().has(&d).unwrap(), "fetched blob is now local");
     }
 
     #[test]
@@ -99,7 +99,10 @@ mod tests {
             .insert(d.to_string(), b"forged".to_vec());
         let swarm = SwarmCas::new(MemCas::new(), set(&[(&url, true)]));
         assert!(matches!(swarm.get(&d), Err(BackendError::BlobNotFound(_))));
-        assert!(!swarm.has(&d).unwrap(), "nothing stored from a bad body");
+        assert!(
+            !swarm.local().has(&d).unwrap(),
+            "nothing stored from a bad body"
+        );
         assert!(swarm.local().iter_local().unwrap().is_empty());
     }
 
@@ -153,5 +156,59 @@ mod tests {
             cache_blobs.lock().unwrap().is_empty(),
             "never pushes to a non-durable peer"
         );
+    }
+
+    #[test]
+    fn size_and_has_fall_through_to_a_peer_without_fetching_the_body() {
+        let (url, blobs) = stub::spawn();
+        let d = plant(&blobs, b"held only by the peer");
+        let swarm = SwarmCas::new(MemCas::new(), set(&[(&url, true)]));
+        assert_eq!(swarm.size(&d).unwrap(), Some(21));
+        assert!(swarm.has(&d).unwrap());
+        assert!(
+            swarm.local().iter_local().unwrap().is_empty(),
+            "HEAD only, no body stored"
+        );
+        let absent = Digest::compute(b"nobody");
+        assert_eq!(swarm.size(&absent).unwrap(), None);
+        assert!(!swarm.has(&absent).unwrap());
+    }
+
+    fn pushable(peers: &[(&str, bool)]) -> (HttpReplicator, Digest) {
+        let local = Arc::new(MemCas::new());
+        let d = local.put(&mut &b"count me"[..]).unwrap();
+        (HttpReplicator::new(set(peers), local), d)
+    }
+
+    #[test]
+    fn push_counts_an_already_held_peer_once_and_does_not_reput_it() {
+        let (d1, d1_blobs) = stub::spawn();
+        let (d2, d2_blobs) = stub::spawn();
+        let (rep, d) = pushable(&[(&d1, true), (&d2, true)]);
+        d1_blobs
+            .lock()
+            .unwrap()
+            .insert(d.to_string(), b"sentinel".to_vec());
+        assert_eq!(rep.push(&d, NonZeroUsize::new(2).unwrap()).unwrap(), 2);
+        assert_eq!(
+            d1_blobs.lock().unwrap()[&d.to_string()],
+            b"sentinel",
+            "held peer untouched"
+        );
+        assert!(d2_blobs.lock().unwrap().contains_key(&d.to_string()));
+    }
+
+    #[test]
+    fn push_returns_the_true_count_on_shortfall() {
+        let (d1, _) = stub::spawn();
+        let (rep, d) = pushable(&[(&d1, true), ("http://127.0.0.1:1", true)]);
+        assert_eq!(rep.push(&d, NonZeroUsize::new(2).unwrap()).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_duplicate_url_is_one_holder_not_two() {
+        let (d1, _) = stub::spawn();
+        let (rep, d) = pushable(&[(&d1, true), (&format!("{d1}/"), true)]);
+        assert_eq!(rep.push(&d, NonZeroUsize::new(2).unwrap()).unwrap(), 1);
     }
 }

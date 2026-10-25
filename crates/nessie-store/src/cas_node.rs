@@ -77,6 +77,9 @@ pub struct CasNode {
     interval: Duration,
     oracle: Box<dyn DurabilityOracle>,
     replicator: Box<dyn Replicator>,
+    /// The blobs held here, without peer fallback (`None`: no peers, the store is
+    /// already local-only).
+    local: Option<Arc<dyn CasBackend>>,
 }
 
 impl CasNode {
@@ -104,17 +107,19 @@ impl CasNode {
         };
         // With peers: fetch-through beneath the store, and the static router /
         // oracle / replicator in place of the in-process ones.
-        let (blobs, router, oracle, replicator): (_, Arc<dyn ContentRouter>, _, _) =
-            if cfg.peers.is_empty() {
+        let peer_list = cfg.effective_peers()?;
+        let (blobs, router, oracle, replicator, local): (_, Arc<dyn ContentRouter>, _, _, _) =
+            if peer_list.is_empty() {
                 (
                     blobs,
                     Arc::new(MemRouter::new(me.clone())),
                     Box::new(NoDurableOracle) as Box<dyn DurabilityOracle>,
                     Box::new(RefuseToReplicate) as Box<dyn Replicator>,
+                    None,
                 )
             } else {
                 let peers = Arc::new(PeerSet::new(
-                    cfg.peers
+                    peer_list
                         .iter()
                         .map(|p| Peer {
                             url: p.url.clone(),
@@ -128,7 +133,8 @@ impl CasNode {
                     Box::new(swarm) as Box<dyn ReclaimableCas>,
                     Arc::new(StaticRouter::new(peers.clone())),
                     Box::new(StaticDurabilityOracle::new(peers.clone())),
-                    Box::new(HttpReplicator::new(peers, local)),
+                    Box::new(HttpReplicator::new(peers, local.clone())),
+                    Some(local),
                 )
             };
         let store = CasStore::new(
@@ -145,6 +151,7 @@ impl CasNode {
             interval: Duration::from_secs(cfg.maintenance_interval_secs),
             oracle,
             replicator,
+            local,
         })
     }
 
@@ -199,6 +206,13 @@ impl CasNode {
     #[must_use]
     pub fn store(&self) -> &CasStore<Box<dyn ReclaimableCas>> {
         &self.store
+    }
+
+    /// The blobs held on this node **only** — no fetch-through, no peer probing. The
+    /// peer routes answer from this, so two nodes listing each other cannot recurse.
+    #[must_use]
+    pub fn local(&self) -> &dyn CasBackend {
+        self.local.as_deref().unwrap_or(&self.store)
     }
 
     /// The node's root registry (register confirmed AC entries / pins here).

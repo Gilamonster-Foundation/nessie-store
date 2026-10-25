@@ -50,8 +50,14 @@ impl<C: ReclaimableCas> SwarmCas<C> {
 }
 
 impl<C: ReclaimableCas> CasBackend for SwarmCas<C> {
+    /// Local, else any peer that answers `HEAD 200`. Protocol faces probe with this
+    /// before reading, so a blob held only by a peer must not look absent. Replica
+    /// accounting does not use it: that is `StaticRouter`, which asks peers directly.
     fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
-        self.inner.has(digest)
+        if self.inner.has(digest)? {
+            return Ok(true);
+        }
+        Ok(self.peers.peers().iter().any(|p| self.peers.has(p, digest)))
     }
 
     /// Local first; only a plain miss goes to the peers. A local blob that fails
@@ -74,8 +80,17 @@ impl<C: ReclaimableCas> CasBackend for SwarmCas<C> {
         self.inner.put_keyed(expected, source)
     }
 
+    /// Local, else the length a peer reports on `HEAD` — no body fetched. S3 asks
+    /// for the size before it reads; `get` still does the verified fetch-through.
     fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
-        self.inner.size(digest)
+        if let Some(n) = self.inner.size(digest)? {
+            return Ok(Some(n));
+        }
+        Ok(self
+            .peers
+            .peers()
+            .iter()
+            .find_map(|p| self.peers.size(p, digest)))
     }
 
     fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {

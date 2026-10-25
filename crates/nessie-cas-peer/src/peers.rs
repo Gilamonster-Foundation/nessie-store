@@ -36,11 +36,14 @@ impl PeerSet {
     /// # Errors
     ///
     /// [`BackendError::Internal`] if the HTTP client cannot be built.
-    pub fn new(peers: Vec<Peer>) -> Result<Self, BackendError> {
+    pub fn new(mut peers: Vec<Peer>) -> Result<Self, BackendError> {
+        // Distinct holders only: a URL listed twice must not count as two replicas.
+        let mut seen = std::collections::HashSet::new();
+        peers.retain(|p| seen.insert(p.url.trim_end_matches('/').to_owned()));
         let client = std::thread::spawn(|| {
             Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(300))
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
                 .build()
         })
         .join()
@@ -57,10 +60,24 @@ impl PeerSet {
 
     /// `HEAD` — does `peer` hold `digest`? Any failure answers `false`.
     pub(crate) fn has(&self, peer: &Peer, digest: &Digest) -> bool {
-        self.client
-            .head(peer.blob_url(digest))
-            .send()
-            .is_ok_and(|r| r.status().is_success())
+        self.head(peer, digest).is_some()
+    }
+
+    /// `HEAD` — the blob's length as `peer` reports it, if it holds the blob. No
+    /// body is fetched.
+    pub(crate) fn size(&self, peer: &Peer, digest: &Digest) -> Option<u64> {
+        self.head(peer, digest)?
+    }
+
+    /// `Some(content-length)` on a 2xx `HEAD`; `None` on 404 / failure.
+    fn head(&self, peer: &Peer, digest: &Digest) -> Option<Option<u64>> {
+        let r = self.client.head(peer.blob_url(digest)).send().ok()?;
+        r.status().is_success().then(|| {
+            // `Response::content_length` is the (empty) HEAD body's; read the header.
+            r.headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()?.parse().ok())
+        })
     }
 
     /// `GET` — the peer's response if it has the blob; `None` on 404 / failure.

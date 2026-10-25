@@ -25,6 +25,12 @@ impl ContentRouter for StaticRouter {
     /// The peers that answer `HEAD 200` for `digest`, identified by URL. Honest by
     /// construction: cache eviction counts these as replicas, so a peer that does
     /// not hold the blob must not appear.
+    ///
+    /// **Cost:** one sequential `HEAD` per configured peer per call, no caching or
+    /// batching, each bounded by the client's 10 s connect / 30 s request timeouts.
+    /// An eviction pass calls this once per candidate blob, so a pass is
+    /// O(candidate blobs × peers) requests, and an unresponsive peer adds up to 30 s
+    /// per blob. Fine for a lab's handful of peers; batch or cache before scaling.
     fn providers(&self, digest: &Digest) -> Result<Vec<PeerId>, RouterError> {
         Ok(self
             .peers

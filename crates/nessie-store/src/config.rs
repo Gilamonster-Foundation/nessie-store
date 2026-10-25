@@ -71,6 +71,35 @@ pub struct CasConfig {
     /// Serve `GET|HEAD|PUT /cas/v1/blobs/{digest}` so peers can reach this node.
     /// **Lab only: the routes are unauthenticated; mTLS is the fast-follow.**
     pub peer_api: bool,
+    /// This node's own peer URL, as other nodes list it. A `peers` entry equal to
+    /// it is ignored, so one shared peer list can be deployed to every node.
+    pub advertise_url: Option<String>,
+}
+
+impl CasConfig {
+    /// The peers this node should talk to: trailing slashes normalised, this node's
+    /// own [`advertise_url`](CasConfig::advertise_url) removed.
+    ///
+    /// # Errors
+    ///
+    /// A URL listed twice — the duplicate would be counted as a second holder.
+    pub fn effective_peers(&self) -> anyhow::Result<Vec<CasPeer>> {
+        let norm = |u: &str| u.trim_end_matches('/').to_owned();
+        let me = self.advertise_url.as_deref().map(norm);
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for p in &self.peers {
+            let url = norm(&p.url);
+            anyhow::ensure!(seen.insert(url.clone()), "[cas] peers lists {url} twice");
+            if me.as_deref() != Some(url.as_str()) {
+                out.push(CasPeer {
+                    url,
+                    durable: p.durable,
+                });
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl Default for CasConfig {
@@ -85,6 +114,7 @@ impl Default for CasConfig {
             replication_factor: None,
             peers: Vec::new(),
             peer_api: false,
+            advertise_url: None,
         }
     }
 }
@@ -262,6 +292,9 @@ impl Config {
         let mut cfg: Config = toml::from_str(&text)
             .map_err(|e| anyhow::anyhow!("parsing config {}: {e}", path.display()))?;
         cfg.apply_env();
+        if let Some(cas) = &cfg.cas {
+            cas.effective_peers()?;
+        }
         Ok(cfg)
     }
 
@@ -385,6 +418,30 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn duplicate_peers_are_rejected_and_self_is_dropped() {
+        let peer = |u: &str| CasPeer {
+            url: u.into(),
+            durable: true,
+        };
+        let dup = CasConfig {
+            peers: vec![peer("http://a:1"), peer("http://a:1/")],
+            ..CasConfig::default()
+        };
+        let err = dup.effective_peers().unwrap_err().to_string();
+        assert!(
+            err.contains("http://a:1 twice"),
+            "names the duplicate: {err}"
+        );
+
+        let shared = CasConfig {
+            peers: vec![peer("http://me:1"), peer("http://b:2")],
+            advertise_url: Some("http://me:1/".into()),
+            ..CasConfig::default()
+        };
+        assert_eq!(shared.effective_peers().unwrap(), vec![peer("http://b:2")]);
     }
 
     #[test]

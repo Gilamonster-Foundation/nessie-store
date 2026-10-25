@@ -62,7 +62,8 @@ async fn get_blob(
     let digest = parse(&d)?;
     blocking(move || {
         let mut out = Vec::new();
-        node.get(&digest)?
+        node.local()
+            .get(&digest)?
             .read_to_end(&mut out)
             .map_err(|e| BackendError::Internal(e.to_string()))?;
         Ok(out)
@@ -70,14 +71,16 @@ async fn get_blob(
     .await
 }
 
-async fn head_blob(State(node): State<Arc<CasNode>>, Path(d): Path<String>) -> StatusCode {
-    let Ok(digest) = parse(&d) else {
-        return StatusCode::BAD_REQUEST;
-    };
-    match blocking(move || node.has(&digest)).await {
-        Ok(true) => StatusCode::OK,
-        Ok(false) => StatusCode::NOT_FOUND,
-        Err(s) => s,
+/// Local-only, with the stored length in `Content-Length` so a peer can answer a
+/// size probe without fetching the body.
+async fn head_blob(
+    State(node): State<Arc<CasNode>>,
+    Path(d): Path<String>,
+) -> Result<[(&'static str, String); 1], StatusCode> {
+    let digest = parse(&d)?;
+    match blocking(move || node.local().size(&digest)).await? {
+        Some(n) => Ok([("content-length", n.to_string())]),
+        None => Err(StatusCode::NOT_FOUND),
     }
 }
 
