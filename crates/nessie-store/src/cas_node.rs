@@ -9,6 +9,7 @@
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use std::io::Read;
@@ -69,6 +70,7 @@ pub enum MaintenanceReport {
 pub struct CasNode {
     store: CasStore<Box<dyn ReclaimableCas>>,
     roots: RootRegistry,
+    face_backed: AtomicBool,
     interval: Duration,
 }
 
@@ -105,8 +107,22 @@ impl CasNode {
         Ok(Self {
             store,
             roots: RootRegistry::new(),
+            face_backed: AtomicBool::new(false),
             interval: Duration::from_secs(cfg.maintenance_interval_secs),
         })
+    }
+
+    /// Record that a protocol face (REAPI / S3) writes into this store.
+    ///
+    /// Face writes are never registered as roots, and the root registry is in
+    /// memory, so after a restart durable GC would sweep every uploaded blob.
+    /// Until persistent roots exist, a face-backed durable node retains everything:
+    /// [`CasNode::maintain_once`] skips the GC sweep. Cache mode is unaffected (its
+    /// eviction is replica-gated and refuses a sole copy).
+    pub fn mark_face_backed(&self) {
+        // ponytail: retain-all, no persistent roots yet; durable GC returns once
+        // roots persist (follow-up #137).
+        self.face_backed.store(true, Ordering::Relaxed);
     }
 
     /// Run one retention maintenance pass, dispatching by mode.
@@ -116,6 +132,12 @@ impl CasNode {
     /// Propagates GC / eviction backend errors.
     pub fn maintain_once(&self) -> anyhow::Result<MaintenanceReport> {
         match &self.store.policy().mode {
+            StorageMode::Durable(_) if self.face_backed.load(Ordering::Relaxed) => {
+                Ok(MaintenanceReport::Gc {
+                    reclaimed: 0,
+                    bytes: 0,
+                })
+            }
             StorageMode::Durable(_) => {
                 let report = self.store.gc(&self.roots, &CanonicalResolver)?;
                 Ok(MaintenanceReport::Gc {

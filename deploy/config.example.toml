@@ -54,6 +54,10 @@ nfs_export_name = ""
 # Content-addressed store node. When present, the REAPI / S3 faces below share THIS
 # store (one set of blobs) and it runs retention maintenance. backend = "mem" (the
 # default) loses blobs on restart; "disk" keeps them under `path`.
+#
+# mode = "durable" (default) with a face enabled is RETAIN-ALL: face-written blobs
+# have no persistent roots, so the GC sweep is disabled rather than risk deleting
+# them after a restart. mode = "cache" evicts only blobs another holder also has.
 [cas]
 backend = "disk"
 path = "/var/lib/nessie-store/cas"

@@ -16,7 +16,9 @@ use nessie_reapi::reapi;
 use nessie_reapi::reapi::content_addressable_storage_server::ContentAddressableStorage;
 use nessie_reapi::{CasV2Svc, ReapiConfig};
 use nessie_s3::NessieS3;
-use nessie_store::config::{CasBackendKind, CasConfig, Config, ReapiServerConfig, S3ServerConfig};
+use nessie_store::config::{
+    CasBackendKind, CasConfig, CasMode, Config, ReapiServerConfig, S3ServerConfig,
+};
 use nessie_store::faces::{Faces, build_faces};
 use s3s::S3;
 use s3s::S3Request;
@@ -275,4 +277,80 @@ fn the_default_s3_secret_is_refused() {
     // A disabled S3 face is not checked.
     cfg.s3.as_mut().expect("s3").enabled = false;
     assert!(build_faces(&cfg).is_ok());
+}
+
+/// Zero grace so a single maintenance pass may sweep anything unreachable.
+fn zero_grace(cfg: &mut Config, mode: CasMode) {
+    let cas = cfg.cas.as_mut().expect("cas");
+    cas.gc_grace_secs = 0;
+    cas.mode = mode;
+}
+
+fn blob_digest(hash: &str) -> nessie_backend_core::Digest {
+    format!("sha2-256:{hash}").parse().expect("digest")
+}
+
+#[tokio::test]
+async fn durable_gc_never_sweeps_face_written_blobs_after_restart() {
+    // Shepherd P1 on #136: nothing roots S3/REAPI blobs and roots are in memory, so
+    // after a restart durable GC would reclaim every uploaded blob.
+    let dir = TempRoot::new();
+    let mut cfg = faces_config(Some(dir.path()));
+    zero_grace(&mut cfg, CasMode::Durable);
+    let hash = sha256_hex(BLOB);
+    {
+        let (backend, _faces) = shared_backend(&cfg);
+        s3_put(backend, &hash).await;
+    }
+    let node = build_faces(&cfg).expect("restart").node.expect("node");
+    node.maintain_once().expect("maintenance");
+    assert!(
+        node.store().has(&blob_digest(&hash)).expect("has"),
+        "a face-backed durable store must retain every blob"
+    );
+}
+
+#[test]
+fn durable_gc_without_a_face_still_sweeps_unreachable_blobs() {
+    let dir = TempRoot::new();
+    let mut cfg = Config {
+        cas: Some(CasConfig {
+            backend: CasBackendKind::Disk,
+            path: Some(dir.path().to_owned()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    zero_grace(&mut cfg, CasMode::Durable);
+    let digest = {
+        let node = build_faces(&cfg).expect("faces").node.expect("node");
+        node.put(&mut { BLOB }).expect("put")
+    };
+    let node = build_faces(&cfg).expect("restart").node.expect("node");
+    node.maintain_once().expect("maintenance");
+    assert!(
+        !node.store().has(&digest).expect("has"),
+        "no face: unreachable blobs are still collected"
+    );
+}
+
+#[tokio::test]
+async fn cache_mode_over_budget_keeps_a_sole_copy_face_blob() {
+    let dir = TempRoot::new();
+    let mut cfg = faces_config(Some(dir.path()));
+    zero_grace(&mut cfg, CasMode::Cache);
+    {
+        let cas = cfg.cas.as_mut().expect("cas");
+        cas.byte_budget = Some(0);
+        cas.replication_factor = Some(1);
+    }
+    let (backend, faces) = shared_backend(&cfg);
+    let hash = sha256_hex(BLOB);
+    s3_put(backend, &hash).await;
+    let node = faces.node.expect("node");
+    node.maintain_once().expect("maintenance");
+    assert!(
+        node.store().has(&blob_digest(&hash)).expect("has"),
+        "no other holder: eviction must not drop the only copy"
+    );
 }

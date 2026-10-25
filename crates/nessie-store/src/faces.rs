@@ -46,6 +46,12 @@ pub fn build_faces(cfg: &Config) -> anyhow::Result<Faces> {
         .map(|c| CasNode::from_config(c, PeerId::new(cfg.data_lif.clone())).map(Arc::new))
         .transpose()?;
     let backend = if reapi_on || s3_on {
+        if let Some(n) = &node {
+            n.mark_face_backed();
+            tracing::info!(
+                "durable CAS serves a protocol face: retain-all, GC sweep disabled until persistent roots exist"
+            );
+        }
         Some(build_cas_backend(node.clone())?)
     } else {
         None

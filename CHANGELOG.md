@@ -13,7 +13,10 @@ All notable changes to nessie-store are documented here. The format follows
   (`faces::build_faces`, the entry point `main` calls). `MemActionCache` keeps result
   bodies in any shared `CasBackend` (`MemActionCache::shared`); attestations stay in
   memory. `backend = "disk"` without `path` is a config error. The daemon now refuses
-  to start the S3 face while its secret is the default `nessie`.
+  to start the S3 face while its secret is the default `nessie`. A durable `[cas]`
+  node with REAPI or S3 enabled is **retain-all**: face writes have no persistent
+  roots, so the GC sweep is disabled (it would delete them after a restart) until
+  persistent roots land (#137). Cache mode is unchanged.
 - **S3 object-API face over the CAS (`nessie-s3`).** A second protocol face beside
   the REAPI one, over the *same* content-addressed store: a blob written over REAPI
   gRPC is the blob an S3 client reads, because both name it by the same digest.
