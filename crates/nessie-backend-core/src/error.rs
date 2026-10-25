@@ -100,6 +100,21 @@ pub enum BackendError {
         stderr: String,
     },
 
+    /// A write-only store is full: the write was refused and nothing was stored.
+    /// Faces render this as S3 `507`-style insufficient storage / gRPC
+    /// `RESOURCE_EXHAUSTED`.
+    #[error(
+        "insufficient storage: {used} bytes held + {incoming} incoming exceeds capacity {capacity}"
+    )]
+    CapacityExceeded {
+        /// Bytes the store already holds.
+        used: u64,
+        /// Size of the refused write.
+        incoming: u64,
+        /// The configured capacity.
+        capacity: u64,
+    },
+
     /// An unexpected internal error.
     #[error("internal backend error: {0}")]
     Internal(String),

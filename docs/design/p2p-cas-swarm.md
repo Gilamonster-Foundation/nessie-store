@@ -213,6 +213,11 @@ broker bytes" discipline). Only *discovery* differs between the two routers.
 
 ## Node storage modes — cache vs durable store of record
 
+> **Superseded (#138).** The shipped modes are `lru` (coldest-first; replicated blobs
+> before sole copies; pins and in-flight writes never) and `write_only` (never reclaims,
+> refuses writes at capacity). The reachability-GC "durable" mode described below is
+> retired.
+
 A nessie node runs its local disk in one of two modes. The two modes differ in
 their **retention rule** — *what is allowed to leave local disk, and why* — and
 the design deliberately borrows git's object-store model, because git already *is*
