@@ -7,13 +7,15 @@
 //! ```text
 //! <root>/tmp/<pid>-<counter>                  in-flight writes
 //! <root>/<algo name>/<hex[0..2]>/<hex[2..]>   committed blobs
+//! <root>/quarantine/<algo name>/<hex>         blobs that failed verification
 //! ```
 //!
 //! Nothing is written in place under `<root>/<algo>/`; only `rename` lands a
 //! blob there, so a crash leaves either no blob or a complete one.
 
 use nessie_backend_core::{
-    BackendError, CasBackend, Digest, DigestAlgo, DigestHasher, LocalBlob, ReclaimableCas,
+    BackendError, CasBackend, Digest, DigestAlgo, DigestHasher, LocalBlob, QuarantinedBlob,
+    ReclaimableCas,
 };
 use std::fs;
 use std::io::{Cursor, Read, Write};
@@ -230,6 +232,80 @@ impl ReclaimableCas for DiskCas {
             Err(e) => Err(io_err("reclaim", e)),
         }
     }
+
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        match fs::read(self.path(digest)) {
+            Ok(bytes) => Ok(digest.verify(&bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(BackendError::BlobNotFound(digest.clone()))
+            }
+            Err(e) => Err(io_err("read blob", e)),
+        }
+    }
+
+    /// Rename the blob under `<root>/quarantine/<algo>/<hex>.<n>`, `n` the lowest
+    /// free slot: an existing quarantined copy is never replaced.
+    // ponytail: exists-then-rename is only race-free because maintenance runs one
+    // scrub at a time; use hard_link + unlink if quarantine ever runs concurrently.
+    fn quarantine(&self, digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
+        let hex = digest.to_string();
+        let hex = hex.split_once(':').map_or("", |(_, h)| h).to_owned();
+        let dir = self.root.join("quarantine").join(digest.algo().name());
+        fs::create_dir_all(&dir).map_err(|e| io_err("create quarantine", e))?;
+        for n in 0u32.. {
+            let name = format!("{hex}.{n}");
+            let dest = dir.join(&name);
+            if dest.symlink_metadata().is_ok() {
+                continue;
+            }
+            return match fs::rename(self.path(digest), &dest) {
+                Ok(()) => {
+                    let size_bytes = fs::metadata(&dest)
+                        .map_err(|e| io_err("stat quarantined blob", e))?
+                        .len();
+                    Ok(Some(QuarantinedBlob {
+                        id: format!("{}/{name}", digest.algo().name()),
+                        digest: digest.clone(),
+                        size_bytes,
+                    }))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(io_err("quarantine", e)),
+            };
+        }
+        unreachable!("u32 slots exhausted")
+    }
+
+    fn iter_quarantine(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        let not_found = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+        let mut out = Vec::new();
+        for algo in ALGOS {
+            let files = match fs::read_dir(self.root.join("quarantine").join(algo.name())) {
+                Ok(f) => f,
+                Err(e) if not_found(&e) => continue,
+                Err(e) => return Err(io_err("list quarantine", e)),
+            };
+            for file in files {
+                let file = file.map_err(|e| io_err("list quarantine", e))?;
+                let name = file.file_name().to_string_lossy().into_owned();
+                let Some((hex, _slot)) = name.rsplit_once('.') else {
+                    continue;
+                };
+                let Ok(digest) = format!("{}:{hex}", algo.name()).parse::<Digest>() else {
+                    continue;
+                };
+                let meta = file.metadata().map_err(|e| io_err("stat quarantined", e))?;
+                if meta.is_file() {
+                    out.push(QuarantinedBlob {
+                        id: format!("{}/{name}", algo.name()),
+                        digest,
+                        size_bytes: meta.len(),
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +384,70 @@ mod tests {
         let d = cas.put(&mut &b"pristine"[..]).unwrap();
         std::fs::write(blob_path(&root, &d), b"tampered").unwrap();
         assert!(cas.get(&d).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_reports_corruption_and_absence_apart() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"pristine"[..]).unwrap();
+        assert!(cas.verify(&d).unwrap());
+        std::fs::write(blob_path(&root, &d), b"tampered").unwrap();
+        assert!(!cas.verify(&d).unwrap());
+        assert!(matches!(
+            cas.verify(&Digest::compute(b"never stored")),
+            Err(BackendError::BlobNotFound(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quarantine_moves_the_blob_aside_without_deleting_it() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"suspect"[..]).unwrap();
+        let q = cas.quarantine(&d).unwrap().expect("held");
+        assert_eq!((q.digest.clone(), q.size_bytes), (d.clone(), 7));
+        assert!(!cas.has(&d).unwrap());
+        assert!(cas.get(&d).is_err(), "never served");
+        assert!(cas.iter_local().unwrap().is_empty(), "never listed");
+        assert_eq!(cas.iter_quarantine().unwrap(), vec![q.clone()]);
+        let hex = d.to_string().split_once(':').unwrap().1.to_owned();
+        let kept = root
+            .join("quarantine")
+            .join(d.algo().name())
+            .join(format!("{hex}.0"));
+        assert_eq!(std::fs::read(kept).unwrap(), b"suspect");
+        assert!(
+            cas.quarantine(&d).unwrap().is_none(),
+            "idempotent once moved"
+        );
+        // A restore is a normal put_keyed and lands the blob again.
+        cas.put_keyed(&d, &mut &b"suspect"[..]).unwrap();
+        assert!(cas.has(&d).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_second_quarantine_of_one_digest_keeps_both_copies() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"first"[..]).unwrap();
+        std::fs::write(blob_path(&root, &d), b"rot one").unwrap();
+        let one = cas.quarantine(&d).unwrap().unwrap();
+        cas.put_keyed(&d, &mut &b"first"[..]).unwrap();
+        std::fs::write(blob_path(&root, &d), b"rot number two").unwrap();
+        let two = cas.quarantine(&d).unwrap().unwrap();
+        assert_ne!(one.id, two.id);
+        let mut sizes: Vec<_> = cas
+            .iter_quarantine()
+            .unwrap()
+            .iter()
+            .map(|q| q.size_bytes)
+            .collect();
+        sizes.sort_unstable();
+        assert_eq!(sizes, [7, 14], "neither copy was replaced");
         let _ = std::fs::remove_dir_all(root);
     }
 

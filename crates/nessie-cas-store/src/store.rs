@@ -65,11 +65,21 @@ pub(crate) struct StoreState {
     /// PRIMARY, in-process race defense; `gc_grace` is the cross-restart backstop.
     pub(crate) in_flight: HashSet<Digest>,
     pub(crate) access: AccessLog,
-    /// Write-only: digests whose bytes are counted in `committed`. The source of
-    /// truth: a blob is counted iff it is in this set, so a duplicate never counts twice.
-    accounted: HashSet<Digest>,
-    /// Write-only: total bytes of `accounted` blobs. Changed only under the state lock.
-    committed: u64,
+    /// Write-only: digest → the bytes charged when it was admitted (or seeded at
+    /// startup). The source of truth: a blob is counted iff it is a key, so a
+    /// duplicate never counts twice, and a credit is this number — never the current
+    /// length of a file that may have been corrupted since.
+    pub(crate) accounted: HashMap<Digest, u64>,
+    /// Write-only: quarantine id → the file's real on-disk length. Quarantined bytes
+    /// are still retained, so they stay charged.
+    pub(crate) quarantined: HashMap<String, u64>,
+    /// Write-only: digests with ungated re-puts in flight (a count per digest). A
+    /// re-put of an accounted blob adds nothing, so quarantine must not move that
+    /// blob's charge away until the write has finished publishing.
+    pub(crate) fast_inflight: HashMap<Digest, usize>,
+    /// Write-only: `accounted` plus `quarantined` bytes — every byte this node
+    /// retains. Changed only under the state lock.
+    pub(crate) committed: u64,
 }
 
 /// A retention-managed [`CasBackend`]: delegates the CAS contract to an inner
@@ -85,10 +95,29 @@ pub struct CasStore<C: ReclaimableCas> {
     pub(crate) state: Mutex<StoreState>,
     /// Write-only: lock-free mirror of `StoreState::committed`, written only while
     /// holding the state lock, so the gate can read it per chunk without locking.
-    committed: AtomicU64,
+    pub(crate) committed: AtomicU64,
     /// Write-only: bytes reserved by writers still streaming. Always returned by the
     /// writer's [`CapacityGate`] on drop (success, error or panic), never kept.
-    pending: AtomicU64,
+    pub(crate) pending: AtomicU64,
+}
+
+/// Registers an ungated re-put of `digest` for as long as it lives, success, error or
+/// panic, so quarantine can see it.
+struct FastWrite<'a, C: ReclaimableCas> {
+    store: &'a CasStore<C>,
+    digest: &'a Digest,
+}
+
+impl<C: ReclaimableCas> Drop for FastWrite<'_, C> {
+    fn drop(&mut self) {
+        let mut state = self.store.state();
+        if let Some(n) = state.fast_inflight.get_mut(self.digest) {
+            *n -= 1;
+            if *n == 0 {
+                state.fast_inflight.remove(self.digest);
+            }
+        }
+    }
 }
 
 /// Reserves bytes against `capacity` as they stream in and fails the read once
@@ -150,8 +179,12 @@ impl<C: ReclaimableCas> CasStore<C> {
         let now = clock.now();
         for blob in inner.iter_local()? {
             state.access.seed_written(&blob.digest, now);
-            state.accounted.insert(blob.digest);
+            state.accounted.insert(blob.digest, blob.size_bytes);
             state.committed += blob.size_bytes;
+        }
+        for q in inner.iter_quarantine()? {
+            state.committed += q.size_bytes;
+            state.quarantined.insert(q.id, q.size_bytes);
         }
         Ok(Self {
             inner,
@@ -192,13 +225,15 @@ impl<C: ReclaimableCas> CasStore<C> {
             return; // read nothing: the blob already existed (its publisher counts it) or is empty
         }
         let mut state = self.state();
-        if state.accounted.insert(digest.clone()) {
+        if let std::collections::hash_map::Entry::Vacant(v) = state.accounted.entry(digest.clone())
+        {
+            v.insert(size);
             state.committed += size;
             self.committed.store(state.committed, Ordering::SeqCst);
         }
     }
 
-    /// Write-only `put_keyed`: a blob already held is a no-op (never refused);
+    /// Write-only `put_keyed`: a blob already charged is a no-op (never refused);
     /// otherwise the write streams through the capacity gate.
     fn put_keyed_write_only(
         &self,
@@ -206,9 +241,25 @@ impl<C: ReclaimableCas> CasStore<C> {
         expected: &Digest,
         source: &mut dyn Read,
     ) -> Result<(), BackendError> {
-        if self.inner.has(expected).unwrap_or(false) {
-            // Already held: its bytes were counted at construction or are held
-            // pending by the writer that published them. Add nothing, remove nothing.
+        // Already held: charged, or committed by a writer that has not charged it yet
+        // (it holds the reservation). A re-put adds nothing, takes nothing and is
+        // never refused. The decision and the registration happen under the state
+        // lock, which quarantine also holds, so a charge cannot move to quarantine
+        // while this write is still publishing.
+        let fast = {
+            let mut state = self.state();
+            let held =
+                state.accounted.contains_key(expected) || self.inner.has(expected).unwrap_or(false);
+            if held {
+                *state.fast_inflight.entry(expected.clone()).or_default() += 1;
+            }
+            held
+        };
+        if fast {
+            let _registered = FastWrite {
+                store: self,
+                digest: expected,
+            };
             return self.inner.put_keyed(expected, source);
         }
         let mut gate = CapacityGate {

@@ -4,7 +4,8 @@ use std::io::Read;
 use std::sync::Arc;
 
 use nessie_backend_core::{
-    ActionCacheBackend, BackendError, CasBackend, Digest, LocalBlob, ReclaimableCas,
+    ActionCacheBackend, BackendError, CasBackend, Digest, LocalBlob, QuarantinedBlob,
+    ReclaimableCas,
 };
 
 use crate::PeerSet;
@@ -137,5 +138,18 @@ impl<C: ReclaimableCas> ReclaimableCas for SwarmCas<C> {
 
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
         self.inner.reclaim(digest)
+    }
+
+    /// Local only: a peer's copy is that peer's to scrub.
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.inner.verify(digest)
+    }
+
+    fn quarantine(&self, digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
+        self.inner.quarantine(digest)
+    }
+
+    fn iter_quarantine(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        self.inner.iter_quarantine()
     }
 }

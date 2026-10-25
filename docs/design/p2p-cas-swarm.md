@@ -362,7 +362,7 @@ These gated the first implementable slice; all four are now settled.
    as a bounded **LRU cache** (coldest first, replicated blobs before sole copies;
    a sole copy can be dropped) or as **write-only** storage (never deletes, refuses
    writes at capacity). The write-only mirror guarantee (#139) and scrub/repair
-   (#140) are pending. The earlier durable reachability-GC design is historical.
+   (#140) are shipped. The earlier durable reachability-GC design is historical.
    See [Node storage modes](#node-storage-modes--cache-vs-durable-store-of-record).
 
 ## First implementable slice — CAS spine (built ✅)
@@ -412,7 +412,7 @@ merge each slice on green, in dependency order).
 | Static peers | `nessie-cas-peer`: static peer list, fetch-through, durability oracle | ⏳ #127 |
 | Retention modes | `[cas] mode = lru\|write_only`; reachability-GC `durable` retired | ✅ #142 |
 | Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ✅ #139 |
-| Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ⏳ #140 |
+| Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ✅ #140 |
 | Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |

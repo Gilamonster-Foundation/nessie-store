@@ -12,7 +12,7 @@ an S3 face. Peer sharing is still being built and is not described here.
 | Peer sharing | Static peer list in TOML, HTTP fetch-through behind `ContentRouter`. Mesh router later. |
 | Auth | S3: one static SigV4 key, secret from `NESSIE_S3_SECRET_KEY`. REAPI and peer API unauthenticated, lab-only, default off. mTLS next. |
 | Retention | `lru` (default): coldest first, replicated before sole copies, pins and in-flight never; a sole copy can be dropped. `write_only`: never deletes, refuses writes at capacity. Reachability-GC `durable` retired. |
-| Mirror | `write_only` acknowledges after R verified copies, with scrub and repair (#139, #140; coming in v0.4.0). |
+| Mirror | `write_only` acknowledges after R verified copies, with scrub and repair in every maintenance pass (#139, #140). |
 | Keypair plane | agent-mesh owns transport and identity; nessie later ships a `ContentRouter` impl. |
 
 ## What the disk store borrows from 3FS
