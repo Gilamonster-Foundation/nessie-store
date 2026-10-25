@@ -1,7 +1,7 @@
 
 ## CAS peer plane (static peers)
 
-`[cas] peers = [{ url = "http://host:port", durable = true }]` turns on fetch-through
+`[cas] peers = [{ url = "http://host:port", durable = true }]` (`durable` is a hint, verified: see below) turns on fetch-through
 (`SwarmCas`), a HEAD-backed durability oracle and a PUT replicator; `peer_api = true`
 mounts `GET|HEAD|PUT /cas/v1/blobs/{algo}:{hex}` so others can reach this node.
 **Lab only: the routes are unauthenticated, and the peer client does not trust the
@@ -22,3 +22,9 @@ no body), which is what lets the S3 face serve a locally evicted blob; `get` sti
 does the verified fetch-through. `peers` must list each URL once; set
 `advertise_url` to this node's own URL to share one peer list across nodes (the
 matching entry is ignored).
+
+**Durability is verified, not configured.** `/cas/v1` HEAD and GET answer with
+`x-nessie-mode: lru|write_only` from the serving node's own config. The durability
+oracle counts a peer only if it holds the blob *and* reports `write_only`, so a peer
+listed `durable = true` that actually runs `lru` is not a permanent home. `durable`
+stays only as a hint of whom to probe and replicate to.
