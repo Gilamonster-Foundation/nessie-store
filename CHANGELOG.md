@@ -17,6 +17,18 @@ All notable changes to nessie-store are documented here. The format follows
   R - 1 above the number of `durable` peers, so a standalone `write_only` node now needs
   `replication_factor = 1`.
 
+- **Scrub and repair in every maintenance pass (#140).** `CasNode::maintain_once`
+  verifies up to `[cas] scrub_bytes_per_pass` bytes of local blobs (unset: all), resuming
+  where the last pass stopped (in memory; a restart rescans from the start), in both
+  modes, and reports counts in `MaintenanceReport::scrub()`. A corrupt blob is reclaimed
+  under `lru` (the next read refetches it); under `write_only` it is moved to
+  `<path>/quarantine/<algo>/<hex>` (`DiskCas::quarantine`, never deleted, never served or
+  listed), refetched from a peer, digest-verified and restored through the capacity gate,
+  or left quarantined and reported. A mirrored `write_only` node also pushes every scanned
+  blob back to R copies with the write path's own push, so a blob a down peer left
+  short is finished on the next pass. `ReclaimableCas` gains `verify` and `quarantine`
+  (defaulted); `MaintenanceReport` variants now carry a `scrub` field.
+
 ### Changed
 - **BREAKING: `[cas] mode` is now `lru` (default) or `write_only`; `durable` is removed (#138).**
   A config that still says `mode = "durable"` (or `"cache"`) fails to parse, naming the
