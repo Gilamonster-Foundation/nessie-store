@@ -171,16 +171,31 @@ impl CasBackend for DiskCas {
 
 impl ReclaimableCas for DiskCas {
     fn iter_local(&self) -> Result<Vec<LocalBlob>, BackendError> {
+        let not_found = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
         let mut out = Vec::new();
         for algo in ALGOS {
-            let Ok(prefixes) = fs::read_dir(self.root.join(algo.name())) else {
-                continue;
+            let prefixes = match fs::read_dir(self.root.join(algo.name())) {
+                Ok(p) => p,
+                Err(e) if not_found(&e) => continue,
+                Err(e) => return Err(io_err("list algo dir", e)),
             };
-            for prefix in prefixes.flatten() {
-                let Ok(files) = fs::read_dir(prefix.path()) else {
+            for prefix in prefixes {
+                let prefix = prefix.map_err(|e| io_err("list algo dir", e))?;
+                // Junk (a non-directory at shard level) is skipped, not an error.
+                if !prefix
+                    .file_type()
+                    .map_err(|e| io_err("stat shard", e))?
+                    .is_dir()
+                {
                     continue;
+                }
+                let files = match fs::read_dir(prefix.path()) {
+                    Ok(f) => f,
+                    Err(e) if not_found(&e) => continue,
+                    Err(e) => return Err(io_err("list shard", e)),
                 };
-                for file in files.flatten() {
+                for file in files {
+                    let file = file.map_err(|e| io_err("list shard", e))?;
                     let name = format!(
                         "{}:{}{}",
                         algo.name(),
@@ -190,8 +205,18 @@ impl ReclaimableCas for DiskCas {
                     let Ok(digest) = name.parse::<Digest>() else {
                         continue;
                     };
-                    let size_bytes = file.metadata().map_err(|e| io_err("stat blob", e))?.len();
-                    out.push(LocalBlob { digest, size_bytes });
+                    // A concurrent reclaim can remove the blob mid-scan: normal.
+                    let meta = match file.metadata() {
+                        Ok(m) => m,
+                        Err(e) if not_found(&e) => continue,
+                        Err(e) => return Err(io_err("stat blob", e)),
+                    };
+                    if meta.is_file() {
+                        out.push(LocalBlob {
+                            digest,
+                            size_bytes: meta.len(),
+                        });
+                    }
                 }
             }
         }
@@ -313,6 +338,32 @@ mod tests {
         assert_eq!(local[0].digest, d);
         assert_eq!(local[0].size_bytes, 4);
         assert!(cas.as_reclaimable().is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Regression (PR #134 review): an unreadable shard must fail the scan, not
+    /// silently drop its blobs from an `Ok` inventory.
+    #[cfg(unix)]
+    #[test]
+    fn iter_local_propagates_enumeration_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"hidden"[..]).unwrap();
+        let shard = blob_path(&root, &d).parent().unwrap().to_owned();
+        std::fs::set_permissions(&shard, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = cas.iter_local();
+        let still_readable = std::fs::read_dir(&shard).is_ok();
+        std::fs::set_permissions(&shard, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if still_readable {
+            // Running as root: chmod 000 does not block reads, so nothing to test.
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        assert!(denied.is_err(), "unreadable shard must be an error");
+        let ok = cas.iter_local().unwrap();
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].digest, d);
         let _ = std::fs::remove_dir_all(root);
     }
 }
