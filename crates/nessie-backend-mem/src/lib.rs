@@ -522,24 +522,43 @@ impl ReclaimableCas for MemCas {
     }
 }
 
-/// An in-memory [`ActionCacheBackend`]: a [`MemCas`] for blob bodies plus a
+/// An [`ActionCacheBackend`] over any [`CasBackend`] for blob bodies, plus a
 /// per-action grow-only [`AttestationSet`] CRDT, gated by a [`SignatureVerifier`]
 /// and a k-of-n threshold. The state (`HashMap<action, AttestationSet>`) is exactly
 /// the formal model. There is deliberately **no** insecure default — a verifier is
 /// a required constructor argument, so a backend cannot exist without an explicit
 /// trust boundary.
+///
+/// Result **bodies** live in the wrapped CAS (shared with whoever else holds it, so
+/// they persist if it does); the **attestation sets** live in memory only and are
+/// lost on restart this release — a persisted body with no attestations reads as a
+/// miss, never as a wrong hit.
 pub struct MemActionCache {
-    cas: MemCas,
+    cas: Arc<dyn CasBackend>,
     entries: Mutex<HashMap<Digest, AttestationSet>>,
     verifier: Arc<dyn SignatureVerifier>,
     k: NonZeroUsize,
 }
 
 impl MemActionCache {
-    /// Create an empty action cache over a fresh `MemCas`, verifying attestations
-    /// with `verifier` and confirming at `k` distinct signers.
+    /// Create an empty action cache owning `cas` for result bodies, verifying
+    /// attestations with `verifier` and confirming at `k` distinct signers.
     #[must_use]
-    pub fn new(cas: MemCas, verifier: Arc<dyn SignatureVerifier>, k: NonZeroUsize) -> Self {
+    pub fn new(
+        cas: impl CasBackend + 'static,
+        verifier: Arc<dyn SignatureVerifier>,
+        k: NonZeroUsize,
+    ) -> Self {
+        Self::shared(Arc::new(cas), verifier, k)
+    }
+
+    /// Like [`MemActionCache::new`], but over a CAS other holders also share.
+    #[must_use]
+    pub fn shared(
+        cas: Arc<dyn CasBackend>,
+        verifier: Arc<dyn SignatureVerifier>,
+        k: NonZeroUsize,
+    ) -> Self {
         Self {
             cas,
             entries: Mutex::new(HashMap::new()),

@@ -7,6 +7,17 @@ All notable changes to nessie-store are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`[cas] backend = "mem"|"disk"` + `path`; one store behind both faces.** `CasNode`
+  now holds a `CasStore<Box<dyn ReclaimableCas>>` (in-memory or `DiskCas`), and with
+  `[cas]` present REAPI, S3 and retention maintenance share that single store
+  (`faces::build_faces`, the entry point `main` calls). `MemActionCache` keeps result
+  bodies in any shared `CasBackend` (`MemActionCache::shared`); attestations stay in
+  memory. `backend = "disk"` without `path` is a config error. The daemon now refuses
+  to start the S3 face while its secret is the default `nessie`. A durable `[cas]`
+  node with REAPI or S3 enabled is **retain-all**: face writes have no persistent
+  roots, so the GC sweep is disabled (it would delete them after a restart) until
+  persistent roots land (#137). In cache mode a completed face write releases its
+  in-flight guard, so it is a normal replica-gated eviction candidate.
 - **S3 face accepts flat `{prefix}{sha256}` keys** (kyln's layout, no `cas/{xx}/` shard): a final segment of exactly 64 lowercase hex maps to the same digest as the sharded form; `ac/`, `raw/` and `cas.v2/` unchanged.
 - **S3 object-API face over the CAS (`nessie-s3`).** A second protocol face beside
   the REAPI one, over the *same* content-addressed store: a blob written over REAPI

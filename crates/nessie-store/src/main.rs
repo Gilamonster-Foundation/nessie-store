@@ -11,7 +11,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use nessie_backend_core::{PeerId, VolumeBackend};
+use nessie_backend_core::VolumeBackend;
 use nessie_backend_mem::MemBackend;
 use nessie_backend_zfs::{SystemRunner, ZfsBackend, ZfsConfig};
 use nessie_store::config::{BackendKind, Config};
@@ -103,34 +103,20 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
         });
     }
 
-    // Optional content-addressed store node: run retention maintenance (durable GC
-    // or cache eviction) on a schedule. In-memory for now; a persistent backend and
-    // a real network router slot in behind the same seams.
-    if let Some(cas_cfg) = &cfg.cas {
-        // The node's swarm routing identity. `data_lif` is a reasonable placeholder
-        // until a dedicated peer-address config lands.
-        let me = PeerId::new(cfg.data_lif.clone());
-        let node = std::sync::Arc::new(nessie_store::cas_node::CasNode::from_config(cas_cfg, me)?);
-        tracing::info!(mode = ?cas_cfg.mode, "cas node enabled; scheduling retention maintenance");
-        nessie_store::cas_node::spawn_maintenance(node);
+    // Optional `[cas]` node plus the REAPI / S3 cache faces, wired by one entry point
+    // so they share ONE content-addressed store (disk-backed if `[cas]` says so):
+    // a blob written over REAPI gRPC is the blob an S3 client reads, and the store
+    // retention maintenance sweeps. Building a store per consumer would break that.
+    let faces = nessie_store::faces::build_faces(&cfg)?;
+    if let (Some(node), Some(cas_cfg)) = (&faces.node, &cfg.cas) {
+        tracing::info!(mode = ?cas_cfg.mode, backend = ?cas_cfg.backend, "cas node enabled; scheduling retention maintenance");
+        nessie_store::cas_node::spawn_maintenance(node.clone());
     }
-
-    // Optional REAPI (Bazel remote cache) gRPC face, beside the ONTAP control plane —
-    // a Bazel remote cache with no BuildBarn to stand up. SHA-256-native, self-attesting
-    // (k=1 write-through). A persistent backend and real ed25519 signers slot in behind
-    // the same seams later.
-    // Both cache faces share ONE content-addressed backend, built here. That sharing
-    // is the whole claim: a blob written over REAPI gRPC is the blob an S3 client
-    // reads, because both name it by the same digest. Building a store per face
-    // would quietly break that.
-    let reapi_cfg = cfg.reapi.clone().filter(|r| r.enabled);
-    let s3_cfg = cfg.s3.clone().filter(|s| s.enabled);
-    if reapi_cfg.is_some() || s3_cfg.is_some() {
-        let (backend, signer) = nessie_store::faces::build_cas_backend()?;
-        if let Some(rc) = reapi_cfg {
+    if let Some((backend, signer)) = faces.backend {
+        if let Some(rc) = cfg.reapi.clone().filter(|r| r.enabled) {
             nessie_store::faces::spawn_reapi(rc, backend.clone(), signer)?;
         }
-        if let Some(sc) = s3_cfg {
+        if let Some(sc) = cfg.s3.clone().filter(|s| s.enabled) {
             nessie_store::faces::spawn_s3(sc, backend)?;
         }
     }

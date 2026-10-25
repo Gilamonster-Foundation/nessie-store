@@ -20,6 +20,17 @@ pub enum CasMode {
     Cache,
 }
 
+/// Where a `[cas]` node keeps its blobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CasBackendKind {
+    /// In memory: lost on restart (tests, throwaway caches).
+    #[default]
+    Mem,
+    /// On disk under `[cas] path`: survives restart.
+    Disk,
+}
+
 /// Optional `[cas]` node configuration. When present, the daemon runs a
 /// content-addressed store and periodically performs retention maintenance
 /// (durable GC or cache eviction). Fields are plain values so this crate stays
@@ -29,6 +40,10 @@ pub enum CasMode {
 pub struct CasConfig {
     /// Durable store-of-record or bounded cache.
     pub mode: CasMode,
+    /// Where blobs live. `disk` requires [`CasConfig::path`].
+    pub backend: CasBackendKind,
+    /// Root directory of the disk store (`backend = "disk"` only).
+    pub path: Option<PathBuf>,
     /// Grace window (seconds) before an unreachable/cold blob may be reclaimed —
     /// the cross-restart backstop for the put→reference race.
     pub gc_grace_secs: u64,
@@ -45,6 +60,8 @@ impl Default for CasConfig {
     fn default() -> Self {
         Self {
             mode: CasMode::Durable,
+            backend: CasBackendKind::Mem,
+            path: None,
             gc_grace_secs: 300,
             maintenance_interval_secs: 300,
             byte_budget: None,
@@ -321,6 +338,21 @@ mod tests {
         assert_eq!(cas.mode, CasMode::Durable);
         assert_eq!(cas.gc_grace_secs, 300);
         assert_eq!(cas.byte_budget, None);
+    }
+
+    #[test]
+    fn cas_backend_parses_mem_default_and_disk_with_path() {
+        let mem: Config = toml::from_str("[cas]\n").expect("parse");
+        let cas = mem.cas.expect("cas present");
+        assert_eq!(cas.backend, CasBackendKind::Mem);
+        assert_eq!(cas.path, None);
+
+        let disk: Config =
+            toml::from_str("[cas]\nbackend = \"disk\"\npath = \"/var/lib/nessie/cas\"\n")
+                .expect("parse");
+        let cas = disk.cas.expect("cas present");
+        assert_eq!(cas.backend, CasBackendKind::Disk);
+        assert_eq!(cas.path, Some(PathBuf::from("/var/lib/nessie/cas")));
     }
 
     #[test]
