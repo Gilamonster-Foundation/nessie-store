@@ -1722,6 +1722,7 @@ dependencies = [
  "nessie-backend-mem",
  "nessie-backend-zfs",
  "nessie-cas-disk",
+ "nessie-cas-peer",
  "nessie-cas-store",
  "nessie-nfs",
  "nessie-ontap-protocol",

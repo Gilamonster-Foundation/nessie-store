@@ -22,6 +22,8 @@ pub mod blocking;
 #[cfg(feature = "daemon")]
 pub mod cas_node;
 #[cfg(feature = "daemon")]
+pub mod cas_routes;
+#[cfg(feature = "daemon")]
 pub mod error;
 #[cfg(feature = "daemon")]
 pub mod faces;
