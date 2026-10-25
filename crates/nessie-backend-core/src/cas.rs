@@ -166,3 +166,47 @@ pub trait ReclaimableCas: CasBackend {
     /// [`BackendError`] if the removal fails for a reason other than absence.
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError>;
 }
+
+/// Forwarding impl so a boxed backend (`Box<dyn ReclaimableCas>`) is itself a
+/// backend. Every method is forwarded — including the defaulted ones — so boxing
+/// never turns a capable backend into a `FeatureNotSupported` one.
+impl<T: CasBackend + ?Sized> CasBackend for Box<T> {
+    fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).has(digest)
+    }
+
+    fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
+        (**self).get(digest)
+    }
+
+    fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
+        (**self).put(source)
+    }
+
+    fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
+        (**self).put_keyed(expected, source)
+    }
+
+    fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
+        (**self).size(digest)
+    }
+
+    fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {
+        (**self).as_action_cache()
+    }
+
+    fn as_reclaimable(&self) -> Option<&dyn ReclaimableCas> {
+        (**self).as_reclaimable()
+    }
+}
+
+/// Forwarding impl; see the [`CasBackend`] impl for `Box<T>`.
+impl<T: ReclaimableCas + ?Sized> ReclaimableCas for Box<T> {
+    fn iter_local(&self) -> Result<Vec<LocalBlob>, BackendError> {
+        (**self).iter_local()
+    }
+
+    fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).reclaim(digest)
+    }
+}
