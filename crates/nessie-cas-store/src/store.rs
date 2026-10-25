@@ -51,11 +51,6 @@ impl AccessLog {
         self.last_touch.get(digest).copied().unwrap_or(0)
     }
 
-    /// Whether `digest` has no recorded write yet (first sight of this blob).
-    pub(crate) fn is_new(&self, digest: &Digest) -> bool {
-        !self.written_at.contains_key(digest)
-    }
-
     /// Forget a blob's bookkeeping (called after it is reclaimed/evicted).
     pub(crate) fn forget(&mut self, digest: &Digest) {
         self.written_at.remove(digest);
@@ -70,6 +65,11 @@ pub(crate) struct StoreState {
     /// PRIMARY, in-process race defense; `gc_grace` is the cross-restart backstop.
     pub(crate) in_flight: HashSet<Digest>,
     pub(crate) access: AccessLog,
+    /// Write-only: digests whose bytes are counted in `committed`. The source of
+    /// truth: a blob is counted iff it is in this set, so a duplicate never counts twice.
+    accounted: HashSet<Digest>,
+    /// Write-only: total bytes of `accounted` blobs. Changed only under the state lock.
+    committed: u64,
 }
 
 /// A retention-managed [`CasBackend`]: delegates the CAS contract to an inner
@@ -83,44 +83,46 @@ pub struct CasStore<C: ReclaimableCas> {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) me: PeerId,
     pub(crate) state: Mutex<StoreState>,
-    /// Write-only mode: committed plus in-flight bytes, one counter so no
-    /// interleaving can observe an understated total. A gate adds each chunk before
-    /// admitting it; a successful new blob keeps its reservation as committed bytes.
-    reserved: AtomicU64,
+    /// Write-only: lock-free mirror of `StoreState::committed`, written only while
+    /// holding the state lock, so the gate can read it per chunk without locking.
+    committed: AtomicU64,
+    /// Write-only: bytes reserved by writers still streaming. Always returned by the
+    /// writer's [`CapacityGate`] on drop (success, error or panic), never kept.
+    pending: AtomicU64,
 }
 
-/// Reserves bytes against `capacity` as they stream in and fails the read once the
-/// shared total would pass it, so the backend aborts and discards its temp file: a
-/// refused write commits nothing. The reservation is *not* released on success; the
-/// caller keeps it as committed bytes or hands it back via [`CapacityGate::release`].
+/// Reserves bytes against `capacity` as they stream in and fails the read once
+/// `committed + pending` would pass it, so the backend aborts and discards its temp
+/// file: a refused write commits nothing. Dropping the gate returns exactly what it
+/// reserved, whatever way the write ended.
 struct CapacityGate<'a> {
     src: &'a mut dyn Read,
     capacity: u64,
-    reserved: &'a AtomicU64,
+    committed: &'a AtomicU64,
+    pending: &'a AtomicU64,
     mine: u64,
     tripped: bool,
-}
-
-impl CapacityGate<'_> {
-    /// Give back everything this gate reserved (failed, refused or duplicate write).
-    fn release(&mut self) {
-        self.reserved.fetch_sub(self.mine, Ordering::SeqCst);
-        self.mine = 0;
-    }
 }
 
 impl Read for CapacityGate<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.src.read(buf)?;
         let n64 = n as u64;
-        let before = self.reserved.fetch_add(n64, Ordering::SeqCst);
-        if before.saturating_add(n64) > self.capacity {
-            self.reserved.fetch_sub(n64, Ordering::SeqCst);
+        let before = self.pending.fetch_add(n64, Ordering::SeqCst);
+        let committed = self.committed.load(Ordering::SeqCst);
+        if committed.saturating_add(before).saturating_add(n64) > self.capacity {
+            self.pending.fetch_sub(n64, Ordering::SeqCst);
             self.tripped = true;
             return Err(io::Error::other("write-only capacity exceeded"));
         }
         self.mine += n64;
         Ok(n)
+    }
+}
+
+impl Drop for CapacityGate<'_> {
+    fn drop(&mut self) {
+        self.pending.fetch_sub(self.mine, Ordering::SeqCst);
     }
 }
 
@@ -146,10 +148,10 @@ impl<C: ReclaimableCas> CasStore<C> {
         // all as "written now": the first sweep is delayed by one grace window.
         let mut state = StoreState::default();
         let now = clock.now();
-        let mut reserved = 0;
         for blob in inner.iter_local()? {
             state.access.seed_written(&blob.digest, now);
-            reserved += blob.size_bytes;
+            state.accounted.insert(blob.digest);
+            state.committed += blob.size_bytes;
         }
         Ok(Self {
             inner,
@@ -157,7 +159,8 @@ impl<C: ReclaimableCas> CasStore<C> {
             router,
             clock,
             me,
-            reserved: AtomicU64::new(reserved),
+            committed: AtomicU64::new(state.committed),
+            pending: AtomicU64::new(0),
             state: Mutex::new(state),
         })
     }
@@ -178,54 +181,59 @@ impl<C: ReclaimableCas> CasStore<C> {
         self.state.lock().expect("cas store mutex poisoned")
     }
 
-    /// Run a backend write through the write-only capacity gate (a plain call in lru
-    /// mode). A refused write returns [`BackendError::CapacityExceeded`] with nothing
-    /// committed and nothing reserved. A keyed write of a blob already held is a
-    /// no-op, never refused. Returns the write's result and the bytes it still holds
-    /// reserved, which [`CasStore::after_write`] either keeps or returns.
-    fn gated<T>(
+    /// Count `digest`'s bytes as committed, once. Called after the backend holds the
+    /// blob and *before* the writer's gate returns its `pending`, so the bytes are
+    /// never uncounted in between (a transient double count only ever refuses).
+    fn account(&self, digest: &Digest) {
+        let mut state = self.state();
+        if state.accounted.contains(digest) {
+            return;
+        }
+        if let Ok(Some(n)) = self.inner.size(digest) {
+            state.accounted.insert(digest.clone());
+            state.committed += n;
+            self.committed.store(state.committed, Ordering::SeqCst);
+        }
+    }
+
+    /// Write-only `put_keyed`: a blob already held is a no-op (never refused);
+    /// otherwise the write streams through the capacity gate.
+    fn put_keyed_write_only(
         &self,
-        known: Option<&Digest>,
+        capacity: u64,
+        expected: &Digest,
         source: &mut dyn Read,
-        write: impl FnOnce(&mut dyn Read) -> Result<T, BackendError>,
-    ) -> Result<(T, u64), BackendError> {
-        let StorageMode::WriteOnly(p) = &self.policy.mode else {
-            return Ok((write(source)?, 0));
-        };
-        if known.is_some_and(|d| self.inner.has(d).unwrap_or(false)) {
-            return Ok((write(source)?, 0)); // already held: adds no bytes
+    ) -> Result<(), BackendError> {
+        if self.inner.has(expected).unwrap_or(false) {
+            self.inner.put_keyed(expected, source)?;
+            self.account(expected);
+            return Ok(());
         }
         let mut gate = CapacityGate {
             src: source,
-            capacity: p.capacity,
-            reserved: &self.reserved,
+            capacity,
+            committed: &self.committed,
+            pending: &self.pending,
             mine: 0,
             tripped: false,
         };
-        let out = write(&mut gate);
-        if gate.tripped || out.is_err() {
-            let incoming = gate.mine;
-            gate.release();
-            if gate.tripped {
-                return Err(BackendError::CapacityExceeded {
-                    used: self.reserved.load(Ordering::SeqCst),
-                    incoming,
-                    capacity: p.capacity,
-                });
-            }
+        let out = self.inner.put_keyed(expected, &mut gate);
+        if gate.tripped {
+            return Err(BackendError::CapacityExceeded {
+                used: self.committed.load(Ordering::SeqCst),
+                incoming: gate.mine,
+                capacity,
+            });
         }
-        Ok((out?, gate.mine))
+        out?;
+        self.account(expected); // committed rises first; `gate` drops after
+        Ok(())
     }
 
-    /// Book-keeping after a successful write: write-guard, recency, advert. `held`
-    /// is the reservation from [`CasStore::gated`]: kept when this is a new blob,
-    /// returned when another writer got there first.
-    fn after_write(&self, digest: &Digest, held: u64) {
+    /// Book-keeping after a successful write: write-guard, recency, advert.
+    fn after_write(&self, digest: &Digest) {
         {
             let mut state = self.state();
-            if !state.access.is_new(digest) {
-                self.reserved.fetch_sub(held, Ordering::SeqCst); // lost the race
-            }
             state.in_flight.insert(digest.clone()); // guard until committed/abandoned
             state.access.record_write(digest, self.clock.now());
         }
@@ -274,16 +282,17 @@ impl<C: ReclaimableCas> CasBackend for CasStore<C> {
             self.put_keyed(&digest, &mut body.as_slice())?;
             return Ok(digest);
         }
-        let (digest, held) = self.gated(None, source, |s| self.inner.put(s))?;
-        self.after_write(&digest, held);
+        let digest = self.inner.put(source)?;
+        self.after_write(&digest);
         Ok(digest)
     }
 
     fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
-        let ((), held) = self.gated(Some(expected), source, |s| {
-            self.inner.put_keyed(expected, s)
-        })?;
-        self.after_write(expected, held);
+        match &self.policy.mode {
+            StorageMode::WriteOnly(p) => self.put_keyed_write_only(p.capacity, expected, source)?,
+            StorageMode::Lru(_) => self.inner.put_keyed(expected, source)?,
+        }
+        self.after_write(expected);
         Ok(())
     }
 
@@ -522,7 +531,8 @@ mod tests {
         assert!(res_a.is_ok());
         assert!(cap_err(res_b), "B must be refused: A already holds 6 of 10");
         assert_eq!(stored_bytes(&store), 6);
-        assert_eq!(store.reserved.load(Ordering::SeqCst), 6);
+        assert_eq!(store.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(store.committed.load(Ordering::SeqCst), 6);
         assert!(!store.has(&Digest::compute(b)).unwrap());
     }
 
@@ -563,7 +573,8 @@ mod tests {
         );
         assert!(cap_err(if ra.is_ok() { rb } else { ra }));
         assert_eq!(stored_bytes(&store), 6);
-        assert_eq!(store.reserved.load(Ordering::SeqCst), 6);
+        assert_eq!(store.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(store.committed.load(Ordering::SeqCst), 6);
     }
 
     /// Regression (PR #142 P2): re-putting held content is a no-op, even when full.
@@ -574,6 +585,114 @@ mod tests {
         let again = store.put(&mut Cursor::new(b"12345".to_vec())).unwrap();
         assert_eq!(d, again);
         assert_eq!(stored_bytes(&store), 5);
-        assert_eq!(store.reserved.load(Ordering::SeqCst), 5);
+        assert_eq!(store.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(store.committed.load(Ordering::SeqCst), 5);
+    }
+
+    /// A [`MemCas`] whose first `put_keyed` commits and then parks on two barriers
+    /// before returning, so a test can run another writer inside that window.
+    struct Pausing {
+        inner: MemCas,
+        first: std::sync::atomic::AtomicBool,
+        arrived: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+    }
+    impl CasBackend for Pausing {
+        fn has(&self, d: &Digest) -> Result<bool, BackendError> {
+            self.inner.has(d)
+        }
+        fn get(&self, d: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
+            self.inner.get(d)
+        }
+        fn put(&self, s: &mut dyn Read) -> Result<Digest, BackendError> {
+            self.inner.put(s)
+        }
+        fn put_keyed(&self, d: &Digest, s: &mut dyn Read) -> Result<(), BackendError> {
+            self.inner.put_keyed(d, s)?;
+            if self.first.swap(false, Ordering::SeqCst) {
+                self.arrived.wait(); // committed, not yet returned
+                self.release.wait();
+            }
+            Ok(())
+        }
+        fn size(&self, d: &Digest) -> Result<Option<u64>, BackendError> {
+            self.inner.size(d)
+        }
+    }
+    impl ReclaimableCas for Pausing {
+        fn iter_local(&self) -> Result<Vec<nessie_backend_core::LocalBlob>, BackendError> {
+            self.inner.iter_local()
+        }
+        fn reclaim(&self, d: &Digest) -> Result<bool, BackendError> {
+            self.inner.reclaim(d)
+        }
+    }
+
+    /// Regression (PR #142 round 3 P1): writer A commits a new blob and pauses before
+    /// returning; writer B re-puts the same digest through the already-held fast path
+    /// and finishes first. A's bytes must stay counted.
+    #[test]
+    fn write_only_same_digest_race_keeps_the_blob_counted() {
+        let arrived = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let store = CasStore::new(
+            Pausing {
+                inner: MemCas::new(),
+                first: std::sync::atomic::AtomicBool::new(true),
+                arrived: arrived.clone(),
+                release: release.clone(),
+            },
+            RetentionPolicy::write_only(10),
+            Arc::new(MemRouter::new(PeerId::new("me"))),
+            Arc::new(MockClock::new()),
+            PeerId::new("me"),
+        )
+        .expect("store");
+        let a = b"aaaaaa";
+        let da = Digest::compute(a);
+        std::thread::scope(|sc| {
+            let store = &store;
+            let da = &da;
+            let ha = sc.spawn(move || store.put_keyed(da, &mut Cursor::new(a.to_vec())));
+            arrived.wait();
+            store.put_keyed(da, &mut Cursor::new(a.to_vec())).unwrap(); // B, fast path
+            release.wait();
+            ha.join().unwrap().unwrap();
+        });
+        let stored: u64 = store
+            .inner
+            .iter_local()
+            .unwrap()
+            .iter()
+            .map(|b| b.size_bytes)
+            .sum();
+        assert_eq!(stored, 6);
+        let other = Digest::compute(b"bbbbbb");
+        assert!(
+            cap_err(store.put_keyed(&other, &mut Cursor::new(b"bbbbbb".to_vec()))),
+            "6 of 10 are held; another 6 must be refused"
+        );
+    }
+
+    /// Regression (PR #142 round 3 P2): a source that panics mid-stream must not leak
+    /// the bytes it had reserved.
+    #[test]
+    fn write_only_panicking_source_returns_its_reservation() {
+        let store = write_only(10);
+        let d = Digest::compute(b"0123456789");
+        let mut src = Hooked {
+            data: b"0123456789",
+            chunk: 3,
+            reads: 0,
+            hook: Box::new(|i| assert!(i < 1, "source blew up")),
+        };
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.put_keyed(&d, &mut src)
+        }));
+        assert!(out.is_err(), "the panic propagates");
+        store
+            .put_keyed(&d, &mut Cursor::new(b"0123456789".to_vec()))
+            .expect("a full-capacity write still fits");
+        assert_eq!(stored_bytes(&store), 10);
     }
 }
