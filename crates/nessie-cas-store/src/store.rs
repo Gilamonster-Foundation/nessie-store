@@ -83,41 +83,44 @@ pub struct CasStore<C: ReclaimableCas> {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) me: PeerId,
     pub(crate) state: Mutex<StoreState>,
-    /// Write-only mode: bytes durably held.
-    used: AtomicU64,
-    /// Write-only mode: bytes of writes streaming in right now, not yet committed.
-    pending: AtomicU64,
+    /// Write-only mode: committed plus in-flight bytes, one counter so no
+    /// interleaving can observe an understated total. A gate adds each chunk before
+    /// admitting it; a successful new blob keeps its reservation as committed bytes.
+    reserved: AtomicU64,
 }
 
-/// Counts bytes as they stream in and fails the read once `used + pending` would
-/// pass `capacity`, so the backend aborts and discards its temp file: a refused
-/// write commits nothing.
+/// Reserves bytes against `capacity` as they stream in and fails the read once the
+/// shared total would pass it, so the backend aborts and discards its temp file: a
+/// refused write commits nothing. The reservation is *not* released on success; the
+/// caller keeps it as committed bytes or hands it back via [`CapacityGate::release`].
 struct CapacityGate<'a> {
     src: &'a mut dyn Read,
-    used: u64,
     capacity: u64,
-    pending: &'a AtomicU64,
+    reserved: &'a AtomicU64,
     mine: u64,
     tripped: bool,
+}
+
+impl CapacityGate<'_> {
+    /// Give back everything this gate reserved (failed, refused or duplicate write).
+    fn release(&mut self) {
+        self.reserved.fetch_sub(self.mine, Ordering::SeqCst);
+        self.mine = 0;
+    }
 }
 
 impl Read for CapacityGate<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.src.read(buf)?;
         let n64 = n as u64;
-        let before = self.pending.fetch_add(n64, Ordering::SeqCst);
-        self.mine += n64;
-        if self.used.saturating_add(before).saturating_add(n64) > self.capacity {
+        let before = self.reserved.fetch_add(n64, Ordering::SeqCst);
+        if before.saturating_add(n64) > self.capacity {
+            self.reserved.fetch_sub(n64, Ordering::SeqCst);
             self.tripped = true;
             return Err(io::Error::other("write-only capacity exceeded"));
         }
+        self.mine += n64;
         Ok(n)
-    }
-}
-
-impl Drop for CapacityGate<'_> {
-    fn drop(&mut self) {
-        self.pending.fetch_sub(self.mine, Ordering::SeqCst);
     }
 }
 
@@ -143,10 +146,10 @@ impl<C: ReclaimableCas> CasStore<C> {
         // all as "written now": the first sweep is delayed by one grace window.
         let mut state = StoreState::default();
         let now = clock.now();
-        let mut used = 0;
+        let mut reserved = 0;
         for blob in inner.iter_local()? {
             state.access.seed_written(&blob.digest, now);
-            used += blob.size_bytes;
+            reserved += blob.size_bytes;
         }
         Ok(Self {
             inner,
@@ -154,8 +157,7 @@ impl<C: ReclaimableCas> CasStore<C> {
             router,
             clock,
             me,
-            used: AtomicU64::new(used),
-            pending: AtomicU64::new(0),
+            reserved: AtomicU64::new(reserved),
             state: Mutex::new(state),
         })
     }
@@ -178,48 +180,54 @@ impl<C: ReclaimableCas> CasStore<C> {
 
     /// Run a backend write through the write-only capacity gate (a plain call in lru
     /// mode). A refused write returns [`BackendError::CapacityExceeded`] with nothing
-    /// committed. A keyed write of a blob already held is a no-op, never refused.
+    /// committed and nothing reserved. A keyed write of a blob already held is a
+    /// no-op, never refused. Returns the write's result and the bytes it still holds
+    /// reserved, which [`CasStore::after_write`] either keeps or returns.
     fn gated<T>(
         &self,
         known: Option<&Digest>,
         source: &mut dyn Read,
         write: impl FnOnce(&mut dyn Read) -> Result<T, BackendError>,
-    ) -> Result<T, BackendError> {
+    ) -> Result<(T, u64), BackendError> {
         let StorageMode::WriteOnly(p) = &self.policy.mode else {
-            return write(source);
+            return Ok((write(source)?, 0));
         };
         if known.is_some_and(|d| self.inner.has(d).unwrap_or(false)) {
-            return write(source); // already held: adds no bytes, so never refused
+            return Ok((write(source)?, 0)); // already held: adds no bytes
         }
         let mut gate = CapacityGate {
             src: source,
-            used: self.used.load(Ordering::SeqCst),
             capacity: p.capacity,
-            pending: &self.pending,
+            reserved: &self.reserved,
             mine: 0,
             tripped: false,
         };
         let out = write(&mut gate);
-        if gate.tripped {
-            return Err(BackendError::CapacityExceeded {
-                used: gate.used,
-                incoming: gate.mine,
-                capacity: gate.capacity,
-            });
+        if gate.tripped || out.is_err() {
+            let incoming = gate.mine;
+            gate.release();
+            if gate.tripped {
+                return Err(BackendError::CapacityExceeded {
+                    used: self.reserved.load(Ordering::SeqCst),
+                    incoming,
+                    capacity: p.capacity,
+                });
+            }
         }
-        out
+        Ok((out?, gate.mine))
     }
 
-    /// Book-keeping after a successful write: write-guard, recency, usage, advert.
-    fn after_write(&self, digest: &Digest) {
+    /// Book-keeping after a successful write: write-guard, recency, advert. `held`
+    /// is the reservation from [`CasStore::gated`]: kept when this is a new blob,
+    /// returned when another writer got there first.
+    fn after_write(&self, digest: &Digest, held: u64) {
         {
             let mut state = self.state();
-            let fresh = state.access.is_new(digest);
+            if !state.access.is_new(digest) {
+                self.reserved.fetch_sub(held, Ordering::SeqCst); // lost the race
+            }
             state.in_flight.insert(digest.clone()); // guard until committed/abandoned
             state.access.record_write(digest, self.clock.now());
-            if fresh && let Ok(Some(n)) = self.inner.size(digest) {
-                self.used.fetch_add(n, Ordering::SeqCst);
-            }
         }
         // Best-effort advertise: the data plane never depends on the router, so a
         // routing failure must not fail a successful local store.
@@ -255,16 +263,27 @@ impl<C: ReclaimableCas> CasBackend for CasStore<C> {
     }
 
     fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
-        let digest = self.gated(None, source, |s| self.inner.put(s))?;
-        self.after_write(&digest);
+        if matches!(self.policy.mode, StorageMode::WriteOnly(_)) {
+            // ponytail: write_only unkeyed put buffers the blob in RAM to learn its
+            // digest before admission; stream to a spool file if blobs outgrow memory
+            let mut body = Vec::new();
+            source
+                .read_to_end(&mut body)
+                .map_err(|e| BackendError::Internal(format!("read source: {e}")))?;
+            let digest = Digest::compute(&body);
+            self.put_keyed(&digest, &mut body.as_slice())?;
+            return Ok(digest);
+        }
+        let (digest, held) = self.gated(None, source, |s| self.inner.put(s))?;
+        self.after_write(&digest, held);
         Ok(digest)
     }
 
     fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
-        self.gated(Some(expected), source, |s| {
+        let ((), held) = self.gated(Some(expected), source, |s| {
             self.inner.put_keyed(expected, s)
         })?;
-        self.after_write(expected);
+        self.after_write(expected, held);
         Ok(())
     }
 
@@ -439,5 +458,122 @@ mod tests {
                 .is_err()
         );
         assert!(store.has(&d).unwrap());
+    }
+
+    fn stored_bytes(store: &CasStore<MemCas>) -> u64 {
+        store
+            .inner
+            .iter_local()
+            .unwrap()
+            .iter()
+            .map(|b| b.size_bytes)
+            .sum()
+    }
+
+    /// Hands out `data` in `chunk`-byte reads, running `hook(read_index)` before each.
+    struct Hooked<'a> {
+        data: &'a [u8],
+        chunk: usize,
+        reads: usize,
+        hook: Box<dyn FnMut(usize) + Send + 'a>,
+    }
+    impl Read for Hooked<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            (self.hook)(self.reads);
+            self.reads += 1;
+            let n = self.chunk.min(self.data.len()).min(buf.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    /// Regression (PR #142 P1): a writer whose gate was built before another writer
+    /// finished must still see that writer's committed bytes. Capacity 10, two 6-byte
+    /// writers: B is mid-admission (blocked on its first read) while A completes.
+    #[test]
+    fn write_only_capacity_holds_when_a_stale_writer_resumes() {
+        use std::sync::mpsc::channel;
+        let store = write_only(10);
+        let (a, b) = (b"aaaaaa", b"bbbbbb");
+        let (started_tx, started_rx) = channel();
+        let (go_tx, go_rx) = channel::<()>();
+        let (res_a, res_b) = std::thread::scope(|sc| {
+            let store = &store;
+            let hb = sc.spawn(move || {
+                let mut src = Hooked {
+                    data: b,
+                    chunk: 6,
+                    reads: 0,
+                    hook: Box::new(move |i| {
+                        if i == 0 {
+                            started_tx.send(()).unwrap();
+                            go_rx.recv().unwrap();
+                        }
+                    }),
+                };
+                store.put_keyed(&Digest::compute(b), &mut src)
+            });
+            started_rx.recv().unwrap(); // B is inside its gate
+            let res_a = store.put_keyed(&Digest::compute(a), &mut Cursor::new(a.to_vec()));
+            go_tx.send(()).unwrap();
+            (res_a, hb.join().unwrap())
+        });
+        assert!(res_a.is_ok());
+        assert!(cap_err(res_b), "B must be refused: A already holds 6 of 10");
+        assert_eq!(stored_bytes(&store), 6);
+        assert_eq!(store.reserved.load(Ordering::SeqCst), 6);
+        assert!(!store.has(&Digest::compute(b)).unwrap());
+    }
+
+    /// Two writers both mid-stream at once (barrier after their first chunk): exactly
+    /// one fits in capacity 10.
+    #[test]
+    fn write_only_capacity_holds_for_two_writers_mid_stream() {
+        use std::sync::Barrier;
+        let store = write_only(10);
+        let barrier = Barrier::new(2);
+        let (a, b) = (b"aaaaaa", b"bbbbbb");
+        let run = |data: &'static [u8; 6]| {
+            let barrier = &barrier;
+            let store = &store;
+            move || {
+                let mut src = Hooked {
+                    data,
+                    chunk: 3,
+                    reads: 0,
+                    hook: Box::new(move |i| {
+                        if i == 1 {
+                            barrier.wait(); // both have reserved their first 3 bytes
+                        }
+                    }),
+                };
+                store.put_keyed(&Digest::compute(data), &mut src)
+            }
+        };
+        let (ra, rb) = std::thread::scope(|sc| {
+            let ha = sc.spawn(run(a));
+            let hb = sc.spawn(run(b));
+            (ha.join().unwrap(), hb.join().unwrap())
+        });
+        assert_eq!(
+            [ra.is_ok(), rb.is_ok()].iter().filter(|ok| **ok).count(),
+            1,
+            "exactly one writer fits: {ra:?} / {rb:?}"
+        );
+        assert!(cap_err(if ra.is_ok() { rb } else { ra }));
+        assert_eq!(stored_bytes(&store), 6);
+        assert_eq!(store.reserved.load(Ordering::SeqCst), 6);
+    }
+
+    /// Regression (PR #142 P2): re-putting held content is a no-op, even when full.
+    #[test]
+    fn write_only_unkeyed_reput_of_held_blob_is_free() {
+        let store = write_only(5);
+        let d = store.put(&mut Cursor::new(b"12345".to_vec())).unwrap();
+        let again = store.put(&mut Cursor::new(b"12345".to_vec())).unwrap();
+        assert_eq!(d, again);
+        assert_eq!(stored_bytes(&store), 5);
+        assert_eq!(store.reserved.load(Ordering::SeqCst), 5);
     }
 }
