@@ -53,7 +53,10 @@ pub enum ObjectKey {
 
 impl ObjectKey {
     /// Classify an S3 object key, or `None` if it does not have a recognized
-    /// `{kind}/{xx}/{hash}` tail (the caller reports those absent).
+    /// tail (the caller reports those absent): either `{kind}/{xx}/{hash}`, or a
+    /// flat `…/{hash}` whose final segment is a whole lowercase SHA-256 hex digest
+    /// and whose preceding segments are not a known kind (kyln's
+    /// `{prefix}{sha256}` layout). The three-segment form is tried first.
     ///
     /// The shard segment must be the hash's own first two characters, as both of
     /// bazel-remote's key builders emit it; a mismatch is a malformed key, not a
