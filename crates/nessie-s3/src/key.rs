@@ -20,6 +20,15 @@
 //!   content's own hash. That is a name→bytes mapping, which is the action-cache
 //!   tier's job, not the CAS's. Slice 1 reports them absent; see the crate docs.
 //!
+//! A **flat** key — kyln's `{prefix}{sha256}`, no `cas/{xx}/` shard — is also a
+//! content key when its final segment is exactly 64 lowercase hex characters, and
+//! maps to the same [`ObjectKey::Cas`] as the sharded form. Precedence: the
+//! three-segment `{kind}/{xx}/{hash}` shape is tried first; the flat rule applies
+//! only when neither of the two preceding segments is a known kind (`cas`,
+//! `cas.v2`, `ac`, `raw`). So `ac/{hash}` and `cas/zz/{hash}` stay refused. The
+//! hex must be the *whole* final segment (and lowercase), and the write path still
+//! re-verifies through `put_keyed`, so a lying name cannot file wrong bytes.
+//!
 //! The client's configured key prefix (`--s3.prefix`) is **ignored** rather than
 //! configured away: only the last three segments are read. That is safe precisely
 //! because the store is content-addressed — two prefixes naming one digest name
@@ -44,7 +53,10 @@ pub enum ObjectKey {
 
 impl ObjectKey {
     /// Classify an S3 object key, or `None` if it does not have a recognized
-    /// `{kind}/{xx}/{hash}` tail (the caller reports those absent).
+    /// tail (the caller reports those absent): either `{kind}/{xx}/{hash}`, or a
+    /// flat `…/{hash}` whose final segment is a whole lowercase SHA-256 hex digest
+    /// and whose preceding segments are not a known kind (kyln's
+    /// `{prefix}{sha256}` layout). The three-segment form is tried first.
     ///
     /// The shard segment must be the hash's own first two characters, as both of
     /// bazel-remote's key builders emit it; a mismatch is a malformed key, not a
@@ -53,17 +65,25 @@ impl ObjectKey {
     pub fn parse(key: &str) -> Option<Self> {
         let mut segments = key.rsplit('/');
         let hash = segments.next()?;
-        let shard = segments.next()?;
-        let kind = segments.next()?;
-        if shard.len() != 2 || !hash.starts_with(shard) {
+        let shard = segments.next();
+        let kind = segments.next();
+        if let (Some(shard), Some(kind)) = (shard, kind)
+            && shard.len() == 2
+            && hash.starts_with(shard)
+        {
+            match kind {
+                "cas" => return sha256_digest(hash).map(ObjectKey::Cas),
+                "cas.v2" => return Some(ObjectKey::Compressed),
+                "ac" | "raw" => return Some(ObjectKey::NotContentAddressed),
+                _ => {}
+            }
+        }
+        // Flat `{prefix}{sha256}` (kyln). A kind segment in either preceding slot
+        // means the key is kind-shaped but malformed, so it is refused, not read flat.
+        if shard.into_iter().chain(kind).any(is_kind) {
             return None;
         }
-        match kind {
-            "cas" => sha256_digest(hash).map(ObjectKey::Cas),
-            "cas.v2" => Some(ObjectKey::Compressed),
-            "ac" | "raw" => Some(ObjectKey::NotContentAddressed),
-            _ => None,
-        }
+        sha256_digest(hash).map(ObjectKey::Cas)
     }
 }
 
@@ -77,6 +97,10 @@ fn sha256_digest(hash: &str) -> Option<Digest> {
         return None;
     }
     format!("sha2-256:{hash}").parse().ok()
+}
+
+fn is_kind(segment: &str) -> bool {
+    matches!(segment, "cas" | "cas.v2" | "ac" | "raw")
 }
 
 fn is_lower_hex(b: u8) -> bool {
@@ -140,15 +164,32 @@ mod tests {
         let upper = EMPTY.to_uppercase();
         for bad in [
             String::new(),
-            EMPTY.to_string(),                       // no kind/shard
             format!("cas/{EMPTY}"),                  // no shard
-            format!("cas/zz/{EMPTY}"),               // shard != hash[..2]
             format!("cas/{}/{upper}", &upper[..2]),  // uppercase hex aliases
             format!("cas/{shard}/{}", &EMPTY[..63]), // short hash
             format!("cas/{shard}/{EMPTY}0"),         // long hash
-            format!("blobs/{shard}/{EMPTY}"),        // unknown kind
+            format!("cas/zz/{EMPTY}"),               // kind-shaped, bad shard (dup guard)
+            format!("ac/{EMPTY}"),                   // kind wins over the flat rule
+            format!("cas.v2/{EMPTY}"),
+            format!("p/{}", &EMPTY[..63]),  // flat: 63 chars
+            format!("p/{EMPTY}0"),          // flat: 65 chars
+            format!("p/{upper}"),           // flat: uppercase
+            format!("p/{}z", &EMPTY[..63]), // flat: non-hex
         ] {
             assert_eq!(ObjectKey::parse(&bad), None, "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn flat_key_resolves_to_the_same_digest_as_the_sharded_key() {
+        let sharded = ObjectKey::parse(&cas_key("")).unwrap();
+        for key in [
+            EMPTY.to_string(),
+            format!("pfx/{EMPTY}"),
+            format!("prefix/anything/{EMPTY}"),
+            format!("blobs/{}/{EMPTY}", &EMPTY[..2]),
+        ] {
+            assert_eq!(ObjectKey::parse(&key), Some(sharded.clone()), "{key:?}");
         }
     }
 }
