@@ -12,6 +12,16 @@ use s3s::{S3Error, S3ErrorCode};
 /// Translate a backend error into the S3 error to put on the wire.
 #[must_use]
 pub fn s3_error_from_backend(err: &BackendError) -> S3Error {
+    if matches!(err, BackendError::CapacityExceeded { .. }) {
+        // S3 has no named code for a full store; 507 is the status (RFC 4918) the
+        // brief asks for, carried as a custom code so clients see why.
+        let mut e = S3Error::with_message(
+            S3ErrorCode::Custom("InsufficientStorage".into()),
+            err.to_string(),
+        );
+        e.set_status_code(http::StatusCode::INSUFFICIENT_STORAGE);
+        return e;
+    }
     let code = match err {
         // The miss. Must stay NoSuchKey — see the module note.
         BackendError::BlobNotFound(_) => S3ErrorCode::NoSuchKey,
@@ -29,6 +39,16 @@ pub fn s3_error_from_backend(err: &BackendError) -> S3Error {
 mod tests {
     use super::*;
     use nessie_backend_core::Digest;
+
+    #[test]
+    fn capacity_exceeded_is_507() {
+        let e = s3_error_from_backend(&BackendError::CapacityExceeded {
+            used: 1,
+            incoming: 2,
+            capacity: 2,
+        });
+        assert_eq!(e.status_code().map(|s| s.as_u16()), Some(507));
+    }
 
     #[test]
     fn an_absent_blob_is_the_code_that_means_cache_miss() {

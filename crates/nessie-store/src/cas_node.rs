@@ -1,15 +1,13 @@
 //! An optional content-addressed store node the daemon runs from `[cas]` config.
 //!
 //! When `[cas]` is present, the daemon builds a [`CasStore`] and schedules periodic
-//! retention maintenance — durable reachability GC or cache replica-gated eviction,
+//! retention maintenance — coldest-first LRU eviction, or nothing in write-only mode,
 //! per the configured mode. `[cas] backend` picks the blobs' home — the in-memory
 //! [`MemCas`] or an on-disk [`DiskCas`] — behind one `Box<dyn ReclaimableCas>`; the
 //! router is an in-process [`MemRouter`] until a real network router (NATS /
 //! Kademlia) slots in **without touching this maintenance logic**.
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use std::io::Read;
@@ -21,56 +19,49 @@ use nessie_backend_core::{
 use nessie_backend_mem::{MemCas, MemRouter};
 use nessie_cas_disk::DiskCas;
 use nessie_cas_store::{
-    CanonicalResolver, CasStore, Clock, NoDurableOracle, RefuseToReplicate, RetentionPolicy,
-    RootRegistry, StorageMode, SystemClock,
+    CasStore, Clock, NoDurableOracle, RefuseToReplicate, RetentionPolicy, RootRegistry,
+    StorageMode, SystemClock,
 };
 
 use crate::config::{CasBackendKind, CasConfig, CasMode};
 
-/// Build a [`RetentionPolicy`] from `[cas]` config, validating cache parameters.
+/// Build a [`RetentionPolicy`] from `[cas]` config.
 ///
 /// # Errors
 ///
-/// Cache mode requires `byte_budget` and a `replication_factor` ≥ 1.
+/// Both modes require `byte_budget` (the LRU ceiling, or the write-only capacity).
 pub fn retention_policy(cfg: &CasConfig) -> anyhow::Result<RetentionPolicy> {
-    let grace = Duration::from_secs(cfg.gc_grace_secs);
-    match cfg.mode {
-        CasMode::Durable => Ok(RetentionPolicy::durable(grace)),
-        CasMode::Cache => {
-            let budget = cfg
-                .byte_budget
-                .context("[cas] mode = \"cache\" requires byte_budget")?;
-            let r = cfg.replication_factor.unwrap_or(2);
-            let r = NonZeroUsize::new(r).context("[cas] replication_factor must be >= 1")?;
-            Ok(RetentionPolicy::cache(budget, r, grace))
-        }
-    }
+    let mode = match cfg.mode {
+        CasMode::Lru => "lru",
+        CasMode::WriteOnly => "write_only",
+    };
+    let budget = cfg
+        .byte_budget
+        .with_context(|| format!("[cas] mode = \"{mode}\" requires byte_budget"))?;
+    Ok(match cfg.mode {
+        CasMode::Lru => RetentionPolicy::lru(budget, Duration::from_secs(cfg.gc_grace_secs)),
+        CasMode::WriteOnly => RetentionPolicy::write_only(budget),
+    })
 }
 
 /// What a maintenance pass did (for logging).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MaintenanceReport {
-    /// A durable GC pass.
-    Gc {
-        /// Blobs reclaimed.
-        reclaimed: usize,
-        /// Bytes freed.
-        bytes: u64,
-    },
-    /// A cache eviction pass.
+    /// An LRU eviction pass.
     Evict {
         /// Blobs evicted.
         evicted: usize,
         /// Bytes freed.
         bytes: u64,
     },
+    /// Write-only mode: maintenance is a no-op — nothing is ever reclaimed.
+    Retained,
 }
 
 /// A running CAS node: its retention-managed store, root registry, and schedule.
 pub struct CasNode {
     store: CasStore<Box<dyn ReclaimableCas>>,
     roots: RootRegistry,
-    face_backed: AtomicBool,
     interval: Duration,
 }
 
@@ -107,45 +98,20 @@ impl CasNode {
         Ok(Self {
             store,
             roots: RootRegistry::new(),
-            face_backed: AtomicBool::new(false),
             interval: Duration::from_secs(cfg.maintenance_interval_secs),
         })
     }
 
-    /// Record that a protocol face (REAPI / S3) writes into this store.
-    ///
-    /// Face writes are never registered as roots, and the root registry is in
-    /// memory, so after a restart durable GC would sweep every uploaded blob.
-    /// Until persistent roots exist, a face-backed durable node retains everything:
-    /// [`CasNode::maintain_once`] skips the GC sweep. Cache mode is unaffected (its
-    /// eviction is replica-gated and refuses a sole copy).
-    pub fn mark_face_backed(&self) {
-        // ponytail: retain-all, no persistent roots yet; durable GC returns once
-        // roots persist (follow-up #137).
-        self.face_backed.store(true, Ordering::Relaxed);
-    }
-
-    /// Run one retention maintenance pass, dispatching by mode.
+    /// Run one retention maintenance pass, dispatching by mode. Write-only mode
+    /// never reaches the eviction engine, so nothing is reclaimed.
     ///
     /// # Errors
     ///
-    /// Propagates GC / eviction backend errors.
+    /// Propagates eviction backend errors.
     pub fn maintain_once(&self) -> anyhow::Result<MaintenanceReport> {
         match &self.store.policy().mode {
-            StorageMode::Durable(_) if self.face_backed.load(Ordering::Relaxed) => {
-                Ok(MaintenanceReport::Gc {
-                    reclaimed: 0,
-                    bytes: 0,
-                })
-            }
-            StorageMode::Durable(_) => {
-                let report = self.store.gc(&self.roots, &CanonicalResolver)?;
-                Ok(MaintenanceReport::Gc {
-                    reclaimed: report.reclaimed,
-                    bytes: report.bytes_reclaimed,
-                })
-            }
-            StorageMode::Cache(_) => {
+            StorageMode::WriteOnly(_) => Ok(MaintenanceReport::Retained),
+            StorageMode::Lru(_) => {
                 let report = self.store.evict_to_budget(
                     &self.roots,
                     &NoDurableOracle,
@@ -235,9 +201,10 @@ pub fn spawn_maintenance(node: Arc<CasNode>) {
 mod tests {
     use super::*;
 
-    fn durable_cfg() -> CasConfig {
+    fn lru_cfg() -> CasConfig {
         CasConfig {
             gc_grace_secs: 0,
+            byte_budget: Some(0),
             ..CasConfig::default()
         }
     }
@@ -246,7 +213,7 @@ mod tests {
     fn disk_backend_without_path_is_a_clear_error() {
         let cfg = CasConfig {
             backend: CasBackendKind::Disk,
-            ..durable_cfg()
+            ..lru_cfg()
         };
         let err = CasNode::from_config(&cfg, PeerId::new("me"))
             .err()
@@ -258,58 +225,62 @@ mod tests {
     }
 
     #[test]
-    fn cache_policy_requires_a_budget() {
-        let mut cfg = durable_cfg();
-        cfg.mode = CasMode::Cache;
-        assert!(
-            retention_policy(&cfg).is_err(),
-            "cache without byte_budget is rejected"
-        );
-        cfg.byte_budget = Some(1024);
-        assert!(retention_policy(&cfg).is_ok());
+    fn both_modes_require_a_budget() {
+        for mode in [CasMode::Lru, CasMode::WriteOnly] {
+            let mut cfg = CasConfig {
+                mode,
+                byte_budget: None,
+                ..lru_cfg()
+            };
+            assert!(
+                retention_policy(&cfg).is_err(),
+                "{mode:?} without byte_budget"
+            );
+            cfg.byte_budget = Some(1024);
+            assert!(retention_policy(&cfg).is_ok());
+        }
     }
 
     #[test]
-    fn zero_replication_factor_is_rejected() {
-        let cfg = CasConfig {
-            mode: CasMode::Cache,
-            byte_budget: Some(1024),
-            replication_factor: Some(0),
-            ..durable_cfg()
-        };
-        assert!(retention_policy(&cfg).is_err());
-    }
-
-    #[test]
-    fn durable_node_maintenance_runs_gc() {
-        let node = CasNode::from_config(&durable_cfg(), PeerId::new("me")).unwrap();
-        // Fresh node: nothing to reclaim, but the durable branch dispatches.
+    fn lru_node_evicts_a_sole_copy_over_budget() {
+        let node = CasNode::from_config(&lru_cfg(), PeerId::new("me")).unwrap();
+        let d = node.put(&mut &b"sole-copy"[..]).unwrap();
+        let report = node.maintain_once().unwrap();
         assert_eq!(
-            node.maintain_once().unwrap(),
-            MaintenanceReport::Gc {
-                reclaimed: 0,
-                bytes: 0
+            report,
+            MaintenanceReport::Evict {
+                evicted: 1,
+                bytes: 9
             }
         );
+        assert!(!node.has(&d).unwrap());
     }
 
     #[test]
-    fn cache_node_maintenance_runs_eviction() {
+    fn write_only_node_maintenance_retains_everything() {
         let cfg = CasConfig {
-            mode: CasMode::Cache,
-            byte_budget: Some(0),
-            replication_factor: Some(1),
-            ..durable_cfg()
+            mode: CasMode::WriteOnly,
+            byte_budget: Some(64),
+            ..lru_cfg()
         };
         let node = CasNode::from_config(&cfg, PeerId::new("me")).unwrap();
-        // With only self as a holder, nothing is safe to evict (fail-safe), but the
-        // cache branch dispatches.
-        assert_eq!(
-            node.maintain_once().unwrap(),
-            MaintenanceReport::Evict {
-                evicted: 0,
-                bytes: 0
-            }
-        );
+        let d = node.put(&mut &b"keep-me"[..]).unwrap();
+        assert_eq!(node.maintain_once().unwrap(), MaintenanceReport::Retained);
+        assert!(node.has(&d).unwrap());
+    }
+
+    #[test]
+    fn write_only_node_refuses_a_write_past_capacity() {
+        let cfg = CasConfig {
+            mode: CasMode::WriteOnly,
+            byte_budget: Some(4),
+            ..lru_cfg()
+        };
+        let node = CasNode::from_config(&cfg, PeerId::new("me")).unwrap();
+        assert!(matches!(
+            node.put(&mut &b"too-big"[..]),
+            Err(BackendError::CapacityExceeded { .. })
+        ));
+        assert!(!node.has(&Digest::compute(b"too-big")).unwrap());
     }
 }

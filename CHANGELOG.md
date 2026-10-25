@@ -6,6 +6,19 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING: `[cas] mode` is now `lru` (default) or `write_only`; `durable` is removed (#138).**
+  A config that still says `mode = "durable"` (or `"cache"`) fails to parse, naming the
+  two modes. `byte_budget` is now required in both modes, and `replication_factor` is
+  gone. `lru` evicts coldest-first over `byte_budget`: blobs with another known holder
+  first, then sole copies (a cache may drop its only copy); pinned roots, in-flight
+  writes and writes inside `gc_grace` are never evicted. `write_only` never reclaims;
+  `byte_budget` is its capacity, and a write past it is refused before anything is
+  committed (new `BackendError::CapacityExceeded` -> S3 `507 InsufficientStorage`,
+  REAPI `RESOURCE_EXHAUSTED`). The durable mark-and-sweep (`CasStore::gc`), the
+  "faces imply retain-all" switch (`CasNode::mark_face_backed`) and the Gc put-race TLA+
+  model are removed.
+
 ### Added
 - **`[cas] backend = "mem"|"disk"` + `path`; one store behind both faces.** `CasNode`
   now holds a `CasStore<Box<dyn ReclaimableCas>>` (in-memory or `DiskCas`), and with
