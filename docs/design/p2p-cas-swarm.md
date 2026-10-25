@@ -358,13 +358,11 @@ These gated the first implementable slice; all four are now settled.
 4. **Native digest ↔ REAPI digest → multihash native, SHA-256 at the boundary.**
    Self-describing multihash (BLAKE3 default) internally; the REAPI face pins
    SHA-256 as its wire contract and translates at the boundary.
-5. **Node storage modes → cache and durable store of record.** A node runs local
-   disk either as a bounded **LRU cache** (cold blobs float to the swarm, restored
-   by digest from a durable node) or as a **durable store of record** that retains
-   all *reachable* blobs and runs **git-style reachability GC** to reclaim only
-   *unreachable* garbage. Paired safety: durable GC never collects a reachable
-   blob and cache eviction never loses one (a durable holder retains it) — so no
-   reachable blob is lost swarm-wide. Validated on the nuc1/nuc2/gnuc testbed.
+5. **Node storage modes → `lru` and `write_only` (#142).** A node runs local disk
+   as a bounded **LRU cache** (coldest first, replicated blobs before sole copies;
+   a sole copy can be dropped) or as **write-only** storage (never deletes, refuses
+   writes at capacity). The write-only mirror guarantee (#139) and scrub/repair
+   (#140) are pending. The earlier durable reachability-GC design is historical.
    See [Node storage modes](#node-storage-modes--cache-vs-durable-store-of-record).
 
 ## First implementable slice — CAS spine (built ✅)
@@ -393,8 +391,8 @@ merge each slice on green, in dependency order).
 | AC CRDT | `Attestation`, grow-only set, k-of-n `Confirmed`, `ActionCacheBackend` + mem + conformance (signature verification behind a seam) | ✅ #88, #89 |
 | Content routing | `ContentRouter` seam + in-process `MemRouter`/`MemSwarm` | ✅ #90 |
 | Reachability | `Referenced` + `ReclaimableCas` seams; `ReferenceResolver` + `RootSource` + `reachable_closure` | ✅ #91, #92 |
-| Storage modes | `CasStore` + durable reachability GC + cache replica-gated LRU eviction | ✅ #93, #94 |
-| Formal PO-GC | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
+| Storage modes (historical) | `CasStore` + durable reachability GC + replica-gated LRU eviction; durable GC retired by #142 | ✅ #93, #94 |
+| Formal PO-GC (historical) | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
 | Daemon wiring | `[cas]` config + `cas_node` + scheduled GC/evict maintenance | ✅ #97 |
 | Merkle DAG | `Tree` directory objects → transitive reachability + REAPI `Directory` | ✅ #99 |
 | REAPI seams | `CasBackend::put_keyed` + `size` (SHA-256-native path; no index) | ✅ #100 |
@@ -408,13 +406,21 @@ merge each slice on green, in dependency order).
 | REAPI daemon wiring | `[reapi]` config + `build_router` seam + tonic server spawned beside axum in `serve()`; SHA-256-native self-attesting in-mem cache; startup `put_keyed` probe | ✅ #110 |
 | S3 face crate | `nessie-s3`: `PutObject`/`GetObject`/`HeadObject` over `s3s`; key *is* the digest; refuses framed `cas.v2` and non-content-addressed `ac`/`raw` | ✅ #118 |
 | S3 daemon wiring | `[s3]` config + `faces` module: **one** CAS backend shared by both faces, S3 mounted as an axum fallback beside the ONTAP surface | ✅ #119 |
+| Disk store | `nessie-cas-disk`: persistent `ReclaimableCas`, git-loose-object layout, temp + rename commit; restart-safe grace window in `CasStore::new` | ✅ #134, #132 |
+| Shared faces store | `[cas] backend = mem\|disk`; REAPI, S3 and maintenance share one `CasNode` store (`faces::build_faces`) | ✅ #136, #133 |
+| Flat S3 keys | `{prefix}{sha256}` accepted beside `cas/{xx}/{hex}` | ✅ #135 |
+| Static peers | `nessie-cas-peer`: static peer list, fetch-through, durability oracle | ⏳ #127 |
+| Retention modes | `[cas] mode = lru\|write_only`; reachability-GC `durable` retired | ✅ #142 |
+| Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ⏳ #139 |
+| Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ⏳ #140 |
+| Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 
 The single-node substrate is complete, machine-checked, runnable, **and now speaks a
 real protocol**: the CAS spine, the ActionCache attestation-CRDT (the ungameable-completion
-keystone), the content-router seam, both storage modes (durable reachability GC + cache
-replica-gated eviction) with the paired safety property proved in `formal/`, the Merkle-DAG
+keystone), the content-router seam, the retention modes (`lru` and `write_only`; the earlier durable
+reachability-GC proofs in `formal/` are historical), the Merkle-DAG
 `Tree` objects, the REAPI write/emit seams, the daemon that runs a configured CAS node with
 scheduled maintenance, and the full **REAPI gRPC cache face** (Capabilities + CAS +
 ByteStream + ActionCache + GetTree over a SHA-256 boundary) wired beside axum and gated on a

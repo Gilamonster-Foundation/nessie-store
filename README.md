@@ -83,7 +83,7 @@ cannot silently drift out of sync.
 | `nessie-backend-conformance` | capability-driven test harness |
 | `nessie-cas-conformance` | conformance suite for the `CasBackend` contract |
 | `nessie-ac-conformance` | conformance suite for the `ActionCacheBackend` contract |
-| `nessie-cas-store` | retention engine: reachability GC + replica-gated cache eviction |
+| `nessie-cas-store` | retention engine: `lru` eviction and `write_only` capacity |
 | `nessie-reapi` | Bazel REAPI v2 (cache subset) gRPC face over the CAS/AC backends |
 | `nessie-s3` | S3 object-API face over the CAS, for digest-keyed cache clients |
 | `nessie-backend-mem` | HashMap reference backend |
