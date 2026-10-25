@@ -91,6 +91,7 @@ async fn head_and_get_report_the_serving_nodes_mode() {
     for (mode, expect) in [(CasMode::Lru, "lru"), (CasMode::WriteOnly, "write_only")] {
         let cfg = CasConfig {
             mode,
+            replication_factor: (mode == CasMode::WriteOnly).then_some(1),
             byte_budget: Some(1 << 20),
             ..CasConfig::default()
         };

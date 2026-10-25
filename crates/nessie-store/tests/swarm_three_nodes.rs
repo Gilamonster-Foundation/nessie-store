@@ -75,6 +75,7 @@ impl Daemon {
 fn durable() -> CasConfig {
     CasConfig {
         mode: CasMode::WriteOnly,
+        replication_factor: Some(1),
         byte_budget: Some(1 << 30),
         peer_api: true,
         gc_grace_secs: 0,

@@ -115,6 +115,18 @@ pub enum BackendError {
         capacity: u64,
     },
 
+    /// A `write_only` write is held locally but fewer than the required number of
+    /// copies are verified: the write is **not acknowledged**. The local copy stays
+    /// (`write_only` never deletes); repair completes the replication later. Faces
+    /// render this as S3 `503 ServiceUnavailable` / gRPC `UNAVAILABLE`.
+    #[error("under-replicated: {confirmed} of {required} peer copies confirmed")]
+    Underreplicated {
+        /// Peers that confirmed a verified `write_only` copy.
+        confirmed: usize,
+        /// Peer copies required (`replication_factor - 1`).
+        required: usize,
+    },
+
     /// An unexpected internal error.
     #[error("internal backend error: {0}")]
     Internal(String),

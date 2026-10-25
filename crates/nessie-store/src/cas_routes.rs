@@ -15,7 +15,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
-use nessie_backend_core::{BackendError, CasBackend, Digest};
+use nessie_backend_core::{BackendError, Digest};
 
 use crate::cas_node::CasNode;
 
@@ -101,7 +101,7 @@ async fn put_blob(
     let Ok(digest) = parse(&d) else {
         return StatusCode::BAD_REQUEST;
     };
-    match blocking(move || node.put_keyed(&digest, &mut Cursor::new(body))).await {
+    match blocking(move || node.put_keyed_local(&digest, &mut Cursor::new(body))).await {
         Ok(()) => StatusCode::CREATED,
         Err(s) => s,
     }

@@ -7,6 +7,7 @@
 //! router is an in-process [`MemRouter`] until a real network router (NATS /
 //! Kademlia) slots in **without touching this maintenance logic**.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,6 +48,45 @@ pub fn retention_policy(cfg: &CasConfig) -> anyhow::Result<RetentionPolicy> {
     })
 }
 
+/// `[cas] replication_factor` default: this node plus one verified peer.
+const DEFAULT_REPLICATION_FACTOR: usize = 2;
+
+/// The `write_only` mirror: the pusher and how many peer copies must confirm.
+struct Mirror {
+    replicator: HttpReplicator,
+    /// `replication_factor - 1`.
+    peer_copies: NonZeroUsize,
+}
+
+/// Peer copies a `write_only` write must reach (`R - 1`), `None` when none are
+/// needed (`lru`, or R = 1 — a single-node archive, warned about once here).
+///
+/// # Errors
+///
+/// `replication_factor` under `lru`, R = 0, or R - 1 above the number of `durable`
+/// peers (only those can confirm, so more could never be met).
+fn peer_copies(cfg: &CasConfig) -> anyhow::Result<Option<NonZeroUsize>> {
+    if cfg.mode == CasMode::Lru {
+        anyhow::ensure!(
+            cfg.replication_factor.is_none(),
+            "[cas] replication_factor applies only to mode = \"write_only\""
+        );
+        return Ok(None);
+    }
+    let r = cfg.replication_factor.unwrap_or(DEFAULT_REPLICATION_FACTOR);
+    anyhow::ensure!(r >= 1, "[cas] replication_factor must be at least 1");
+    let durable = cfg.effective_peers()?.iter().filter(|p| p.durable).count();
+    anyhow::ensure!(
+        r - 1 <= durable,
+        "[cas] replication_factor = {r} needs {} durable peers but only {durable} are configured",
+        r - 1
+    );
+    if r == 1 {
+        tracing::warn!("[cas] replication_factor = 1: write_only with no redundancy");
+    }
+    Ok(NonZeroUsize::new(r - 1))
+}
+
 /// What a maintenance pass did (for logging).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MaintenanceReport {
@@ -71,6 +111,9 @@ pub struct CasNode {
     /// The blobs held here, without peer fallback (`None`: no peers, the store is
     /// already local-only).
     local: Option<Arc<dyn CasBackend>>,
+    /// `write_only` with `replication_factor > 1`: acknowledge a write only after
+    /// the peers confirm.
+    mirror: Option<Mirror>,
 }
 
 impl CasNode {
@@ -83,6 +126,7 @@ impl CasNode {
     /// a disk root that cannot be opened; a backend that cannot be enumerated.
     pub fn from_config(cfg: &CasConfig, me: PeerId) -> anyhow::Result<Self> {
         let policy = retention_policy(cfg)?;
+        let peer_copies = peer_copies(cfg)?;
         let blobs: Box<dyn ReclaimableCas> = match cfg.backend {
             CasBackendKind::Mem => Box::new(MemCas::new()),
             CasBackendKind::Disk => {
@@ -99,6 +143,7 @@ impl CasNode {
         // With peers: fetch-through beneath the store, and the static router /
         // oracle / replicator in place of the in-process ones.
         let peer_list = cfg.effective_peers()?;
+        let mut mirror = None;
         let (blobs, router, oracle, replicator, local): (_, Arc<dyn ContentRouter>, _, _, _) =
             if peer_list.is_empty() {
                 (
@@ -122,6 +167,10 @@ impl CasNode {
                 let swarm = SwarmCas::new(blobs, peers.clone())
                     .with_cache_fills(matches!(policy.mode, StorageMode::Lru(_)));
                 let local: Arc<dyn CasBackend> = swarm.local();
+                mirror = peer_copies.map(|peer_copies| Mirror {
+                    replicator: HttpReplicator::new(peers.clone(), local.clone()),
+                    peer_copies,
+                });
                 (
                     Box::new(swarm) as Box<dyn ReclaimableCas>,
                     Arc::new(StaticRouter::new(peers.clone())),
@@ -144,7 +193,41 @@ impl CasNode {
             oracle,
             replicator,
             local,
+            mirror,
         })
+    }
+
+    /// Write `expected`'s bytes to **this node only** — through the capacity gate, with
+    /// no mirror fan-out. This is what a peer's `PUT /cas/v1/blobs` runs, so a push
+    /// from another node never pushes again.
+    ///
+    /// # Errors
+    ///
+    /// As [`CasBackend::put_keyed`], minus [`BackendError::Underreplicated`].
+    pub fn put_keyed_local(
+        &self,
+        expected: &Digest,
+        source: &mut dyn Read,
+    ) -> Result<(), BackendError> {
+        self.store.put_keyed(expected, source)?;
+        self.store.committed(expected); // see `put`
+        Ok(())
+    }
+
+    /// After a local write: in `write_only`, wait for `replication_factor - 1` peers
+    /// to hold a verified copy. The local copy stays on a shortfall.
+    fn mirror(&self, digest: &Digest) -> Result<(), BackendError> {
+        let Some(m) = &self.mirror else {
+            return Ok(());
+        };
+        let confirmed = m.replicator.push(digest, m.peer_copies)?;
+        if confirmed < m.peer_copies.get() {
+            return Err(BackendError::Underreplicated {
+                confirmed,
+                required: m.peer_copies.get(),
+            });
+        }
+        Ok(())
     }
 
     /// Run one retention maintenance pass, dispatching by mode. Write-only mode
@@ -223,13 +306,13 @@ impl CasBackend for CasNode {
         // A protocol write is a complete operation (the upload *is* the op): release
         // the in-flight guard so it does not pin the blob for the process lifetime.
         self.store.committed(&digest);
+        self.mirror(&digest)?;
         Ok(digest)
     }
 
     fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
-        self.store.put_keyed(expected, source)?;
-        self.store.committed(expected); // see `put`
-        Ok(())
+        self.put_keyed_local(expected, source)?;
+        self.mirror(expected)
     }
 
     fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
@@ -322,6 +405,7 @@ mod tests {
     fn write_only_node_maintenance_retains_everything() {
         let cfg = CasConfig {
             mode: CasMode::WriteOnly,
+            replication_factor: Some(1),
             byte_budget: Some(64),
             ..lru_cfg()
         };
@@ -335,6 +419,7 @@ mod tests {
     fn write_only_node_refuses_a_write_past_capacity() {
         let cfg = CasConfig {
             mode: CasMode::WriteOnly,
+            replication_factor: Some(1),
             byte_budget: Some(4),
             ..lru_cfg()
         };
