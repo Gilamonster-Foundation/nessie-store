@@ -11,6 +11,8 @@ an S3 face. Peer sharing is still being built and is not described here.
 | S3 face | `nessie-s3` on s3s; bazel-remote `cas/{xx}/{hex}` keys plus flat `{prefix}{sha256}` for kyln. |
 | Peer sharing | Static peer list in TOML, HTTP fetch-through behind `ContentRouter`. Mesh router later. |
 | Auth | S3: one static SigV4 key, secret from `NESSIE_S3_SECRET_KEY`. REAPI and peer API unauthenticated, lab-only, default off. mTLS next. |
+| Retention | `lru` (default): coldest first, replicated before sole copies, pins and in-flight never; a sole copy can be dropped. `write_only`: never deletes, refuses writes at capacity. Reachability-GC `durable` retired. |
+| Mirror | `write_only` acknowledges after R verified copies, with scrub and repair (#139, #140; coming in v0.4.0). |
 | Keypair plane | agent-mesh owns transport and identity; nessie later ships a `ContentRouter` impl. |
 
 ## What the disk store borrows from 3FS
@@ -25,12 +27,6 @@ Three chunk-engine properties:
 Not taken: RocksDB metadata (the filesystem path is the index), CRAQ chain
 replication (peers fetch by digest instead), and a slab allocator (tiny blobs
 are one file each; revisit if that measures badly).
-
-## Retain-all
-
-Face writes (S3, REAPI) aren't roots, and the root set is in memory. A durable
-node with a face therefore skips the GC sweep. Safe, but it leaks garbage
-until roots persist (#137).
 
 ## Just want S3?
 

@@ -8,10 +8,15 @@ the machine-checked list of what exists.
 - **Storage.** `[cas] backend = "mem"` (default) loses blobs on restart;
   `"disk"` (`nessie-cas-disk`) keeps them under `path`. REAPI, S3 and
   maintenance share the one store.
-- **Retain-all.** A durable node with a face enabled never sweeps: face
-  writes have no persistent roots, so GC would delete them after a restart.
-  Disk use only grows until roots persist (#137). Cache mode still evicts,
-  and only blobs another holder has.
+- **Retention.** `[cas] mode = "lru"` (default) evicts coldest first over
+  `byte_budget`: blobs another holder has go before sole copies; pinned and
+  in-flight blobs never. A sole copy can be dropped; it is a cache.
+  `"write_only"` never deletes; `byte_budget` is a hard capacity and a write
+  past it is refused (S3 507, REAPI `RESOURCE_EXHAUSTED`). `durable` is gone.
+- **Coming in v0.4.0.** The `write_only` mirror guarantee (a write is
+  acknowledged after R verified copies, #139) and scrub/repair (#140). Until
+  then `write_only` on one node has no redundancy. Pins persist across
+  restart only after #137.
 - **Auth is lab-only.** S3 uses one static SigV4 key; the daemon refuses to
   start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI is
   unauthenticated and off by default. mTLS is not built.

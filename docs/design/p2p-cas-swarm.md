@@ -411,7 +411,10 @@ merge each slice on green, in dependency order).
 | Disk store | `nessie-cas-disk`: persistent `ReclaimableCas`, git-loose-object layout, temp + rename commit; restart-safe grace window in `CasStore::new` | ✅ #134, #132 |
 | Shared faces store | `[cas] backend = mem\|disk`; REAPI, S3 and maintenance share one `CasNode` store (`faces::build_faces`) | ✅ #136, #133 |
 | Flat S3 keys | `{prefix}{sha256}` accepted beside `cas/{xx}/{hex}` | ✅ #135 |
-| Persistent roots | durable GC on face-backed stores (today: retain-all, sweep disabled) | ⏳ #137 |
+| Retention modes | `[cas] mode = lru\|write_only`; reachability-GC `durable` retired | ✅ #142 |
+| Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ⏳ #139 |
+| Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ⏳ #140 |
+| Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 
