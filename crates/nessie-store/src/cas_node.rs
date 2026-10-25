@@ -20,9 +20,12 @@ use nessie_backend_core::{
 };
 use nessie_backend_mem::{MemCas, MemRouter};
 use nessie_cas_disk::DiskCas;
+use nessie_cas_peer::{
+    HttpReplicator, Peer, PeerSet, StaticDurabilityOracle, StaticRouter, SwarmCas,
+};
 use nessie_cas_store::{
-    CanonicalResolver, CasStore, Clock, NoDurableOracle, RefuseToReplicate, RetentionPolicy,
-    RootRegistry, StorageMode, SystemClock,
+    CanonicalResolver, CasStore, Clock, DurabilityOracle, NoDurableOracle, RefuseToReplicate,
+    Replicator, RetentionPolicy, RootRegistry, StorageMode, SystemClock,
 };
 
 use crate::config::{CasBackendKind, CasConfig, CasMode};
@@ -72,6 +75,8 @@ pub struct CasNode {
     roots: RootRegistry,
     face_backed: AtomicBool,
     interval: Duration,
+    oracle: Box<dyn DurabilityOracle>,
+    replicator: Box<dyn Replicator>,
 }
 
 impl CasNode {
@@ -97,10 +102,39 @@ impl CasNode {
                 )
             }
         };
+        // With peers: fetch-through beneath the store, and the static router /
+        // oracle / replicator in place of the in-process ones.
+        let (blobs, router, oracle, replicator): (_, Arc<dyn ContentRouter>, _, _) =
+            if cfg.peers.is_empty() {
+                (
+                    blobs,
+                    Arc::new(MemRouter::new(me.clone())),
+                    Box::new(NoDurableOracle) as Box<dyn DurabilityOracle>,
+                    Box::new(RefuseToReplicate) as Box<dyn Replicator>,
+                )
+            } else {
+                let peers = Arc::new(PeerSet::new(
+                    cfg.peers
+                        .iter()
+                        .map(|p| Peer {
+                            url: p.url.clone(),
+                            durable: p.durable,
+                        })
+                        .collect(),
+                )?);
+                let swarm = SwarmCas::new(blobs, peers.clone());
+                let local: Arc<dyn CasBackend> = swarm.local();
+                (
+                    Box::new(swarm) as Box<dyn ReclaimableCas>,
+                    Arc::new(StaticRouter::new(peers.clone())),
+                    Box::new(StaticDurabilityOracle::new(peers.clone())),
+                    Box::new(HttpReplicator::new(peers, local)),
+                )
+            };
         let store = CasStore::new(
             blobs,
             policy,
-            Arc::new(MemRouter::new(me.clone())) as Arc<dyn ContentRouter>,
+            router,
             Arc::new(SystemClock) as Arc<dyn Clock>,
             me,
         )?;
@@ -109,6 +143,8 @@ impl CasNode {
             roots: RootRegistry::new(),
             face_backed: AtomicBool::new(false),
             interval: Duration::from_secs(cfg.maintenance_interval_secs),
+            oracle,
+            replicator,
         })
     }
 
@@ -148,8 +184,8 @@ impl CasNode {
             StorageMode::Cache(_) => {
                 let report = self.store.evict_to_budget(
                     &self.roots,
-                    &NoDurableOracle,
-                    &RefuseToReplicate,
+                    self.oracle.as_ref(),
+                    self.replicator.as_ref(),
                 )?;
                 Ok(MaintenanceReport::Evict {
                     evicted: report.evicted,
