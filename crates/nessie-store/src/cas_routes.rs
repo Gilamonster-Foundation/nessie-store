@@ -55,12 +55,16 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| status(&e))
 }
 
+/// The serving node's retention mode, so a peer can verify a `durable` claim.
+const MODE_HEADER: &str = "x-nessie-mode";
+
 async fn get_blob(
     State(node): State<Arc<CasNode>>,
     Path(d): Path<String>,
-) -> Result<Vec<u8>, StatusCode> {
+) -> Result<([(&'static str, &'static str); 1], Vec<u8>), StatusCode> {
     let digest = parse(&d)?;
-    blocking(move || {
+    let mode = node.mode_name();
+    let body = blocking(move || {
         let mut out = Vec::new();
         node.local()
             .get(&digest)?
@@ -68,18 +72,23 @@ async fn get_blob(
             .map_err(|e| BackendError::Internal(e.to_string()))?;
         Ok(out)
     })
-    .await
+    .await?;
+    Ok(([(MODE_HEADER, mode)], body))
 }
 
 /// Local-only, with the stored length in `Content-Length` so a peer can answer a
-/// size probe without fetching the body.
+/// size probe without fetching the body, and the node's mode in `x-nessie-mode`.
 async fn head_blob(
     State(node): State<Arc<CasNode>>,
     Path(d): Path<String>,
-) -> Result<[(&'static str, String); 1], StatusCode> {
+) -> Result<[(&'static str, String); 2], StatusCode> {
     let digest = parse(&d)?;
+    let mode = node.mode_name();
     match blocking(move || node.local().size(&digest)).await? {
-        Some(n) => Ok([("content-length", n.to_string())]),
+        Some(n) => Ok([
+            ("content-length", n.to_string()),
+            (MODE_HEADER, mode.to_owned()),
+        ]),
         None => Err(StatusCode::NOT_FOUND),
     }
 }

@@ -55,10 +55,16 @@ nfs_export_name = ""
 # store (one set of blobs) and it runs retention maintenance. backend = "mem" (the
 # default) loses blobs on restart; "disk" keeps them under `path`.
 #
-# mode = "durable" (default) with a face enabled is RETAIN-ALL: face-written blobs
-# have no persistent roots, so the GC sweep is disabled rather than risk deleting
-# them after a restart. mode = "cache" evicts only blobs another holder also has.
+# mode = "lru" (default): over `byte_budget`, evict coldest first - blobs another
+#   holder also has, then sole copies (this is a cache). Pinned roots and in-flight
+#   writes are never evicted.
+# mode = "write_only": never deletes. `byte_budget` is the capacity; a write past it
+#   is refused (S3 507 / REAPI RESOURCE_EXHAUSTED), never made room for.
+# `byte_budget` is required in both modes. The old mode = "durable" is gone: it is
+# now a config parse error.
 [cas]
+mode = "lru"
+byte_budget = 107374182400   # 100 GiB
 backend = "disk"
 path = "/var/lib/nessie-store/cas"
 

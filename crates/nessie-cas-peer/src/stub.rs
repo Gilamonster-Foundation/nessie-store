@@ -13,8 +13,16 @@ use axum::routing::get;
 
 pub(crate) type Blobs = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
-async fn get_blob(State(b): State<Blobs>, Path(d): Path<String>) -> Result<Vec<u8>, StatusCode> {
-    b.lock()
+/// Blob map plus the `x-nessie-mode` this stub reports on HEAD.
+#[derive(Clone)]
+struct Stub {
+    blobs: Blobs,
+    mode: &'static str,
+}
+
+async fn get_blob(State(s): State<Stub>, Path(d): Path<String>) -> Result<Vec<u8>, StatusCode> {
+    s.blobs
+        .lock()
         .unwrap()
         .get(&d)
         .cloned()
@@ -22,32 +30,44 @@ async fn get_blob(State(b): State<Blobs>, Path(d): Path<String>) -> Result<Vec<u
 }
 
 async fn head_blob(
-    State(b): State<Blobs>,
+    State(s): State<Stub>,
     Path(d): Path<String>,
-) -> Result<[(&'static str, String); 1], StatusCode> {
-    let n = b
+) -> Result<[(&'static str, String); 2], StatusCode> {
+    let n = s
+        .blobs
         .lock()
         .unwrap()
         .get(&d)
         .map(Vec::len)
         .ok_or(StatusCode::NOT_FOUND)?;
-    Ok([("content-length", n.to_string())])
+    Ok([
+        ("content-length", n.to_string()),
+        ("x-nessie-mode", s.mode.to_owned()),
+    ])
 }
 
-async fn put_blob(State(b): State<Blobs>, Path(d): Path<String>, body: Bytes) -> StatusCode {
-    b.lock().unwrap().insert(d, body.to_vec());
+async fn put_blob(State(s): State<Stub>, Path(d): Path<String>, body: Bytes) -> StatusCode {
+    s.blobs.lock().unwrap().insert(d, body.to_vec());
     StatusCode::CREATED
 }
 
-/// Serve a fresh stub on loopback; returns its base URL and its blob map.
+/// Serve a fresh `write_only` stub on loopback; returns its base URL and blob map.
 pub(crate) fn spawn() -> (String, Blobs) {
+    spawn_mode("write_only")
+}
+
+/// As [`spawn`], reporting `mode` in `x-nessie-mode`.
+pub(crate) fn spawn_mode(mode: &'static str) -> (String, Blobs) {
     let blobs = Blobs::default();
     let app = Router::new()
         .route(
             "/cas/v1/blobs/:d",
             get(get_blob).head(head_blob).put(put_blob),
         )
-        .with_state(blobs.clone());
+        .with_state(Stub {
+            blobs: blobs.clone(),
+            mode,
+        });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();

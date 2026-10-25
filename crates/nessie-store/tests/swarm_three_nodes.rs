@@ -71,8 +71,11 @@ impl Daemon {
     }
 }
 
+/// A `write_only` node: the permanent home, which says so in `x-nessie-mode`.
 fn durable() -> CasConfig {
     CasConfig {
+        mode: CasMode::WriteOnly,
+        byte_budget: Some(1 << 30),
         peer_api: true,
         gc_grace_secs: 0,
         ..CasConfig::default()
@@ -81,9 +84,8 @@ fn durable() -> CasConfig {
 
 fn cache(durable_url: &str) -> CasConfig {
     CasConfig {
-        mode: CasMode::Cache,
+        mode: CasMode::Lru,
         byte_budget: Some(1),
-        replication_factor: Some(2),
         gc_grace_secs: 0,
         peer_api: true,
         peers: vec![CasPeer {
@@ -100,10 +102,9 @@ fn read(node: &CasNode, d: &Digest) -> Vec<u8> {
     v
 }
 
-/// Two passes: the first pushes the cold blob to the durable peer and keeps it
-/// (never drop the last copy); the second sees the durable copy and evicts.
+/// One LRU pass: a sole copy is pushed to the durable peer (best effort) and then
+/// evicted.
 fn evict(node: &CasNode) -> MaintenanceReport {
-    node.maintain_once().unwrap();
     node.maintain_once().unwrap()
 }
 
@@ -149,24 +150,6 @@ fn killing_a_cache_node_loses_nothing_it_pushed_out() {
     a.kill();
 
     assert_eq!(read(&b.node, &digest), b"survives its first holder");
-}
-
-#[test]
-fn a_blob_only_the_cache_holds_is_never_evicted() {
-    let d = Daemon::start(&durable(), "durable");
-    let mut cfg = cache(&d.url);
-    cfg.peers[0].durable = false; // nobody durable: the cache holds the last copy
-    let a = Daemon::start(&cfg, "cache-a");
-
-    let digest = a.node.put(&mut &b"last copy"[..]).unwrap();
-    assert_eq!(
-        evict(&a.node),
-        MaintenanceReport::Evict {
-            evicted: 0,
-            bytes: 0
-        }
-    );
-    assert!(a.node.has(&digest).unwrap());
 }
 
 /// `PeerSet` builds its blocking client off-thread: constructing a node from inside
@@ -276,6 +259,7 @@ fn two_nodes_listing_each_other_do_not_recurse_on_a_miss() {
             durable: false,
         }],
         peer_api: true,
+        byte_budget: Some(1 << 20),
         ..CasConfig::default()
     };
     let a = Daemon::serve(la, ua, &peered(&ub), "a");

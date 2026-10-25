@@ -21,6 +21,12 @@ impl Peer {
     }
 }
 
+/// What a successful `HEAD` tells us.
+struct Head {
+    size: Option<u64>,
+    mode: Option<String>,
+}
+
 /// The peer list plus the HTTP client shared by router, swarm, oracle and replicator.
 #[derive(Debug)]
 pub struct PeerSet {
@@ -66,17 +72,25 @@ impl PeerSet {
     /// `HEAD` — the blob's length as `peer` reports it, if it holds the blob. No
     /// body is fetched.
     pub(crate) fn size(&self, peer: &Peer, digest: &Digest) -> Option<u64> {
-        self.head(peer, digest)?
+        self.head(peer, digest)?.size
     }
 
-    /// `Some(content-length)` on a 2xx `HEAD`; `None` on 404 / failure.
-    fn head(&self, peer: &Peer, digest: &Digest) -> Option<Option<u64>> {
+    /// `HEAD` — does `peer` hold `digest` *and* report `x-nessie-mode: write_only`?
+    /// Only a node that never reclaims is a permanent home; the `durable` flag in
+    /// our config is a claim about their config, so we ask them.
+    pub(crate) fn holds_durably(&self, peer: &Peer, digest: &Digest) -> bool {
+        self.head(peer, digest)
+            .is_some_and(|h| h.mode.as_deref() == Some("write_only"))
+    }
+
+    /// The facts a 2xx `HEAD` carries; `None` on 404 / failure.
+    fn head(&self, peer: &Peer, digest: &Digest) -> Option<Head> {
         let r = self.client.head(peer.blob_url(digest)).send().ok()?;
-        r.status().is_success().then(|| {
+        let text = |name: &str| r.headers().get(name)?.to_str().ok().map(str::to_owned);
+        r.status().is_success().then(|| Head {
             // `Response::content_length` is the (empty) HEAD body's; read the header.
-            r.headers()
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok()?.parse().ok())
+            size: text("content-length").and_then(|v| v.parse().ok()),
+            mode: text("x-nessie-mode"),
         })
     }
 

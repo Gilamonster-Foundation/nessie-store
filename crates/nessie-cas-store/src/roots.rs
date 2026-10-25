@@ -15,7 +15,7 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RootSet {
     /// Seed digests for the durable reachable closure — confirmed-entry result
-    /// bodies + pins + identity + live roots. Durable GC keeps their whole closure.
+    /// bodies + pins + identity + live roots. `reachable_closure` expands them.
     pub seed: BTreeSet<Digest>,
     /// The never-evict pinned class (⊆ `seed`): the registered root digests
     /// themselves (confirmed AC entries + identity + live roots), **not** their

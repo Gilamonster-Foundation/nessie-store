@@ -8,8 +8,10 @@ use nessie_cas_store::{DurabilityOracle, Replicator};
 
 use crate::PeerSet;
 
-/// `true` iff some durable peer answers `HEAD 200`. An unreachable peer answers
-/// "no", so uncertainty keeps the blob.
+/// `true` iff some peer answers `HEAD 200` **and** reports `x-nessie-mode:
+/// write_only`. The `durable` flag in config is only a hint of whom to ask; the peer
+/// proves it by its own mode, so an `lru` node mislabelled durable is not counted.
+/// An unreachable peer answers "no".
 #[derive(Debug, Clone)]
 pub struct StaticDurabilityOracle {
     peers: Arc<PeerSet>,
@@ -30,7 +32,7 @@ impl DurabilityOracle for StaticDurabilityOracle {
             .peers()
             .iter()
             .filter(|p| p.durable)
-            .any(|p| self.peers.has(p, digest)))
+            .any(|p| self.peers.holds_durably(p, digest)))
     }
 }
 

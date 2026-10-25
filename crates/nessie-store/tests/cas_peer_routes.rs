@@ -8,7 +8,11 @@ use nessie_store::cas_routes::peer_routes;
 use nessie_store::config::CasConfig;
 
 async fn serve() -> (String, Arc<CasNode>) {
-    let node = Arc::new(CasNode::from_config(&CasConfig::default(), PeerId::new("n")).unwrap());
+    let cfg = CasConfig {
+        byte_budget: Some(1 << 20),
+        ..CasConfig::default()
+    };
+    let node = Arc::new(CasNode::from_config(&cfg, PeerId::new("n")).unwrap());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/cas/v1/blobs", l.local_addr().unwrap());
     let app = peer_routes(node.clone());
@@ -79,4 +83,35 @@ async fn malformed_digest_is_400_and_encoded_colon_works() {
             .status(),
         200
     );
+}
+
+#[tokio::test]
+async fn head_and_get_report_the_serving_nodes_mode() {
+    use nessie_store::config::CasMode;
+    for (mode, expect) in [(CasMode::Lru, "lru"), (CasMode::WriteOnly, "write_only")] {
+        let cfg = CasConfig {
+            mode,
+            byte_budget: Some(1 << 20),
+            ..CasConfig::default()
+        };
+        let node = Arc::new(CasNode::from_config(&cfg, PeerId::new("n")).unwrap());
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/cas/v1/blobs", l.local_addr().unwrap());
+        let app = peer_routes(node.clone());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+
+        let d = Digest::compute(b"mode probe");
+        let c = reqwest::Client::new();
+        c.put(format!("{base}/{d}"))
+            .body("mode probe")
+            .send()
+            .await
+            .unwrap();
+        for r in [
+            c.head(format!("{base}/{d}")).send().await.unwrap(),
+            c.get(format!("{base}/{d}")).send().await.unwrap(),
+        ] {
+            assert_eq!(r.headers()["x-nessie-mode"], expect);
+        }
+    }
 }

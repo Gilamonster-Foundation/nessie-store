@@ -138,6 +138,22 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_labelled_durable_but_running_lru_is_not_a_durable_holder() {
+        let (lru, lru_blobs) = stub::spawn_mode("lru");
+        let (wo, wo_blobs) = stub::spawn_mode("write_only");
+        let d = plant(&lru_blobs, b"on an lru node");
+        let oracle = StaticDurabilityOracle::new(set(&[(&lru, true)]));
+        assert!(
+            !oracle.durably_held(&d).unwrap(),
+            "durable = true is only a hint"
+        );
+        // The same hint on a write_only peer is believed.
+        let d2 = plant(&wo_blobs, b"on a write_only node");
+        let oracle = StaticDurabilityOracle::new(set(&[(&wo, true), (&lru, true)]));
+        assert!(oracle.durably_held(&d2).unwrap());
+    }
+
+    #[test]
     fn replicator_puts_to_durable_peers_until_target() {
         let (cache, cache_blobs) = stub::spawn();
         let (d1, d1_blobs) = stub::spawn();

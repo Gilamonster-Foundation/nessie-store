@@ -60,10 +60,8 @@ expect_pass      AcCrdt AcCrdt.cfg             "AcCrdt main (NoForgery/Agreement
 expect_violation AcCrdt AcCrdt_ByzThreshold.cfg ForgeryFree \
                  "AcCrdt |Byzantine| = K forges"
 
-# --- Gc (PO-GC-1-op: the put->reference race guard) ---
-expect_pass      Gc Gc.cfg                     "Gc guarded (InflightProtected/RootsStored)"
-expect_violation Gc Gc_Unguarded.cfg InflightProtected \
-                 "Gc unguarded sweeps an in-flight blob"
+# (The Gc put->reference race model, PO-GC-1-op, was retired with the durable sweep
+# in #138: lru eviction guards in-flight writes, tested in nessie-cas-store.)
 
 # --- Eviction (PO-GC-2 + PO-GC-2-B: no reachable blob lost swarm-wide) ---
 expect_pass      Eviction Eviction.cfg         "Eviction gated + durable (NoReachableLost)"

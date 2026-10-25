@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CasMode {
-    /// Durable store of record: reachability GC only, never evicts a reachable blob.
+    /// Bounded cache: evicts coldest-first over `byte_budget`, blobs with another
+    /// known holder before sole copies. Pinned roots and in-flight writes stay.
     #[default]
-    Durable,
-    /// Bounded cache: replica-gated LRU eviction; cold blobs float to the swarm.
-    Cache,
+    Lru,
+    /// Retain everything: never reclaims; a write past `byte_budget` (the capacity)
+    /// is refused, never made room for.
+    WriteOnly,
 }
 
 /// Where a `[cas]` node keeps its blobs.
@@ -36,35 +38,34 @@ pub enum CasBackendKind {
 pub struct CasPeer {
     /// Base URL of the peer's `/cas/v1` surface, e.g. `http://host:8443`.
     pub url: String,
-    /// Whether this peer is a durable store of record (counts toward the
-    /// durability oracle and is a replication target).
+    /// A hint that this peer is a permanent home: it is probed by the durability
+    /// oracle and is a replication target. The hint is **verified** — the peer counts
+    /// as a durable holder only if it reports `x-nessie-mode: write_only` itself.
     #[serde(default)]
     pub durable: bool,
 }
 
 /// Optional `[cas]` node configuration. When present, the daemon runs a
 /// content-addressed store and periodically performs retention maintenance
-/// (durable GC or cache eviction). Fields are plain values so this crate stays
+/// (LRU eviction, or none in write-only mode). Fields are plain values so this crate stays
 /// free of the retention-engine dependency; `cas_node` turns it into a policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CasConfig {
-    /// Durable store-of-record or bounded cache.
+    /// `lru` (default) or `write_only`. The old `durable` mode is gone.
     pub mode: CasMode,
     /// Where blobs live. `disk` requires [`CasConfig::path`].
     pub backend: CasBackendKind,
     /// Root directory of the disk store (`backend = "disk"` only).
     pub path: Option<PathBuf>,
-    /// Grace window (seconds) before an unreachable/cold blob may be reclaimed —
-    /// the cross-restart backstop for the put→reference race.
+    /// Grace window (seconds) before a fresh blob may be evicted (`lru`) — the
+    /// cross-restart backstop for the put→reference race.
     pub gc_grace_secs: u64,
     /// How often (seconds) to run a retention maintenance pass.
     pub maintenance_interval_secs: u64,
-    /// Cache mode only: the local byte ceiling that triggers eviction.
+    /// Required. `lru`: the local byte ceiling that triggers eviction.
+    /// `write_only`: the hard capacity past which writes are refused.
     pub byte_budget: Option<u64>,
-    /// Cache mode only: `R`, the number of other holders required before a
-    /// reachable blob may be evicted (defaults to 2).
-    pub replication_factor: Option<usize>,
     /// Static peer list for fetch-through, the durability oracle and replication.
     /// Empty = a standalone node.
     pub peers: Vec<CasPeer>,
@@ -105,13 +106,12 @@ impl CasConfig {
 impl Default for CasConfig {
     fn default() -> Self {
         Self {
-            mode: CasMode::Durable,
+            mode: CasMode::Lru,
             backend: CasBackendKind::Mem,
             path: None,
             gc_grace_secs: 300,
             maintenance_interval_secs: 300,
             byte_budget: None,
-            replication_factor: None,
             peers: Vec::new(),
             peer_api: false,
             advertise_url: None,
@@ -373,21 +373,20 @@ mod tests {
         assert!(def.cas.is_none());
         assert!(!def.to_toml().contains("[cas]"));
 
-        // A cache-mode node parses with its params.
+        // A write_only node parses with its capacity.
         let cfg: Config = toml::from_str(
-            "[cas]\nmode = \"cache\"\nbyte_budget = 1048576\nreplication_factor = 3\ngc_grace_secs = 60\nmaintenance_interval_secs = 30\n",
+            "[cas]\nmode = \"write_only\"\nbyte_budget = 1048576\ngc_grace_secs = 60\nmaintenance_interval_secs = 30\n",
         )
         .expect("parse");
         let cas = cfg.cas.expect("cas present");
-        assert_eq!(cas.mode, CasMode::Cache);
+        assert_eq!(cas.mode, CasMode::WriteOnly);
         assert_eq!(cas.byte_budget, Some(1_048_576));
-        assert_eq!(cas.replication_factor, Some(3));
         assert_eq!(cas.gc_grace_secs, 60);
 
-        // A durable node fills the sensible defaults.
-        let durable: Config = toml::from_str("[cas]\nmode = \"durable\"\n").expect("parse");
-        let cas = durable.cas.expect("cas present");
-        assert_eq!(cas.mode, CasMode::Durable);
+        // lru is the default and fills the sensible defaults.
+        let lru: Config = toml::from_str("[cas]\n").expect("parse");
+        let cas = lru.cas.expect("cas present");
+        assert_eq!(cas.mode, CasMode::Lru);
         assert_eq!(cas.gc_grace_secs, 300);
         assert_eq!(cas.byte_budget, None);
     }
@@ -442,6 +441,17 @@ mod tests {
             ..CasConfig::default()
         };
         assert_eq!(shared.effective_peers().unwrap(), vec![peer("http://b:2")]);
+    }
+
+    #[test]
+    fn durable_mode_is_a_parse_error_naming_the_two_modes() {
+        let err = toml::from_str::<Config>("[cas]\nmode = \"durable\"\n")
+            .expect_err("durable is retired")
+            .to_string();
+        assert!(
+            err.contains("`lru`") && err.contains("`write_only`"),
+            "{err}"
+        );
     }
 
     #[test]

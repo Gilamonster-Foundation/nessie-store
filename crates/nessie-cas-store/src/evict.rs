@@ -1,13 +1,11 @@
-//! Cache-mode replica-gated LRU eviction.
+//! LRU eviction: over `byte_budget`, drop the coldest blobs, in two passes.
 //!
-//! **PO-GC-2**: cache eviction never loses a reachable blob swarm-wide. A blob is
-//! dropped only when it is safe to re-fetch it later — either **≥ R other holders**
-//! exist (via [`ContentRouter::providers`](nessie_backend_core::ContentRouter)) or a
-//! [`DurabilityOracle`] confirms a permanent home. The **pinned** class (confirmed
-//! AC entries + identity + live roots) is never evicted, and every uncertain path is
-//! **fail-safe**: a router error, an under-replicated blob, or a refusing replicator
-//! all keep the blob. You can only ever fail *safe* (keep it), never fail *open*
-//! (drop the last copy).
+//! Pass 1 drops blobs with at least one **other known holder** (a router provider
+//! other than this node, or a [`DurabilityOracle`] hit); pass 2 drops **sole
+//! copies**. This is a cache: a sole copy can go, by design. The **pinned** class
+//! (confirmed AC entries + identity + live roots), in-flight writes and writes
+//! younger than `gc_grace` are never evicted. Write-only mode never reaches this
+//! code: [`CasStore::evict_to_budget`] refuses it.
 
 use crate::policy::StorageMode;
 use crate::roots::RootSource;
@@ -15,21 +13,19 @@ use crate::store::CasStore;
 use nessie_backend_core::{BackendError, Digest, LocalBlob, ReclaimableCas};
 use std::num::NonZeroUsize;
 
-/// Whether some **durable** peer (one that never evicts a reachable blob) holds a
-/// blob. A permanent home lets a cache node drop even below `R`. The default
-/// [`NoDurableOracle`] answers "unknown" (`false`), degrading to the pure `≥ R` path.
+/// Whether some other node is known to hold a blob beyond the router's providers.
+/// The default [`NoDurableOracle`] answers "unknown" (`false`).
 pub trait DurabilityOracle: Send + Sync {
-    /// `true` iff a durable peer is known to hold `digest`.
+    /// `true` iff another holder is known to hold `digest`.
     ///
     /// # Errors
     ///
-    /// [`BackendError`] if durability cannot be determined (treated fail-safe by the
-    /// caller: uncertainty keeps the blob).
+    /// [`BackendError`] if holders cannot be determined (the caller treats the
+    /// blob as a sole copy).
     fn durably_held(&self, digest: &Digest) -> Result<bool, BackendError>;
 }
 
-/// The default oracle: never asserts durability, so eviction relies purely on the
-/// `≥ R` replica count.
+/// The default oracle: never asserts another holder.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoDurableOracle;
 
@@ -39,20 +35,18 @@ impl DurabilityOracle for NoDurableOracle {
     }
 }
 
-/// Pushes a blob outward until enough other holders exist, so an under-replicated
-/// last copy becomes safely evictable on a later pass. The default
-/// [`RefuseToReplicate`] is a no-op — the crucial fail-safe: with no replicator the
-/// blob is simply kept, never dropped.
+/// Pushes a blob outward before a sole copy is dropped. The default
+/// [`RefuseToReplicate`] is a no-op.
 pub trait Replicator: Send + Sync {
     /// Attempt to replicate `digest` to at least `target` other holders.
     ///
     /// # Errors
     ///
-    /// [`BackendError`] if replication cannot be initiated (the caller keeps the blob).
+    /// [`BackendError`] if replication cannot be initiated (ignored: best-effort).
     fn replicate(&self, digest: &Digest, target: NonZeroUsize) -> Result<(), BackendError>;
 }
 
-/// The default replicator: does nothing. Under-replicated blobs are kept (fail-safe).
+/// The default replicator: does nothing.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RefuseToReplicate;
 
@@ -62,40 +56,40 @@ impl Replicator for RefuseToReplicate {
     }
 }
 
-/// What one cache-eviction pass did.
+/// What one eviction pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvictReport {
-    /// Eviction candidates considered (cold, unpinned, unguarded, past grace).
+    /// Eviction candidates considered (unpinned, unguarded, past grace).
     pub scanned: usize,
-    /// Blobs evicted (dropped locally; still fetchable by digest from a peer).
+    /// Blobs evicted.
     pub evicted: usize,
+    /// Of those, sole copies (no other known holder) — dropped by design.
+    pub evicted_sole: usize,
     /// Bytes freed.
     pub bytes_evicted: u64,
-    /// Candidates kept because dropping them would risk the last reachable copy
-    /// (under-replicated, no durable home) — the fail-safe count.
-    pub kept_underreplicated: usize,
-    /// Whether the store is still above budget after the pass (only pinned or
-    /// under-replicated blobs remained).
+    /// Whether the store is still above budget after the pass (only pinned,
+    /// in-flight or fresh blobs remained).
     pub still_over_budget: bool,
 }
 
 impl<C: ReclaimableCas> CasStore<C> {
-    /// Evict cold, replicated, non-pinned blobs down toward the cache byte budget.
+    /// Evict the coldest blobs down to the LRU byte budget: replicated blobs first,
+    /// then sole copies.
     ///
     /// # Errors
     ///
-    /// [`BackendError::FeatureNotSupported`] in durable mode; other [`BackendError`]s
-    /// propagate from enumerating or reclaiming the local store. A router or oracle
-    /// error is **not** fatal — it is treated fail-safe (the candidate is kept).
+    /// [`BackendError::FeatureNotSupported`] in write-only mode; other
+    /// [`BackendError`]s propagate from enumerating or reclaiming the local store. A
+    /// router or oracle error is not fatal: the blob is treated as a sole copy.
     pub fn evict_to_budget(
         &self,
         roots: &dyn RootSource,
         oracle: &dyn DurabilityOracle,
         replicator: &dyn Replicator,
     ) -> Result<EvictReport, BackendError> {
-        let (budget, r, grace) = match &self.policy.mode {
-            StorageMode::Cache(p) => (p.byte_budget, p.replication_factor, p.gc_grace),
-            StorageMode::Durable(_) => {
+        let (budget, grace) = match &self.policy.mode {
+            StorageMode::Lru(p) => (p.byte_budget, p.gc_grace),
+            StorageMode::WriteOnly(_) => {
                 return Err(BackendError::FeatureNotSupported {
                     capability: "cache-eviction",
                 });
@@ -129,45 +123,41 @@ impl<C: ReclaimableCas> CasStore<C> {
         report.scanned = candidates.len();
         candidates.sort_by_key(|b| self.state().access.last_touch(&b.digest));
 
-        for LocalBlob { digest, size_bytes } in candidates {
-            if used <= budget {
-                break;
-            }
-            if self.is_safe_to_evict(&digest, r, oracle)? {
+        // Stable partition keeps coldest-first within each pass.
+        let (replicated, sole): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .partition(|b| self.has_other_holder(&b.digest, oracle));
+
+        for (blobs, is_sole) in [(replicated, false), (sole, true)] {
+            for LocalBlob { digest, size_bytes } in blobs {
+                if used <= budget {
+                    break;
+                }
+                if is_sole {
+                    let _ = replicator.replicate(&digest, NonZeroUsize::MIN); // best-effort
+                }
                 if self.inner.reclaim(&digest)? {
                     self.state().access.forget(&digest);
-                    let _ = self.router.withdraw(&digest); // de-advertise; it floated away
+                    let _ = self.router.withdraw(&digest); // de-advertise
                     used -= size_bytes;
                     report.evicted += 1;
+                    report.evicted_sole += usize::from(is_sole);
                     report.bytes_evicted += size_bytes;
                 }
-            } else {
-                // Last reachable copy (or unknown replication): keep it, and nudge it
-                // outward so a later pass can evict it. Fail-safe either way.
-                let _ = replicator.replicate(&digest, r);
-                report.kept_underreplicated += 1;
             }
         }
         report.still_over_budget = used > budget;
         Ok(report)
     }
 
-    /// A blob is safe to drop iff at least `r` **other** peers hold it, or a durable
-    /// peer does. Any uncertainty (router/oracle error) answers `false` — fail-safe.
-    fn is_safe_to_evict(
-        &self,
-        digest: &Digest,
-        r: NonZeroUsize,
-        oracle: &dyn DurabilityOracle,
-    ) -> Result<bool, BackendError> {
-        let others = match self.router.providers(digest) {
-            Ok(holders) => holders.iter().filter(|p| *p != &self.me).count(),
-            Err(_) => 0, // router error => assume no known replicas (keep the blob)
-        };
-        if others >= r.get() {
-            return Ok(true);
-        }
-        Ok(oracle.durably_held(digest).unwrap_or(false))
+    /// Another holder is known iff a router provider other than this node exists or
+    /// the oracle says so. Any error answers `false` (treated as a sole copy).
+    fn has_other_holder(&self, digest: &Digest, oracle: &dyn DurabilityOracle) -> bool {
+        let others = self
+            .router
+            .providers(digest)
+            .map_or(0, |h| h.iter().filter(|p| *p != &self.me).count());
+        others >= 1 || oracle.durably_held(digest).unwrap_or(false)
     }
 }
 
@@ -183,19 +173,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn r(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
-    fn cache_store(
-        me: &str,
-        router: Arc<dyn ContentRouter>,
-        budget: u64,
-        rf: usize,
-    ) -> CasStore<MemCas> {
+    fn lru_store(me: &str, router: Arc<dyn ContentRouter>, budget: u64) -> CasStore<MemCas> {
         CasStore::new(
             MemCas::new(),
-            RetentionPolicy::cache(budget, r(rf), Duration::from_secs(0)),
+            RetentionPolicy::lru(budget, Duration::from_secs(0)),
             router,
             Arc::new(MockClock::new()),
             PeerId::new(me),
@@ -209,11 +190,17 @@ mod tests {
         d
     }
 
+    fn evict(store: &CasStore<MemCas>, roots: &RootRegistry) -> EvictReport {
+        store
+            .evict_to_budget(roots, &NoDurableOracle, &RefuseToReplicate)
+            .unwrap()
+    }
+
     #[test]
-    fn eviction_is_rejected_in_durable_mode() {
+    fn eviction_is_rejected_in_write_only_mode() {
         let store = CasStore::new(
             MemCas::new(),
-            RetentionPolicy::durable(Duration::from_secs(0)),
+            RetentionPolicy::write_only(1024),
             Arc::new(MemRouter::new(PeerId::new("me"))),
             Arc::new(MockClock::new()),
             PeerId::new("me"),
@@ -227,129 +214,115 @@ mod tests {
 
     #[test]
     fn never_drops_pinned_even_at_zero_budget() {
-        let store = cache_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 0, 1);
+        let store = lru_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 0);
         let pinned = put_committed(&store, b"pinned-body");
         let roots = RootRegistry::new();
-        roots.register(pinned.clone()); // pinned class
-        let rep = store
-            .evict_to_budget(&roots, &NoDurableOracle, &RefuseToReplicate)
-            .unwrap();
+        roots.register(pinned.clone());
+        let rep = evict(&store, &roots);
         assert!(
             store.has(&pinned).unwrap(),
             "a pinned blob is never evicted"
         );
         assert_eq!(rep.evicted, 0);
-    }
-
-    #[test]
-    fn never_drops_the_last_copy() {
-        // Only self holds the blob (MemRouter, single node), R=1 => 0 others < 1.
-        let store = cache_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 0, 1);
-        let lonely = put_committed(&store, b"only-copy");
-        let rep = store
-            .evict_to_budget(&RootRegistry::new(), &NoDurableOracle, &RefuseToReplicate)
-            .unwrap();
-        assert!(
-            store.has(&lonely).unwrap(),
-            "the last copy is never dropped"
-        );
-        assert_eq!(rep.evicted, 0);
-        assert_eq!(rep.kept_underreplicated, 1);
         assert!(rep.still_over_budget);
     }
 
     #[test]
-    fn evicts_when_sufficiently_replicated() {
-        let swarm = MemSwarm::new();
-        let store = cache_store("me", Arc::new(swarm.node(PeerId::new("me"))), 0, 1);
-        let d = put_committed(&store, b"replicated");
-        // A peer also announces it: now 1 other holder >= R=1.
-        swarm.node(PeerId::new("peer")).announce(&d).unwrap();
-        let rep = store
-            .evict_to_budget(&RootRegistry::new(), &NoDurableOracle, &RefuseToReplicate)
+    fn never_drops_an_in_flight_write() {
+        let store = lru_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 0);
+        let d = store
+            .put(&mut Cursor::new(b"uncommitted".to_vec()))
             .unwrap();
+        let rep = evict(&store, &RootRegistry::new());
         assert!(
-            !store.has(&d).unwrap(),
-            "a replicated blob floats to the swarm"
+            store.has(&d).unwrap(),
+            "an in-flight write is never evicted"
         );
-        assert_eq!(rep.evicted, 1);
+        assert_eq!(rep.evicted, 0);
+        store.committed(&d);
+        assert_eq!(evict(&store, &RootRegistry::new()).evicted, 1);
     }
 
     #[test]
-    fn a_durable_oracle_permits_eviction_below_r() {
-        struct AlwaysDurable;
-        impl DurabilityOracle for AlwaysDurable {
+    fn a_sole_copy_is_evicted_over_budget_with_no_peers() {
+        // Single node, no peers: the cache drops its coldest sole copy, by design.
+        let store = lru_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 10);
+        let old = put_committed(&store, b"aaaaaaaaaa");
+        let new = put_committed(&store, b"bbbbbbbbbb");
+        let rep = evict(&store, &RootRegistry::new());
+        assert!(!store.has(&old).unwrap(), "coldest sole copy goes");
+        assert!(store.has(&new).unwrap());
+        assert_eq!((rep.evicted, rep.evicted_sole), (1, 1));
+        assert!(!rep.still_over_budget);
+    }
+
+    #[test]
+    fn replicated_blobs_go_before_colder_sole_copies() {
+        let swarm = MemSwarm::new();
+        let store = lru_store("me", Arc::new(swarm.node(PeerId::new("me"))), 10);
+        let cold_sole = put_committed(&store, b"aaaaaaaaaa"); // coldest, no other holder
+        let warm_repl = put_committed(&store, b"bbbbbbbbbb");
+        swarm
+            .node(PeerId::new("peer"))
+            .announce(&warm_repl)
+            .unwrap();
+        let rep = evict(&store, &RootRegistry::new());
+        assert!(
+            !store.has(&warm_repl).unwrap(),
+            "replicated blob evicted first"
+        );
+        assert!(
+            store.has(&cold_sole).unwrap(),
+            "sole copy survives while it can"
+        );
+        assert_eq!((rep.evicted, rep.evicted_sole), (1, 0));
+    }
+
+    #[test]
+    fn an_oracle_holder_counts_as_another_holder() {
+        struct Holds;
+        impl DurabilityOracle for Holds {
             fn durably_held(&self, _d: &Digest) -> Result<bool, BackendError> {
                 Ok(true)
             }
         }
-        // Single node, R=2, but the oracle says a durable node holds it.
-        let store = cache_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 0, 2);
-        let d = put_committed(&store, b"durably-backed");
+        let store = lru_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 0);
+        put_committed(&store, b"held-elsewhere");
         let rep = store
-            .evict_to_budget(&RootRegistry::new(), &AlwaysDurable, &RefuseToReplicate)
+            .evict_to_budget(&RootRegistry::new(), &Holds, &RefuseToReplicate)
             .unwrap();
-        assert!(!store.has(&d).unwrap());
-        assert_eq!(rep.evicted, 1);
+        assert_eq!((rep.evicted, rep.evicted_sole), (1, 0));
     }
 
     #[test]
     fn evicts_coldest_first_and_respects_budget() {
-        // Three ~equal blobs, budget fits two; the coldest (oldest touch) goes.
-        let swarm = MemSwarm::new();
-        let store = cache_store("me", Arc::new(swarm.node(PeerId::new("me"))), 24, 1);
+        let store = lru_store("me", Arc::new(MemRouter::new(PeerId::new("me"))), 24);
         let a = put_committed(&store, b"aaaaaaaaaa"); // 10 bytes each
         let b = put_committed(&store, b"bbbbbbbbbb");
         let c = put_committed(&store, b"cccccccccc");
-        // Replicate all so they are eligible.
-        for d in [&a, &b, &c] {
-            swarm.node(PeerId::new("peer")).announce(d).unwrap();
-        }
-        // Rewarm a and b (read) so c stays coldest.
-        let _ = store.get(&a).unwrap();
+        let _ = store.get(&a).unwrap(); // rewarm a and b so c is coldest
         let _ = store.get(&b).unwrap();
-        let rep = store
-            .evict_to_budget(&RootRegistry::new(), &NoDurableOracle, &RefuseToReplicate)
-            .unwrap();
+        let rep = evict(&store, &RootRegistry::new());
         assert!(!store.has(&c).unwrap(), "coldest evicted first");
         assert!(store.has(&a).unwrap() && store.has(&b).unwrap());
         assert!(!rep.still_over_budget);
     }
 
     #[test]
-    fn paired_safety_two_node_restore() {
-        // nuc1 durable holds the blob; nuc2 cache evicts it and re-fetches by digest.
-        let swarm = MemSwarm::new();
-        let durable = CasStore::new(
+    fn fresh_writes_inside_grace_survive() {
+        let clock = Arc::new(MockClock::new());
+        let store = CasStore::new(
             MemCas::new(),
-            RetentionPolicy::durable(Duration::from_secs(0)),
-            Arc::new(swarm.node(PeerId::new("nuc1"))),
-            Arc::new(MockClock::new()),
-            PeerId::new("nuc1"),
+            RetentionPolicy::lru(0, Duration::from_secs(60)),
+            Arc::new(MemRouter::new(PeerId::new("me"))),
+            clock.clone(),
+            PeerId::new("me"),
         )
         .expect("store");
-        let cache = cache_store("nuc2", Arc::new(swarm.node(PeerId::new("nuc2"))), 0, 1);
-
-        let bytes = b"shared-blob".to_vec();
-        let d = durable.put(&mut Cursor::new(bytes.clone())).unwrap();
-        durable.committed(&d);
-        let d2 = cache.put(&mut Cursor::new(bytes.clone())).unwrap();
-        cache.committed(&d2);
-        assert_eq!(d, d2);
-
-        // nuc2 evicts (nuc1 is a provider => >= R=1 other holder).
-        cache
-            .evict_to_budget(&RootRegistry::new(), &NoDurableOracle, &RefuseToReplicate)
-            .unwrap();
-        assert!(!cache.has(&d).unwrap(), "nuc2 dropped its copy");
-        assert!(durable.has(&d).unwrap(), "nuc1 still has it");
-        // The swarm still knows nuc1 holds it — a real client re-fetches from there.
-        assert!(
-            swarm
-                .node(PeerId::new("obs"))
-                .providers(&d)
-                .unwrap()
-                .contains(&PeerId::new("nuc1"))
-        );
+        let d = put_committed(&store, b"fresh");
+        assert_eq!(evict(&store, &RootRegistry::new()).evicted, 0);
+        clock.advance(Duration::from_secs(61));
+        assert_eq!(evict(&store, &RootRegistry::new()).evicted, 1);
+        assert!(!store.has(&d).unwrap());
     }
 }
