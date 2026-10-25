@@ -66,7 +66,7 @@ pub use attestation::{
 pub use attestation_set::{AcResolution, AttestationSet};
 pub use capabilities::Capabilities;
 pub use cas::{CasBackend, LocalBlob, ReclaimableCas};
-pub use digest::{Digest, DigestAlgo, DigestParseError};
+pub use digest::{Digest, DigestAlgo, DigestHasher, DigestParseError};
 pub use error::BackendError;
 pub use ids::{SnapshotUuid, VolumeUuid};
 pub use references::Referenced;
