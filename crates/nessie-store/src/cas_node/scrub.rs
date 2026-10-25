@@ -8,7 +8,7 @@
 
 use std::io::Cursor;
 
-use nessie_backend_core::{BackendError, CasBackend, LocalBlob};
+use nessie_backend_core::{BackendError, CasBackend, Digest, LocalBlob};
 use nessie_cas_store::StorageMode;
 
 use super::CasNode;
@@ -20,11 +20,18 @@ pub struct ScrubReport {
     pub scanned: usize,
     /// Blobs that no longer hash to their digest.
     pub corrupt: usize,
-    /// `write_only`: corrupt blobs refetched from a peer and put back.
+    /// `write_only`: blobs refetched from a peer and put back, whether found corrupt
+    /// this pass or left pending by an earlier one.
     pub restored: usize,
-    /// `write_only`: corrupt blobs left in quarantine (no peer had them, or the
-    /// capacity gate refused the restore).
+    /// `write_only`: corrupt blobs found this pass that could not be restored yet
+    /// (no peer had them, or the capacity gate refused).
     pub unrestored: usize,
+    /// `write_only`: quarantined files retained at the end of the pass. They stay
+    /// charged against capacity for good — corruption costs capacity.
+    pub quarantined_total: usize,
+    /// `write_only`: digests in quarantine with no live copy at the end of the
+    /// pass — damage still waiting for a peer or for room.
+    pub pending_restore: usize,
     /// `lru`: corrupt blobs dropped from the cache.
     pub reclaimed: usize,
     /// Mirrored `write_only`: blobs still short of R copies after the push.
@@ -40,13 +47,17 @@ impl CasNode {
     /// The cursor is the last digest scanned and lives in memory: a restart starts
     /// over from the beginning of the inventory. It wraps after the last blob.
     pub(super) fn scrub_pass(&self) -> anyhow::Result<ScrubReport> {
+        if self.scrub_budget == 0 {
+            return Ok(ScrubReport::default());
+        }
+        let mut report = ScrubReport::default();
+        self.retry_pending(&mut report)?;
         let mut blobs = self.store.local_blobs()?;
         blobs.sort_by_cached_key(|b| b.digest.to_string());
         let mut cursor = self.scrub_cursor.lock().expect("scrub cursor poisoned");
         let start = cursor.as_ref().map_or(0, |after| {
             blobs.partition_point(|b| b.digest.to_string() <= *after)
         });
-        let mut report = ScrubReport::default();
         let mut spent = 0u64;
         let mut next = start;
         while let Some(blob) = blobs.get(next) {
@@ -59,6 +70,7 @@ impl CasNode {
         }
         // Past the last blob: wrap. Otherwise resume after the last one visited.
         *cursor = (next > start && next < blobs.len()).then(|| blobs[next - 1].digest.to_string());
+        self.count_quarantine(&mut report)?;
         Ok(report)
     }
 
@@ -87,16 +99,23 @@ impl CasNode {
     /// Remove the corrupt copy; `true` if the blob is healthy and held again.
     fn take_out_corrupt(&self, blob: &LocalBlob, report: &mut ScrubReport) -> bool {
         let digest = &blob.digest;
-        let before = report.restored;
         let result = match &self.store.policy().mode {
             StorageMode::Lru(_) => self
                 .store
-                .reclaim_corrupt(digest, blob.size_bytes)
-                .map(|_| report.reclaimed += 1),
-            StorageMode::WriteOnly(_) => self.restore(blob).map(|()| report.restored += 1),
+                .reclaim_corrupt(digest)
+                .map(|_| report.reclaimed += 1)
+                .map(|()| false),
+            StorageMode::WriteOnly(_) => self
+                .store
+                .quarantine(digest)
+                .and_then(|_| self.restore(digest))
+                .map(|()| true),
         };
         match result {
-            Ok(()) => report.restored > before,
+            Ok(restored) => {
+                report.restored += usize::from(restored);
+                restored
+            }
             Err(e) => {
                 tracing::error!(%digest, %e, "scrub: corrupt blob left quarantined");
                 report.unrestored += 1;
@@ -105,15 +124,49 @@ impl CasNode {
         }
     }
 
-    /// `write_only`: quarantine, refetch (digest-verified) and put back through the
-    /// capacity gate. Any failure leaves the blob quarantined.
-    fn restore(&self, blob: &LocalBlob) -> Result<(), BackendError> {
-        let digest = &blob.digest;
-        self.store.quarantine(digest, blob.size_bytes)?;
+    /// `write_only`: refetch (digest-verified) and put back through the capacity
+    /// gate, which reserves new room — the quarantined copy stays charged. Any
+    /// failure leaves the blob quarantined.
+    fn restore(&self, digest: &Digest) -> Result<(), BackendError> {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut self.store.get(digest)?, &mut bytes)
             .map_err(|e| BackendError::Internal(format!("refetch {digest}: {e}")))?;
         self.put_keyed_local(digest, &mut Cursor::new(bytes))
+    }
+
+    /// `write_only`: every quarantined digest with no live copy is a restore that
+    /// failed earlier (peer down, no room); try again now.
+    fn retry_pending(&self, report: &mut ScrubReport) -> anyhow::Result<()> {
+        if !matches!(self.store.policy().mode, StorageMode::WriteOnly(_)) {
+            return Ok(());
+        }
+        for digest in self.pending_digests()? {
+            match self.restore(&digest) {
+                Ok(()) => report.restored += 1,
+                Err(e) => tracing::warn!(%digest, %e, "scrub: pending restore still failing"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Digests in quarantine that have no live copy, each once.
+    fn pending_digests(&self) -> anyhow::Result<Vec<Digest>> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for q in self.store.quarantined()? {
+            if seen.insert(q.digest.clone()) && !self.store.has(&q.digest)? {
+                out.push(q.digest);
+            }
+        }
+        Ok(out)
+    }
+
+    fn count_quarantine(&self, report: &mut ScrubReport) -> anyhow::Result<()> {
+        if matches!(self.store.policy().mode, StorageMode::WriteOnly(_)) {
+            report.quarantined_total = self.store.quarantined()?.len();
+            report.pending_restore = self.pending_digests()?.len();
+        }
+        Ok(())
     }
 
     /// Mirrored `write_only`: push the blob until R - 1 peers hold it.

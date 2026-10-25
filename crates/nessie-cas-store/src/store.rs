@@ -65,11 +65,17 @@ pub(crate) struct StoreState {
     /// PRIMARY, in-process race defense; `gc_grace` is the cross-restart backstop.
     pub(crate) in_flight: HashSet<Digest>,
     pub(crate) access: AccessLog,
-    /// Write-only: digests whose bytes are counted in `committed`. The source of
-    /// truth: a blob is counted iff it is in this set, so a duplicate never counts twice.
-    accounted: HashSet<Digest>,
-    /// Write-only: total bytes of `accounted` blobs. Changed only under the state lock.
-    committed: u64,
+    /// Write-only: digest → the bytes charged when it was admitted (or seeded at
+    /// startup). The source of truth: a blob is counted iff it is a key, so a
+    /// duplicate never counts twice, and a credit is this number — never the current
+    /// length of a file that may have been corrupted since.
+    pub(crate) accounted: HashMap<Digest, u64>,
+    /// Write-only: quarantine id → the file's real on-disk length. Quarantined bytes
+    /// are still retained, so they stay charged.
+    pub(crate) quarantined: HashMap<String, u64>,
+    /// Write-only: `accounted` plus `quarantined` bytes — every byte this node
+    /// retains. Changed only under the state lock.
+    pub(crate) committed: u64,
 }
 
 /// A retention-managed [`CasBackend`]: delegates the CAS contract to an inner
@@ -85,7 +91,7 @@ pub struct CasStore<C: ReclaimableCas> {
     pub(crate) state: Mutex<StoreState>,
     /// Write-only: lock-free mirror of `StoreState::committed`, written only while
     /// holding the state lock, so the gate can read it per chunk without locking.
-    committed: AtomicU64,
+    pub(crate) committed: AtomicU64,
     /// Write-only: bytes reserved by writers still streaming. Always returned by the
     /// writer's [`CapacityGate`] on drop (success, error or panic), never kept.
     pending: AtomicU64,
@@ -150,8 +156,12 @@ impl<C: ReclaimableCas> CasStore<C> {
         let now = clock.now();
         for blob in inner.iter_local()? {
             state.access.seed_written(&blob.digest, now);
-            state.accounted.insert(blob.digest);
+            state.accounted.insert(blob.digest, blob.size_bytes);
             state.committed += blob.size_bytes;
+        }
+        for q in inner.iter_quarantine()? {
+            state.committed += q.size_bytes;
+            state.quarantined.insert(q.id, q.size_bytes);
         }
         Ok(Self {
             inner,
@@ -192,19 +202,10 @@ impl<C: ReclaimableCas> CasStore<C> {
             return; // read nothing: the blob already existed (its publisher counts it) or is empty
         }
         let mut state = self.state();
-        if state.accounted.insert(digest.clone()) {
+        if let std::collections::hash_map::Entry::Vacant(v) = state.accounted.entry(digest.clone())
+        {
+            v.insert(size);
             state.committed += size;
-            self.committed.store(state.committed, Ordering::SeqCst);
-        }
-    }
-
-    /// Stop counting `digest`: its bytes left the store (quarantined or reclaimed), so
-    /// a restore is admitted by the capacity gate like any new write. Counted iff in
-    /// `accounted`, so removing a digest twice subtracts once.
-    pub(crate) fn unaccount(&self, digest: &Digest, size: u64) {
-        let mut state = self.state();
-        if state.accounted.remove(digest) {
-            state.committed = state.committed.saturating_sub(size);
             self.committed.store(state.committed, Ordering::SeqCst);
         }
     }

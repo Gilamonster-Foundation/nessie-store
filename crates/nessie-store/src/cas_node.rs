@@ -132,7 +132,7 @@ pub struct CasNode {
     /// `write_only` with `replication_factor > 1`: acknowledge a write only after
     /// the peers confirm.
     mirror: Option<Mirror>,
-    /// Bytes a scrub pass may verify before it stops (`u64::MAX`: no limit).
+    /// Bytes a scrub pass may verify before it stops (`0`: scrub off).
     scrub_budget: u64,
     /// The last digest the scrub verified; the next pass resumes after it. In memory,
     /// so a restart rescans from the start of the inventory.
@@ -217,7 +217,7 @@ impl CasNode {
             replicator,
             local,
             mirror,
-            scrub_budget: cfg.scrub_bytes_per_pass.unwrap_or(u64::MAX),
+            scrub_budget: cfg.scrub_bytes_per_pass,
             scrub_cursor: std::sync::Mutex::new(None),
         })
     }

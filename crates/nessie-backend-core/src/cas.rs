@@ -153,6 +153,18 @@ pub struct LocalBlob {
     pub size_bytes: u64,
 }
 
+/// A blob moved aside by [`ReclaimableCas::quarantine`]: retained on disk, never
+/// served, never part of [`ReclaimableCas::iter_local`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedBlob {
+    /// Unique among quarantined copies, including several of one digest.
+    pub id: String,
+    /// The digest the copy was stored under (its bytes may no longer hash to it).
+    pub digest: Digest,
+    /// The copy's actual length on disk.
+    pub size_bytes: u64,
+}
+
 /// A [`CasBackend`] whose **local replicas** can be enumerated and reclaimed — the
 /// extra capability durable GC and cache eviction both need.
 ///
@@ -195,15 +207,25 @@ pub trait ReclaimableCas: CasBackend {
     }
 
     /// Move the local copy of `digest` aside, to be neither served nor listed by
-    /// [`iter_local`](Self::iter_local), but **not deleted** — the evidence stays.
-    /// `Ok(false)` if it was not held. The default holds nothing aside and reports
-    /// `false`: a backend with no way to keep a bad copy never has one to move.
+    /// [`iter_local`](Self::iter_local), but **not deleted** — the evidence stays,
+    /// and an earlier quarantined copy of the same digest is never replaced.
+    /// `Ok(None)` if it was not held. The default holds nothing aside and reports
+    /// `None`: a backend with no way to keep a bad copy never has one to move.
     ///
     /// # Errors
     ///
     /// [`BackendError`] if the move fails for a reason other than absence.
-    fn quarantine(&self, _digest: &Digest) -> Result<bool, BackendError> {
-        Ok(false)
+    fn quarantine(&self, _digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
+        Ok(None)
+    }
+
+    /// Every quarantined copy, with its real on-disk size. A point-in-time snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the quarantine cannot be enumerated.
+    fn iter_quarantine(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        Ok(Vec::new())
     }
 }
 
@@ -258,7 +280,11 @@ impl<T: ReclaimableCas + ?Sized> ReclaimableCas for Box<T> {
         (**self).verify(digest)
     }
 
-    fn quarantine(&self, digest: &Digest) -> Result<bool, BackendError> {
+    fn quarantine(&self, digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
         (**self).quarantine(digest)
+    }
+
+    fn iter_quarantine(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        (**self).iter_quarantine()
     }
 }

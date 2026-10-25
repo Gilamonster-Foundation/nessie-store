@@ -2,8 +2,8 @@
 #![allow(dead_code)] // each test crate uses a different subset
 
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use nessie_backend_core::PeerId;
@@ -18,16 +18,34 @@ pub struct Daemon {
     thread: Option<JoinHandle<()>>,
 }
 
-pub fn reserve() -> (TcpListener, String) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    (listener, url)
+/// Ports handed out as "dead" URLs. The kernel recycles a dropped listener's port at
+/// once, so without this a parallel test's live node could land on another test's
+/// dead peer and answer it.
+static DEAD_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+
+fn bind_fresh(dead: bool) -> (TcpListener, String) {
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut dead_ports = DEAD_PORTS.lock().unwrap();
+        if dead_ports.contains(&addr.port()) {
+            continue;
+        }
+        if dead {
+            dead_ports.push(addr.port());
+        }
+        listener.set_nonblocking(true).unwrap();
+        return (listener, format!("http://{addr}"));
+    }
 }
 
-/// A URL nothing listens on.
+pub fn reserve() -> (TcpListener, String) {
+    bind_fresh(false)
+}
+
+/// A URL nothing listens on (until a test calls [`start_at`]).
 pub fn dead_url() -> String {
-    reserve().1
+    bind_fresh(true).1
 }
 
 impl Daemon {

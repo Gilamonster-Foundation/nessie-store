@@ -1,7 +1,10 @@
 //! What a scrub pass needs from the store: read-only verification that leaves LRU
-//! recency alone, and the two ways to take a corrupt blob out (keeping the books).
+//! recency alone, and the transitions that take a corrupt blob out while keeping the
+//! write-only books true.
 
-use nessie_backend_core::{BackendError, Digest, LocalBlob, ReclaimableCas};
+use std::sync::atomic::Ordering;
+
+use nessie_backend_core::{BackendError, Digest, LocalBlob, QuarantinedBlob, ReclaimableCas};
 
 use crate::CasStore;
 
@@ -15,6 +18,22 @@ impl<C: ReclaimableCas> CasStore<C> {
         self.inner.iter_local()
     }
 
+    /// Every quarantined copy still retained (live blobs are not listed).
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the quarantine cannot be enumerated.
+    pub fn quarantined(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        self.inner.iter_quarantine()
+    }
+
+    /// Bytes charged against `write_only` capacity: live blobs as admitted plus every
+    /// quarantined file at its real size. Meaningful in `write_only` only.
+    #[must_use]
+    pub fn committed_bytes(&self) -> u64 {
+        self.committed.load(Ordering::SeqCst)
+    }
+
     /// Does the local copy of `digest` still hash to it? Unlike a `get` this does not
     /// rewarm the blob, so a scrub never disturbs LRU order.
     ///
@@ -26,33 +45,47 @@ impl<C: ReclaimableCas> CasStore<C> {
         self.inner.verify(digest)
     }
 
-    /// Move a corrupt blob aside (never deleted) and stop counting its `size` bytes
-    /// against capacity, so restoring it is admitted like a new write. `Ok(false)`
-    /// if it was not held.
+    /// Move a corrupt blob aside (never deleted, never overwriting an earlier
+    /// quarantined copy). In one step under the state lock it credits the size the
+    /// blob was *charged* and debits the quarantine file's real size, so the bytes
+    /// stay counted; that can leave the node over capacity, which only refuses new
+    /// writes. `Ok(None)` if it was not held.
     ///
     /// # Errors
     ///
     /// As [`ReclaimableCas::quarantine`].
-    pub fn quarantine(&self, digest: &Digest, size: u64) -> Result<bool, BackendError> {
-        self.release(self.inner.quarantine(digest)?, digest, size)
+    pub fn quarantine(&self, digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
+        let mut state = self.state();
+        let Some(q) = self.inner.quarantine(digest)? else {
+            return Ok(None);
+        };
+        let credit = state.accounted.remove(digest).unwrap_or(0);
+        state.committed = state.committed.saturating_sub(credit) + q.size_bytes;
+        state.quarantined.insert(q.id.clone(), q.size_bytes);
+        self.committed.store(state.committed, Ordering::SeqCst);
+        state.access.forget(digest);
+        drop(state);
+        let _ = self.router.withdraw(digest); // de-advertise, best effort
+        Ok(Some(q))
     }
 
-    /// Drop a corrupt blob from a cache — it is refetched on the next read.
-    /// `Ok(false)` if it was not held.
+    /// Drop a corrupt blob from a cache — it is refetched on the next read. Credits
+    /// what was charged. `Ok(false)` if it was not held.
     ///
     /// # Errors
     ///
     /// As [`ReclaimableCas::reclaim`].
-    pub fn reclaim_corrupt(&self, digest: &Digest, size: u64) -> Result<bool, BackendError> {
-        self.release(self.inner.reclaim(digest)?, digest, size)
-    }
-
-    fn release(&self, gone: bool, digest: &Digest, size: u64) -> Result<bool, BackendError> {
-        if gone {
-            self.unaccount(digest, size);
-            self.state().access.forget(digest);
-            let _ = self.router.withdraw(digest); // de-advertise, best effort
+    pub fn reclaim_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
+        let mut state = self.state();
+        if !self.inner.reclaim(digest)? {
+            return Ok(false);
         }
-        Ok(gone)
+        let credit = state.accounted.remove(digest).unwrap_or(0);
+        state.committed = state.committed.saturating_sub(credit);
+        self.committed.store(state.committed, Ordering::SeqCst);
+        state.access.forget(digest);
+        drop(state);
+        let _ = self.router.withdraw(digest);
+        Ok(true)
     }
 }

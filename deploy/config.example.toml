@@ -66,13 +66,16 @@ nfs_export_name = ""
 #   fails (S3 503 / REAPI UNAVAILABLE) and the local copy stays for repair. R = 1 is a
 #   single-node archive with no redundancy. Startup refuses R-1 > durable peers.
 #   replication_factor = 2
-# scrub_bytes_per_pass (both modes; unset = verify everything every pass): bytes a
-#   maintenance pass re-reads to check blobs against their digests, resuming where the
-#   last pass stopped (the position is in memory: a restart rescans from the start).
-#   A corrupt blob is reclaimed under lru (a later read refetches it) and moved to
-#   <path>/quarantine/ under write_only, then restored from a peer. A mirrored
-#   write_only node also pushes each scanned blob back up to R copies.
-#   scrub_bytes_per_pass = 10737418240
+# scrub_bytes_per_pass (both modes; default 1073741824 = 1 GiB, 0 = scrub off): bytes
+#   a maintenance pass re-reads to check blobs against their digests, resuming where
+#   the last pass stopped (the position is in memory: a restart rescans from the
+#   start). Set it very high to verify everything every pass. A corrupt blob is
+#   reclaimed under lru (a later read refetches it). Under write_only it is moved to
+#   <path>/quarantine/ and restored from a peer; the quarantined file is kept and
+#   stays charged against byte_budget, so corruption costs capacity. A failed restore
+#   is retried every pass. A mirrored write_only node also pushes each scanned blob
+#   back up to R copies.
+#   scrub_bytes_per_pass = 1073741824
 # `byte_budget` is required in both modes. The old mode = "durable" is gone: it is
 # now a config parse error.
 [cas]

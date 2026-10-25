@@ -19,12 +19,15 @@ the machine-checked list of what exists.
   copy stays). R = 1 is a single-node archive. A maintenance pass finishes a
   short write: it pushes each scanned blob back up to R copies.
 - **Scrub.** Each pass re-reads up to `scrub_bytes_per_pass` bytes of blobs
-  (unset: all of them) and resumes where the last stopped; the position is in
-  memory, so a restart rescans from the start. A corrupt blob is reclaimed under
-  `lru` and refetched on the next read; under `write_only` it is moved to
-  `<path>/quarantine/` (never deleted), refetched from a peer and restored through
-  the capacity gate. With no peer holding it, or no room, it stays quarantined
-  and is counted in the pass report. Pins persist across restart only after #137.
+  (default 1 GiB, `0` = off) and resumes where the last stopped; the position is
+  in memory, so a restart rescans from the start. A corrupt blob is reclaimed
+  under `lru` and refetched on the next read. Under `write_only` it is moved to
+  `<path>/quarantine/` (never deleted or overwritten), refetched from a peer and
+  restored through the capacity gate. Quarantined files stay charged against
+  `byte_budget` at their real size, across restarts and after a restore, so
+  corruption costs capacity. A restore that failed (no peer, no room) is retried
+  every pass and counted as `pending_restore`. Pins persist across restart only
+  after #137.
 - **Auth is lab-only.** S3 uses one static SigV4 key; the daemon refuses to
   start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI is
   unauthenticated and off by default. mTLS is not built.
