@@ -1,0 +1,20 @@
+[package]
+name = "nessie-cas-peer"
+description = "Static-peer swarm for nessie-store's CAS: HTTP fetch-through, durability oracle and replicator."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+nessie-cas-store = { path = "../nessie-cas-store", version = "0.3.1" }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
+axum = { workspace = true }
+tokio = { workspace = true }
