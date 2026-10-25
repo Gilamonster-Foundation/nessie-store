@@ -7,6 +7,7 @@ All notable changes to nessie-store are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **S3 face accepts flat `{prefix}{sha256}` keys** (kyln's layout, no `cas/{xx}/` shard): a final segment of exactly 64 lowercase hex maps to the same digest as the sharded form; `ac/`, `raw/` and `cas.v2/` unchanged.
 - **S3 object-API face over the CAS (`nessie-s3`).** A second protocol face beside
   the REAPI one, over the *same* content-addressed store: a blob written over REAPI
   gRPC is the blob an S3 client reads, because both name it by the same digest.
