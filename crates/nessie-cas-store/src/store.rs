@@ -181,17 +181,19 @@ impl<C: ReclaimableCas> CasStore<C> {
         self.state.lock().expect("cas store mutex poisoned")
     }
 
-    /// Count `digest`'s bytes as committed, once. Called after the backend holds the
-    /// blob and *before* the writer's gate returns its `pending`, so the bytes are
-    /// never uncounted in between (a transient double count only ever refuses).
-    fn account(&self, digest: &Digest) {
-        let mut state = self.state();
-        if state.accounted.contains(digest) {
-            return;
+    /// Count `digest`'s `size` bytes as committed, once. `size` is the gate's own
+    /// byte count, which `put_keyed` verified against the digest, so the backend is
+    /// never asked (a failing lookup could otherwise leave stored bytes uncounted).
+    /// Called after the backend holds the blob and *before* the writer's gate returns
+    /// its `pending`, so the bytes are never uncounted in between (a transient double
+    /// count only ever refuses).
+    fn account(&self, digest: &Digest, size: u64) {
+        if size == 0 {
+            return; // read nothing: the blob already existed (its publisher counts it) or is empty
         }
-        if let Ok(Some(n)) = self.inner.size(digest) {
-            state.accounted.insert(digest.clone());
-            state.committed += n;
+        let mut state = self.state();
+        if state.accounted.insert(digest.clone()) {
+            state.committed += size;
             self.committed.store(state.committed, Ordering::SeqCst);
         }
     }
@@ -205,9 +207,9 @@ impl<C: ReclaimableCas> CasStore<C> {
         source: &mut dyn Read,
     ) -> Result<(), BackendError> {
         if self.inner.has(expected).unwrap_or(false) {
-            self.inner.put_keyed(expected, source)?;
-            self.account(expected);
-            return Ok(());
+            // Already held: its bytes were counted at construction or are held
+            // pending by the writer that published them. Add nothing, remove nothing.
+            return self.inner.put_keyed(expected, source);
         }
         let mut gate = CapacityGate {
             src: source,
@@ -226,7 +228,7 @@ impl<C: ReclaimableCas> CasStore<C> {
             });
         }
         out?;
-        self.account(expected); // committed rises first; `gate` drops after
+        self.account(expected, gate.mine); // committed rises first; `gate` drops after
         Ok(())
     }
 
@@ -596,6 +598,7 @@ mod tests {
         first: std::sync::atomic::AtomicBool,
         arrived: Arc<std::sync::Barrier>,
         release: Arc<std::sync::Barrier>,
+        size_fails: std::sync::atomic::AtomicBool,
     }
     impl CasBackend for Pausing {
         fn has(&self, d: &Digest) -> Result<bool, BackendError> {
@@ -616,6 +619,9 @@ mod tests {
             Ok(())
         }
         fn size(&self, d: &Digest) -> Result<Option<u64>, BackendError> {
+            if self.size_fails.load(Ordering::SeqCst) {
+                return Err(BackendError::Internal("stat failed".into()));
+            }
             self.inner.size(d)
         }
     }
@@ -641,6 +647,7 @@ mod tests {
                 first: std::sync::atomic::AtomicBool::new(true),
                 arrived: arrived.clone(),
                 release: release.clone(),
+                size_fails: std::sync::atomic::AtomicBool::new(false),
             },
             RetentionPolicy::write_only(10),
             Arc::new(MemRouter::new(PeerId::new("me"))),
@@ -694,5 +701,71 @@ mod tests {
             .put_keyed(&d, &mut Cursor::new(b"0123456789".to_vec()))
             .expect("a full-capacity write still fits");
         assert_eq!(stored_bytes(&store), 10);
+    }
+
+    fn pausing(
+        first: bool,
+        size_fails: bool,
+    ) -> (
+        CasStore<Pausing>,
+        Arc<std::sync::Barrier>,
+        Arc<std::sync::Barrier>,
+    ) {
+        let arrived = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let store = CasStore::new(
+            Pausing {
+                inner: MemCas::new(),
+                first: std::sync::atomic::AtomicBool::new(first),
+                arrived: arrived.clone(),
+                release: release.clone(),
+                size_fails: std::sync::atomic::AtomicBool::new(size_fails),
+            },
+            RetentionPolicy::write_only(10),
+            Arc::new(MemRouter::new(PeerId::new("me"))),
+            Arc::new(MockClock::new()),
+            PeerId::new("me"),
+        )
+        .expect("store");
+        (store, arrived, release)
+    }
+
+    /// Regression (PR #142 round 4 P1): accounting must not depend on a fallible
+    /// `size()` lookup. The write succeeds while `size()` errors; its bytes still count.
+    #[test]
+    fn write_only_counts_a_write_even_when_size_lookup_fails() {
+        let (store, _, _) = pausing(false, true);
+        let a = b"aaaaaa";
+        store
+            .put_keyed(&Digest::compute(a), &mut Cursor::new(a.to_vec()))
+            .unwrap();
+        assert_eq!(store.committed.load(Ordering::SeqCst), 6);
+        assert_eq!(store.pending.load(Ordering::SeqCst), 0);
+        let b = b"bbbbbb";
+        assert!(cap_err(
+            store.put_keyed(&Digest::compute(b), &mut Cursor::new(b.to_vec()))
+        ));
+    }
+
+    /// Same-digest schedule with `size()` failing throughout.
+    #[test]
+    fn write_only_same_digest_race_survives_size_failure() {
+        let (store, arrived, release) = pausing(true, true);
+        let a = b"aaaaaa";
+        let da = Digest::compute(a);
+        std::thread::scope(|sc| {
+            let (store, da) = (&store, &da);
+            let ha = sc.spawn(move || store.put_keyed(da, &mut Cursor::new(a.to_vec())));
+            arrived.wait();
+            store.put_keyed(da, &mut Cursor::new(a.to_vec())).unwrap(); // fast path
+            release.wait();
+            ha.join().unwrap().unwrap();
+        });
+        assert_eq!(store.committed.load(Ordering::SeqCst), 6);
+        assert_eq!(store.pending.load(Ordering::SeqCst), 0);
+        let b = b"bbbbbb";
+        assert!(cap_err(
+            store.put_keyed(&Digest::compute(b), &mut Cursor::new(b.to_vec()))
+        ));
     }
 }
