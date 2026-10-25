@@ -175,3 +175,114 @@ fn replication_factor_is_rejected_in_lru() {
         .expect("lru + replication_factor must fail");
     assert!(err.to_string().contains("replication_factor"), "{err}");
 }
+
+/// Bring a node up on the address a dead URL named, so "the peer comes back".
+fn start_at(url: &str, cfg: &CasConfig) -> Daemon {
+    let addr = url.trim_start_matches("http://");
+    let listener = TcpListener::bind(addr).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    Daemon::serve(listener, url.to_owned(), cfg)
+}
+
+fn faces_cfg(cas: CasConfig) -> nessie_store::config::Config {
+    nessie_store::config::Config {
+        s3: Some(nessie_store::config::S3ServerConfig {
+            enabled: true,
+            secret_key: "not-the-default".to_owned(),
+            ..Default::default()
+        }),
+        cas: Some(cas),
+        ..Default::default()
+    }
+}
+
+/// #145 review: the startup probe must not wait on peers, or two mirrored nodes
+/// with no listener up yet could never start.
+#[test]
+fn a_cold_mirrored_cluster_builds_its_faces() {
+    for _ in 0..2 {
+        let cfg = faces_cfg(wo(2, &[&dead_url()]));
+        nessie_store::faces::build_faces(&cfg).expect("probe is local-only");
+    }
+}
+
+/// #145 review: a retry's ByteStream status re-pushes via `ensure_replicated`.
+#[test]
+fn ensure_replicated_repushes_once_the_peer_is_back() {
+    let peer_url = dead_url();
+    let a = Daemon::start(&wo(2, &[&peer_url]));
+    let d = Digest::compute(b"late peer");
+    assert_eq!(underreplicated(a.node.put(&mut &b"late peer"[..])), (0, 1));
+    assert!(a.node.ensure_replicated(&d).is_err());
+    let peer = start_at(&peer_url, &wo(1, &[]));
+    a.node.ensure_replicated(&d).unwrap();
+    assert!(peer.node.has(&d).unwrap());
+    // not held here at all: nothing to replicate
+    assert!(matches!(
+        a.node.ensure_replicated(&Digest::compute(b"absent")),
+        Err(BackendError::BlobNotFound(_))
+    ));
+}
+
+/// The real S3 face over the shared backend `build_faces` wires.
+mod s3 {
+    use super::*;
+    use nessie_backend_core::DigestAlgo;
+    use s3s::S3;
+    use s3s::S3Request;
+    use s3s::dto::{PutObjectInput, StreamingBlob};
+
+    const BLOB: &[u8] = b"mirrored through the S3 face";
+
+    fn req<T>(input: T) -> S3Request<T> {
+        S3Request {
+            input,
+            method: http::Method::GET,
+            uri: http::Uri::from_static("/"),
+            headers: http::HeaderMap::new(),
+            extensions: http::Extensions::new(),
+            credentials: None,
+            region: None,
+            service: None,
+            trailing_headers: None,
+        }
+    }
+
+    async fn put(face: &nessie_s3::NessieS3) -> Result<(), s3s::S3Error> {
+        let d = Digest::compute_with(DigestAlgo::Sha256, BLOB).to_string();
+        let hash = d.rsplit_once(':').unwrap().1.to_owned();
+        let body = bytes::Bytes::from_static(BLOB);
+        face.put_object(req(PutObjectInput {
+            bucket: "cache".to_owned(),
+            key: format!("cas/{}/{hash}", &hash[..2]),
+            body: Some(StreamingBlob::wrap(futures::stream::once(async move {
+                Ok::<_, std::io::Error>(body)
+            }))),
+            ..Default::default()
+        }))
+        .await
+        .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn s3_put_is_acked_only_after_the_peer_holds_it_and_retries_recover() {
+        let digest = Digest::compute_with(DigestAlgo::Sha256, BLOB);
+        let peer_url = dead_url();
+
+        let cfg = faces_cfg(wo(2, &[&peer_url]));
+        let faces = nessie_store::faces::build_faces(&cfg).unwrap();
+        let node = faces.node.clone().unwrap();
+        let (backend, _signer) = faces.backend.unwrap();
+        let face = nessie_s3::NessieS3::new(backend);
+
+        // Peer down: 503, local copy retained.
+        let err = put(&face).await.unwrap_err();
+        assert_eq!(err.status_code().map(|s| s.as_u16()), Some(503));
+        assert!(node.has(&digest).unwrap(), "local copy kept");
+
+        // Peer up: the same PUT is acknowledged, and the peer holds the blob.
+        let peer = start_at(&peer_url, &wo(1, &[]));
+        put(&face).await.expect("retry succeeds");
+        assert!(peer.node.has(&digest).unwrap(), "peer holds it at ack time");
+    }
+}

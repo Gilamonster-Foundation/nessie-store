@@ -21,7 +21,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use nessie_backend_core::{BackendError, CasBackend, Digest};
+use nessie_backend_core::{BackendError, Digest};
 
 use crate::cas_node::CasNode;
 

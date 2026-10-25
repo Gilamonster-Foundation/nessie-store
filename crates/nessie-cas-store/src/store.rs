@@ -266,6 +266,10 @@ impl<C: ReclaimableCas> CasBackend for CasStore<C> {
         self.inner.has(digest)
     }
 
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        self.inner.ensure_replicated(digest)
+    }
+
     fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
         let reader = self.inner.get(digest)?;
         self.state().access.touch(digest); // a read rewarms the blob (LRU)

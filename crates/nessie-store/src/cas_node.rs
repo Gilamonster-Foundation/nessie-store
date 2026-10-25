@@ -315,6 +315,18 @@ impl CasBackend for CasNode {
         self.mirror(expected)
     }
 
+    /// `write_only` mirror: the blob must be held here, then `R - 1` peers must hold
+    /// it too (re-pushing if they do not). A no-op without a mirror.
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        if self.mirror.is_none() {
+            return Ok(());
+        }
+        if !self.store.has(digest)? {
+            return Err(BackendError::BlobNotFound(digest.clone()));
+        }
+        self.mirror(digest)
+    }
+
     fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
         self.store.size(digest)
     }
