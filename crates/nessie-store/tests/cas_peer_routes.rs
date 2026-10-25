@@ -116,3 +116,81 @@ async fn head_and_get_report_the_serving_nodes_mode() {
         }
     }
 }
+
+/// An lru node with no budget and no grace: one maintenance pass evicts anything unpinned.
+async fn serve_lru_over_budget() -> (String, Arc<CasNode>) {
+    use nessie_store::config::CasMode;
+    let cfg = CasConfig {
+        mode: CasMode::Lru,
+        byte_budget: Some(0),
+        gc_grace_secs: 0,
+        ..CasConfig::default()
+    };
+    let node = Arc::new(CasNode::from_config(&cfg, PeerId::new("n")).unwrap());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/cas/v1", l.local_addr().unwrap());
+    let app = peer_routes(node.clone());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    (base, node)
+}
+
+#[tokio::test]
+async fn pinned_blob_survives_eviction_until_unpinned() {
+    let (base, node) = serve_lru_over_budget().await;
+    let c = reqwest::Client::new();
+    let d = Digest::compute(b"offload manifest");
+    node.put_keyed(&d, &mut &b"offload manifest"[..]).unwrap();
+
+    assert_eq!(
+        c.post(format!("{base}/roots/{d}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        201
+    );
+    node.maintain_once().unwrap();
+    assert!(node.has(&d).unwrap(), "a pinned blob is never evicted");
+
+    // Unpin is idempotent.
+    for _ in 0..2 {
+        assert_eq!(
+            c.delete(format!("{base}/roots/{d}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            204
+        );
+    }
+    node.maintain_once().unwrap();
+    assert!(!node.has(&d).unwrap(), "evicted on the pass after unpin");
+}
+
+#[tokio::test]
+async fn pinning_an_unheld_digest_is_accepted_and_malformed_is_400() {
+    let (base, node) = serve_lru_over_budget().await;
+    let c = reqwest::Client::new();
+    let d = Digest::compute(b"arrives later");
+    assert_eq!(
+        c.post(format!("{base}/roots/{d}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        201
+    );
+    node.put_keyed(&d, &mut &b"arrives later"[..]).unwrap();
+    node.maintain_once().unwrap();
+    assert!(
+        node.has(&d).unwrap(),
+        "the early pin protects the late blob"
+    );
+
+    for r in [
+        c.post(format!("{base}/roots/nope")).send().await.unwrap(),
+        c.delete(format!("{base}/roots/nope")).send().await.unwrap(),
+    ] {
+        assert_eq!(r.status(), 400);
+    }
+}

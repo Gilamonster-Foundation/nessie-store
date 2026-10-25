@@ -1,8 +1,14 @@
-//! The peer wire: `GET|HEAD|PUT /cas/v1/blobs/{digest}` over the node's store.
+//! The peer wire: `GET|HEAD|PUT /cas/v1/blobs/{digest}` over the node's store, and
+//! `POST|DELETE /cas/v1/roots/{digest}` to pin / unpin a root.
 //!
 //! The digest segment is the `algo:hex` text form (`blake3:ab12…`), colon
 //! unescaped; a percent-encoded colon decodes to the same thing. Mounted by the
 //! daemon only when `[cas] peer_api = true`.
+//!
+//! A pin keeps a blob out of `lru` eviction; under `write_only` nothing is evicted, so
+//! a pin is accepted and changes nothing. Pinning a digest this node does not hold is
+//! allowed (201): the pin protects the blob when it arrives. Pins live in memory and
+//! are lost on restart until roots persist (#137).
 //!
 //! **Lab only: unauthenticated; mTLS is the fast-follow.** Integrity does not rest
 //! on the wire — `get` and `put_keyed` verify every byte against the digest.
@@ -14,8 +20,8 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
-use axum::routing::get;
-use nessie_backend_core::{BackendError, Digest};
+use axum::routing::{get, post};
+use nessie_backend_core::{BackendError, CasBackend, Digest};
 
 use crate::cas_node::CasNode;
 
@@ -30,6 +36,7 @@ pub fn peer_routes(node: Arc<CasNode>) -> Router {
             "/cas/v1/blobs/:digest",
             get(get_blob).head(head_blob).put(put_blob),
         )
+        .route("/cas/v1/roots/:digest", post(pin_root).delete(unpin_root))
         .layer(DefaultBodyLimit::max(MAX_BLOB))
         .with_state(node)
 }
@@ -103,6 +110,27 @@ async fn put_blob(
     };
     match blocking(move || node.put_keyed_local(&digest, &mut Cursor::new(body))).await {
         Ok(()) => StatusCode::CREATED,
+        Err(s) => s,
+    }
+}
+
+async fn pin_root(State(node): State<Arc<CasNode>>, Path(d): Path<String>) -> StatusCode {
+    match parse(&d) {
+        Ok(digest) => {
+            node.roots().register(digest);
+            StatusCode::CREATED
+        }
+        Err(s) => s,
+    }
+}
+
+/// Idempotent: unpinning a digest that was never pinned is still 204.
+async fn unpin_root(State(node): State<Arc<CasNode>>, Path(d): Path<String>) -> StatusCode {
+    match parse(&d) {
+        Ok(digest) => {
+            node.roots().unregister(&digest);
+            StatusCode::NO_CONTENT
+        }
         Err(s) => s,
     }
 }
