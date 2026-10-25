@@ -82,6 +82,41 @@ impl Default for ReapiServerConfig {
     }
 }
 
+/// Optional S3 object-API face over the same content-addressed store the REAPI
+/// face serves. Absent = the daemon serves no S3.
+///
+/// Serves digest-keyed object keys (`{prefix}/cas/{xx}/{sha256-hex}`) — the layout
+/// cache clients like bazel-remote's S3 backend use. Because both faces are wired to
+/// **one** backend, a blob written over REAPI gRPC is readable over S3 and vice
+/// versa; that sharing is the point, not a coincidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct S3ServerConfig {
+    /// Serve the S3 face. `false` = present-but-off (the config can be staged).
+    pub enabled: bool,
+    /// Address the S3 HTTP server binds (distinct from the ONTAP `listen` and the
+    /// REAPI `listen`). 9000 is the de-facto S3-compatible port.
+    pub listen: SocketAddr,
+    /// SigV4 access key id clients authenticate with.
+    pub access_key: String,
+    /// SigV4 secret key. Override via `NESSIE_S3_SECRET_KEY`; like
+    /// `admin_password`, a real deployment keeps this out of the TOML.
+    pub secret_key: String,
+}
+
+impl Default for S3ServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: "0.0.0.0:9000"
+                .parse()
+                .expect("valid default s3 listen addr"),
+            access_key: "nessie".to_string(),
+            secret_key: "nessie".to_string(),
+        }
+    }
+}
+
 /// Which storage substrate the daemon dispatches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -145,6 +180,10 @@ pub struct Config {
     /// Optional REAPI (Bazel remote cache) gRPC face. Absent = no REAPI server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reapi: Option<ReapiServerConfig>,
+
+    /// Optional S3 object-API face over the same CAS. Absent = no S3 server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3: Option<S3ServerConfig>,
 }
 
 impl Default for Config {
@@ -170,6 +209,7 @@ impl Default for Config {
             nfs_export_name: String::new(),
             cas: None,
             reapi: None,
+            s3: None,
         }
     }
 }
@@ -193,6 +233,14 @@ impl Config {
     pub fn apply_env(&mut self) {
         if let Ok(pw) = std::env::var("NESSIE_ADMIN_PASSWORD") {
             self.admin_password = pw;
+        }
+        if let Some(s3) = self.s3.as_mut() {
+            if let Ok(ak) = std::env::var("NESSIE_S3_ACCESS_KEY") {
+                s3.access_key = ak;
+            }
+            if let Ok(sk) = std::env::var("NESSIE_S3_SECRET_KEY") {
+                s3.secret_key = sk;
+            }
         }
     }
 
@@ -273,6 +321,34 @@ mod tests {
         assert_eq!(cas.mode, CasMode::Durable);
         assert_eq!(cas.gc_grace_secs, 300);
         assert_eq!(cas.byte_budget, None);
+    }
+
+    #[test]
+    fn s3_face_is_absent_by_default_and_parses_when_present() {
+        let def = Config::default();
+        assert!(def.s3.is_none());
+        assert!(!def.to_toml().contains("[s3]"));
+
+        let cfg: Config = toml::from_str(
+            "[s3]\nenabled = true\nlisten = \"0.0.0.0:9100\"\naccess_key = \"ci\"\nsecret_key = \"shh\"\n",
+        )
+        .expect("parse");
+        let sc = cfg.s3.expect("s3 present");
+        assert!(sc.enabled);
+        assert_eq!(sc.listen.port(), 9100);
+        assert_eq!(sc.access_key, "ci");
+        assert_eq!(sc.secret_key, "shh");
+    }
+
+    #[test]
+    fn s3_face_can_be_staged_present_but_off() {
+        // A staged block parses with defaults and stays OFF, so a config can carry
+        // the section before the operator flips it on.
+        let staged: Config = toml::from_str("[s3]\naccess_key = \"ci\"\n").expect("parse");
+        let sc = staged.s3.expect("s3 present");
+        assert!(!sc.enabled, "present-but-off is the default");
+        assert_eq!(sc.listen.port(), 9000);
+        assert_eq!(sc.access_key, "ci");
     }
 
     #[test]

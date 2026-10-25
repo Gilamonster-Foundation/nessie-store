@@ -24,6 +24,16 @@ All notable changes to nessie-store are documented here. The format follows
   a misconfigured client degrades to a cold cache rather than failing builds.
   Listing and mutable names — what a general-purpose S3 client needs — are not in
   this slice. Daemon wiring (`[s3]`) follows separately.
+- **S3 face daemon wiring (`[s3]`).** The S3 object API is now servable: an `[s3]`
+  config block (absent = off, present-but-`enabled = false` = staged) binds an
+  `S3Service` as an axum fallback beside the ONTAP control plane, the way `[reapi]`
+  spawns tonic. SigV4 credentials come from `access_key`/`secret_key`, overridable
+  via `NESSIE_S3_ACCESS_KEY` / `NESSIE_S3_SECRET_KEY` so secrets stay out of the
+  TOML (same rule as `admin_password`). **Both cache faces now share one backend**,
+  built once in a new `faces` module: a blob written over REAPI gRPC is readable
+  over S3 and vice versa, which is asserted directly rather than left to documentation
+  — the previous wiring built a store per face, which would have quietly broken the
+  property with every unit test still green.
 - **SnapMirror live data plane (#69).** Cross-instance replication now moves real
   bytes. A new `ReplicationBackend` capability tier (`send_stream` / `receive_stream`,
   reached via `SnapshotBackend::as_replication`) is implemented by the `mem` and
