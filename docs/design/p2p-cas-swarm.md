@@ -403,6 +403,10 @@ merge each slice on green, in dependency order).
 | REAPI daemon wiring | `[reapi]` config + `build_router` seam + tonic server spawned beside axum in `serve()`; SHA-256-native self-attesting in-mem cache; startup `put_keyed` probe | ✅ #110 |
 | S3 face crate | `nessie-s3`: `PutObject`/`GetObject`/`HeadObject` over `s3s`; key *is* the digest; refuses framed `cas.v2` and non-content-addressed `ac`/`raw` | ✅ #118 |
 | S3 daemon wiring | `[s3]` config + `faces` module: **one** CAS backend shared by both faces, S3 mounted as an axum fallback beside the ONTAP surface | ✅ #119 |
+| Disk store | `nessie-cas-disk`: persistent `ReclaimableCas`, git-loose-object layout, temp + rename commit; restart-safe grace window in `CasStore::new` | ✅ #134, #132 |
+| Shared faces store | `[cas] backend = mem\|disk`; REAPI, S3 and maintenance share one `CasNode` store (`faces::build_faces`) | ✅ #136, #133 |
+| Flat S3 keys | `{prefix}{sha256}` accepted beside `cas/{xx}/{hex}` | ✅ #135 |
+| Persistent roots | durable GC on face-backed stores (today: retain-all, sweep disabled) | ⏳ #137 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
 

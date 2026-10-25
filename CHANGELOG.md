@@ -7,6 +7,10 @@ All notable changes to nessie-store are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`nessie-cas-disk`: a persistent `ReclaimableCas`.** Git-loose-object layout
+  (digest-fanned files); a blob is written to a temp file and renamed into place before
+  it is visible, temp files are swept on open, and reads are verified. Select it with
+  `[cas] backend = "disk"`.
 - **`[cas] backend = "mem"|"disk"` + `path`; one store behind both faces.** `CasNode`
   now holds a `CasStore<Box<dyn ReclaimableCas>>` (in-memory or `DiskCas`), and with
   `[cas]` present REAPI, S3 and retention maintenance share that single store
@@ -81,6 +85,10 @@ All notable changes to nessie-store are documented here. The format follows
   experimental NFS gateways (#71).
 
 ### Fixed
+- **Restart no longer exposes young blobs to GC.** `CasStore::new` seeds every local
+  blob's write-time with the current clock (and now returns `Result`, failing closed if
+  enumeration fails), so the first sweep after a restart is delayed one grace window
+  instead of treating unknown write-times as old.
 - **Windows workspace build.** `nessie-nfs` is Unix-only (it relies on
   `std::os::unix`, `tokio::fs::symlink`, and AUTH_UNIX `chown`) but was not gated,
   so `cargo build/test --workspace` failed to compile on Windows (the nightly
