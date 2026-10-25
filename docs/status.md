@@ -38,8 +38,8 @@ the machine-checked list of what exists.
 - **ActionCache.** Result bodies live in the shared store; attestations are
   in memory and lost on restart.
 - **Peers.** Static peers shipped (#127): see [CAS peer plane](#cas-peer-plane-static-peers)
-  below. HTTP-only and unauthenticated until mTLS. The pin endpoint is still
-  coming in v0.4.0 (#128).
+  below. HTTP-only and unauthenticated until mTLS. Pin and unpin shipped (#144):
+  `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only, in memory until #137.
 
 See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
 
