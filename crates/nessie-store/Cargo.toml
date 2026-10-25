@@ -26,6 +26,7 @@ daemon = [
     "dep:nessie-backend-core",
     "dep:nessie-backend-mem",
     "dep:nessie-cas-store",
+    "dep:nessie-cas-disk",
     "dep:nessie-backend-zfs",
     "dep:nessie-ontap-protocol",
     "dep:nessie-nfs",
@@ -59,6 +60,7 @@ python = ["dep:pyo3", "dep:pythonize"]
 nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1", optional = true }
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1", optional = true }
 nessie-cas-store = { path = "../nessie-cas-store", version = "0.3.1", optional = true }
+nessie-cas-disk = { path = "../nessie-cas-disk", version = "0.3.1", optional = true }
 nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.3.1", optional = true }
 nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.3.1", optional = true }
 nessie-nfs = { path = "../nessie-nfs", version = "0.3.1", optional = true }

@@ -50,3 +50,17 @@ nfs_export_name = ""
 # listen = "0.0.0.0:8980"        # gRPC bind (distinct from the HTTPS `listen` above)
 # instance_name = ""             # "" = the default instance
 # ac_update_enabled = true       # allow UpdateActionResult (also needs an AC backend + signer)
+
+# Content-addressed store node. When present, the REAPI / S3 faces below share THIS
+# store (one set of blobs) and it runs retention maintenance. backend = "mem" (the
+# default) loses blobs on restart; "disk" keeps them under `path`.
+[cas]
+backend = "disk"
+path = "/var/lib/nessie-store/cas"
+
+# Optional S3 object face over the same store. The daemon REFUSES to start it while
+# secret_key is still the default: set NESSIE_S3_SECRET_KEY (see environment.example).
+# [s3]
+# enabled = true
+# listen = "0.0.0.0:9000"
+# access_key = "nessie"

@@ -7,18 +7,49 @@
 //!
 //! That second half is the fragile part: `faces::build_cas_backend` returning a
 //! store per caller would break the property while every unit test in both crates
-//! still passed. This drives both faces over one `build_cas_backend()` result and
-//! asserts the round trip in both directions.
+//! still passed. This drives both faces over the backend `build_faces(&Config)` —
+//! the entry point `main` itself calls — returns, and asserts the round trip in both
+//! directions, plus that a disk-backed `[cas]` node survives a rebuild.
 
+use nessie_backend_core::CasBackend as _;
 use nessie_reapi::reapi;
 use nessie_reapi::reapi::content_addressable_storage_server::ContentAddressableStorage;
 use nessie_reapi::{CasV2Svc, ReapiConfig};
 use nessie_s3::NessieS3;
-use nessie_store::faces::build_cas_backend;
+use nessie_store::config::{CasBackendKind, CasConfig, Config, ReapiServerConfig, S3ServerConfig};
+use nessie_store::faces::{Faces, build_faces};
 use s3s::S3;
 use s3s::S3Request;
 use s3s::dto::{GetObjectInput, PutObjectInput, StreamingBlob};
 use std::sync::Arc;
+
+/// A config enabling both faces (and, given `disk`, a disk-backed `[cas]` node).
+fn faces_config(disk: Option<&std::path::Path>) -> Config {
+    Config {
+        reapi: Some(ReapiServerConfig {
+            enabled: true,
+            ..Default::default()
+        }),
+        s3: Some(S3ServerConfig {
+            enabled: true,
+            secret_key: "not-the-default".to_owned(),
+            ..Default::default()
+        }),
+        cas: disk.map(|path| CasConfig {
+            backend: CasBackendKind::Disk,
+            path: Some(path.to_owned()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// The shared backend exactly as the daemon wires it.
+fn shared_backend(cfg: &Config) -> (Arc<dyn nessie_backend_core::CasBackend>, Faces) {
+    let mut faces = build_faces(cfg).expect("faces");
+    let (backend, _signer) = faces.backend.take().expect("a face is enabled");
+    (backend, faces)
+}
 
 const BLOB: &[u8] = b"one blob, two protocols";
 
@@ -53,7 +84,7 @@ fn s3_request<T>(input: T) -> S3Request<T> {
 
 #[tokio::test]
 async fn a_blob_put_over_s3_is_readable_over_reapi() {
-    let (backend, _signer) = build_cas_backend().expect("shared cache backend");
+    let (backend, _faces) = shared_backend(&faces_config(None));
     let hash = sha256_hex(BLOB);
 
     // Write through the S3 face.
@@ -91,7 +122,7 @@ async fn a_blob_put_over_s3_is_readable_over_reapi() {
 
 #[tokio::test]
 async fn a_blob_put_over_reapi_is_readable_over_s3() {
-    let (backend, _signer) = build_cas_backend().expect("shared cache backend");
+    let (backend, _faces) = shared_backend(&faces_config(None));
     let hash = sha256_hex(BLOB);
 
     // Write through the REAPI CAS face.
@@ -140,7 +171,7 @@ async fn the_two_faces_are_handed_the_same_store() {
     // Guards the composition root directly: if `build_cas_backend` ever returned a
     // fresh store per call, the round-trip tests above would still pass when each
     // face got its own — so assert the daemon's own sharing contract.
-    let (backend, _signer) = build_cas_backend().expect("shared cache backend");
+    let (backend, _faces) = shared_backend(&faces_config(None));
     let a = NessieS3::new(backend.clone());
     let _b = CasV2Svc::new(backend.clone(), Arc::new(ReapiConfig::default()));
 
@@ -164,4 +195,84 @@ async fn the_two_faces_are_handed_the_same_store() {
         backend.has(&digest).expect("has"),
         "the shared backend must hold what a face wrote"
     );
+}
+
+/// A unique scratch dir under the OS temp dir, removed on drop.
+struct TempRoot(std::path::PathBuf);
+
+impl TempRoot {
+    fn new() -> Self {
+        Self(std::env::temp_dir().join(format!("nessie-faces-{}", uuid::Uuid::new_v4())))
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn s3_put(backend: Arc<dyn nessie_backend_core::CasBackend>, hash: &str) {
+    let bytes = bytes::Bytes::from_static(BLOB);
+    NessieS3::new(backend)
+        .put_object(s3_request(PutObjectInput {
+            bucket: "cache".to_owned(),
+            key: cas_key(hash),
+            body: Some(StreamingBlob::wrap(futures::stream::once(async move {
+                Ok::<_, std::io::Error>(bytes)
+            }))),
+            ..Default::default()
+        }))
+        .await
+        .expect("S3 put");
+}
+
+#[tokio::test]
+async fn a_blob_put_over_s3_lands_in_the_cas_node_store() {
+    // With `[cas]` present the faces must share the node's store, not a private one.
+    let dir = TempRoot::new();
+    let cfg = faces_config(Some(dir.path()));
+    let (backend, faces) = shared_backend(&cfg);
+    let hash = sha256_hex(BLOB);
+    s3_put(backend, &hash).await;
+
+    let digest: nessie_backend_core::Digest = format!("sha2-256:{hash}").parse().expect("digest");
+    let node = faces.node.expect("[cas] builds a node");
+    assert!(node.store().has(&digest).expect("has"));
+}
+
+#[tokio::test]
+async fn a_disk_blob_put_over_s3_survives_a_rebuild_from_the_same_config() {
+    // Issue #125 acceptance: persistence is real across a daemon restart.
+    let dir = TempRoot::new();
+    let cfg = faces_config(Some(dir.path()));
+    let hash = sha256_hex(BLOB);
+    {
+        let (backend, _faces) = shared_backend(&cfg);
+        s3_put(backend, &hash).await;
+    } // node dropped
+
+    let rebuilt = build_faces(&cfg).expect("rebuild").node.expect("node");
+    let digest: nessie_backend_core::Digest = format!("sha2-256:{hash}").parse().expect("digest");
+    assert!(
+        rebuilt.store().has(&digest).expect("has"),
+        "the blob must survive a restart"
+    );
+}
+
+#[test]
+fn the_default_s3_secret_is_refused() {
+    let mut cfg = faces_config(None);
+    cfg.s3.as_mut().expect("s3").secret_key = S3ServerConfig::default().secret_key;
+    let err = build_faces(&cfg)
+        .err()
+        .expect("default secret must refuse to start");
+    assert!(err.to_string().contains("NESSIE_S3_SECRET_KEY"), "{err}");
+    // A disabled S3 face is not checked.
+    cfg.s3.as_mut().expect("s3").enabled = false;
+    assert!(build_faces(&cfg).is_ok());
 }

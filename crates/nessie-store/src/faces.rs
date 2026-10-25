@@ -5,34 +5,91 @@
 //! with each other and do not need to be — a blob written over one is readable
 //! over the other because both name it by the same digest. That only holds if the
 //! composition root hands them the *same* store, which is what
-//! [`build_cas_backend`] exists to guarantee; building a store per face would
+//! [`build_faces`] exists to guarantee; building a store per face would
 //! quietly break the property while every test still passed.
 
-use crate::config::{ReapiServerConfig, S3ServerConfig};
-use nessie_backend_core::CasBackend;
+use crate::cas_node::CasNode;
+use crate::config::{Config, ReapiServerConfig, S3ServerConfig};
+use nessie_backend_core::{CasBackend, PeerId};
 use nessie_reapi::DevSelfSigner;
 use std::sync::Arc;
 
-/// Build the in-memory, self-attesting backend both cache faces share, and verify
-/// it honors `put_keyed` before anything binds a port.
+/// The cache faces' shared backend, plus the node (if any) that owns its blobs.
+pub struct Faces {
+    /// The `[cas]` node, when configured: spawn its maintenance, hold it alive.
+    pub node: Option<Arc<CasNode>>,
+    /// The one backend REAPI and S3 serve; `None` when neither face is enabled.
+    pub backend: Option<(Arc<dyn CasBackend>, DevSelfSigner)>,
+}
+
+/// The daemon's wiring entry point: validate the cache faces, build the `[cas]`
+/// node, and hand both faces **one** backend. `main` calls exactly this, so tests
+/// through it fail if the real wiring ever builds a store per consumer.
 ///
-/// The signer and the action cache's verifier are one matched dev keypair (k=1
+/// With `[cas]` present, REAPI, S3 and retention maintenance share the node's
+/// store (disk-backed if so configured). Without it, the faces share one private
+/// in-memory store.
+///
+/// # Errors
+///
+/// An enabled S3 face still on the default secret; a bad `[cas]` block; a backend
+/// without `put_keyed`.
+pub fn build_faces(cfg: &Config) -> anyhow::Result<Faces> {
+    let s3_on = cfg.s3.as_ref().is_some_and(|s| s.enabled);
+    let reapi_on = cfg.reapi.as_ref().is_some_and(|r| r.enabled);
+    if let Some(sc) = cfg.s3.as_ref().filter(|s| s.enabled) {
+        check_s3_secret(sc)?;
+    }
+    let node = cfg
+        .cas
+        .as_ref()
+        .map(|c| CasNode::from_config(c, PeerId::new(cfg.data_lif.clone())).map(Arc::new))
+        .transpose()?;
+    let backend = if reapi_on || s3_on {
+        Some(build_cas_backend(node.clone())?)
+    } else {
+        None
+    };
+    Ok(Faces { node, backend })
+}
+
+/// Refuse the default S3 secret: a well-known credential on a network port is not
+/// a warning-level problem.
+fn check_s3_secret(sc: &S3ServerConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        sc.secret_key != S3ServerConfig::default().secret_key,
+        "[s3] secret_key is the default; set NESSIE_S3_SECRET_KEY (or secret_key) before enabling the S3 face"
+    );
+    Ok(())
+}
+
+/// Build the self-attesting backend both cache faces share, and verify it honors
+/// `put_keyed` before anything binds a port.
+///
+/// Blob bodies go to `node`'s store when given, else a private in-memory one. The
+/// signer and the action cache's verifier are one matched dev keypair (k=1
 /// write-through); a real ed25519 signer from agent-mesh replaces `DevSelfSigner`
-/// in a swarm, and a persistent backend slots in behind the same seam.
+/// in a swarm.
 ///
 /// # Errors
 ///
 /// If the backend does not honor `put_keyed` — the SHA-256-native write seam both
 /// faces depend on — so a misconfiguration fails loudly at startup rather than
 /// per-request.
-pub fn build_cas_backend() -> anyhow::Result<(Arc<dyn CasBackend>, DevSelfSigner)> {
+pub fn build_cas_backend(
+    node: Option<Arc<CasNode>>,
+) -> anyhow::Result<(Arc<dyn CasBackend>, DevSelfSigner)> {
     use nessie_backend_mem::{MemActionCache, MemCas};
     use std::num::NonZeroUsize;
 
     let signer = DevSelfSigner::new("nessie-reapi-self");
     let verifier = signer.verifier();
     let k1 = NonZeroUsize::new(1).expect("1 is nonzero");
-    let backend: Arc<dyn CasBackend> = Arc::new(MemActionCache::new(MemCas::new(), verifier, k1));
+    let bodies: Arc<dyn CasBackend> = match node {
+        Some(n) => n,
+        None => Arc::new(MemCas::new()),
+    };
+    let backend: Arc<dyn CasBackend> = Arc::new(MemActionCache::shared(bodies, verifier, k1));
     probe_put_keyed(backend.as_ref())?;
     Ok((backend, signer))
 }
