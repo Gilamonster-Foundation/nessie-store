@@ -14,6 +14,7 @@ use crate::PeerSet;
 pub struct SwarmCas<C: ReclaimableCas> {
     inner: Arc<C>,
     peers: Arc<PeerSet>,
+    cache_fills: bool,
 }
 
 impl<C: ReclaimableCas> SwarmCas<C> {
@@ -23,7 +24,17 @@ impl<C: ReclaimableCas> SwarmCas<C> {
         Self {
             inner: Arc::new(inner),
             peers,
+            cache_fills: true,
         }
+    }
+
+    /// Whether a fetched blob is stored locally (default `true`, for `lru`, where
+    /// eviction manages the budget). `false` for `write_only`: the verified bytes
+    /// are served but not stored, so nothing lands behind the capacity gate.
+    #[must_use]
+    pub fn with_cache_fills(mut self, cache_fills: bool) -> Self {
+        self.cache_fills = cache_fills;
+        self
     }
 
     /// The local store alone, with no peer fallback — what a replicator reads from
@@ -49,25 +60,42 @@ impl<C: ReclaimableCas> SwarmCas<C> {
     }
 }
 
-impl<C: ReclaimableCas> CasBackend for SwarmCas<C> {
-    /// Local, else any peer that answers `HEAD 200`. Protocol faces probe with this
-    /// before reading, so a blob held only by a peer must not look absent. Replica
-    /// accounting does not use it: that is `StaticRouter`, which asks peers directly.
-    fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
-        if self.inner.has(digest)? {
-            return Ok(true);
+impl<C: ReclaimableCas> SwarmCas<C> {
+    /// As [`fetch`](Self::fetch) but keep nothing: the first peer body that hashes
+    /// to `digest` is returned from memory. Bad bodies are skipped.
+    // ponytail: buffered in RAM; spool to a temp file if write_only blobs outgrow it.
+    fn fetch_uncached(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
+        for peer in self.peers.peers() {
+            let Some(mut body) = self.peers.get(peer, digest) else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            if body.read_to_end(&mut bytes).is_ok() && digest.verify(&bytes) {
+                return Ok(Box::new(std::io::Cursor::new(bytes)));
+            }
         }
-        Ok(self.peers.peers().iter().any(|p| self.peers.has(p, digest)))
+        Err(BackendError::BlobNotFound(digest.clone()))
+    }
+}
+
+impl<C: ReclaimableCas> CasBackend for SwarmCas<C> {
+    /// **Local only.** `CasStore` reads this as "already held and counted", so a
+    /// blob only a peer holds must answer `false` or it would skip the write_only
+    /// capacity gate. Remote readability is [`size`](CasBackend::size) and
+    /// [`get`](CasBackend::get).
+    fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.inner.has(digest)
     }
 
     /// Local first; only a plain miss goes to the peers. A local blob that fails
     /// verification is an error, never served and never papered over.
     fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
         match self.inner.get(digest) {
-            Err(BackendError::BlobNotFound(_)) => {
+            Err(BackendError::BlobNotFound(_)) if self.cache_fills => {
                 self.fetch(digest)?;
                 self.inner.get(digest)
             }
+            Err(BackendError::BlobNotFound(_)) => self.fetch_uncached(digest),
             other => other,
         }
     }

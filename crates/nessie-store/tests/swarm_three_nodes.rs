@@ -275,3 +275,67 @@ fn two_nodes_listing_each_other_do_not_recurse_on_a_miss() {
         "a recursing probe would run to the request timeout"
     );
 }
+
+/// A `write_only` node with `capacity` bytes, peered with `peer_url`.
+fn write_only(peer_url: &str, capacity: u64) -> CasConfig {
+    CasConfig {
+        mode: CasMode::WriteOnly,
+        byte_budget: Some(capacity),
+        peer_api: true,
+        peers: vec![CasPeer {
+            url: peer_url.to_owned(),
+            durable: true,
+        }],
+        ..CasConfig::default()
+    }
+}
+
+fn refused(r: Result<(), nessie_backend_core::BackendError>) -> bool {
+    matches!(
+        r,
+        Err(nessie_backend_core::BackendError::CapacityExceeded { .. })
+    )
+}
+
+/// Capacity is for bytes held *here*. A blob a peer holds is readable, not local:
+/// writing it must still pass the gate, and reading it must not bypass it.
+#[test]
+fn write_only_capacity_ignores_what_peers_hold() {
+    let d = Daemon::start(&durable(), "durable");
+    let w = Daemon::start(&write_only(&d.url, 10), "write-only");
+    let peer_only = d.node.put(&mut &b"peer-only!"[..]).unwrap(); // 10 bytes
+    let fill = w.node.put(&mut &b"eightbyt"[..]).unwrap(); // 8 of 10 used
+    assert!(w.node.local().has(&fill).unwrap());
+
+    // (1) PUT of a digest only a peer holds is refused: 8 + 10 > 10. Nothing stored.
+    assert!(refused(
+        w.node.put_keyed(&peer_only, &mut &b"peer-only!"[..])
+    ));
+    assert!(!w.node.local().has(&peer_only).unwrap());
+
+    // (2) GET serves the verified bytes without storing them behind the gate.
+    assert_eq!(read(&w.node, &peer_only), b"peer-only!");
+    assert!(
+        !w.node.local().has(&peer_only).unwrap(),
+        "no fill in write_only"
+    );
+
+    // (3) The budget is unchanged: 2 more bytes fit exactly, 1 more does not.
+    w.node.put(&mut &b"ab"[..]).unwrap();
+    assert!(refused(
+        w.node.put_keyed(&Digest::compute(b"c"), &mut &b"c"[..])
+    ));
+}
+
+/// An LRU node does cache a peer-fetched blob (eviction manages its budget).
+#[test]
+fn lru_get_of_a_peer_only_blob_caches_it_locally() {
+    let d = Daemon::start(&durable(), "durable");
+    let mut cfg = cache(&d.url);
+    cfg.byte_budget = Some(1 << 20);
+    let a = Daemon::start(&cfg, "cache-a");
+    let digest = d.node.put(&mut &b"cache me"[..]).unwrap();
+    assert!(!a.node.local().has(&digest).unwrap());
+    assert_eq!(read(&a.node, &digest), b"cache me");
+    assert!(a.node.local().has(&digest).unwrap());
+}

@@ -118,7 +118,9 @@ impl CasNode {
                         })
                         .collect(),
                 )?);
-                let swarm = SwarmCas::new(blobs, peers.clone());
+                // write_only: serve fetched bytes without storing them (capacity gate).
+                let swarm = SwarmCas::new(blobs, peers.clone())
+                    .with_cache_fills(matches!(policy.mode, StorageMode::Lru(_)));
                 let local: Arc<dyn CasBackend> = swarm.local();
                 (
                     Box::new(swarm) as Box<dyn ReclaimableCas>,

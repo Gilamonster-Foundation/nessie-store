@@ -51,10 +51,12 @@ impl HttpReplicator {
 }
 
 impl HttpReplicator {
-    /// Push `digest` to durable peers until `target` of them are confirmed holding
-    /// it, returning how many are. A peer counts only if it already answers
-    /// `HEAD 200`, or answers it after our `PUT` — an acknowledged write is a
-    /// confirmed one (what `write_only` mode waits on before acking a client).
+    /// Push `digest` to hinted peers until `target` of them are confirmed holding it
+    /// *durably*, returning how many are. A peer counts only if it answers `HEAD 200`
+    /// **and** reports `x-nessie-mode: write_only` — before our `PUT` or after it. A
+    /// peer that reports `lru` may evict the blob at once, so it is skipped (still
+    /// pushed to, never counted) and the next peer is tried. This is what
+    /// `write_only` mode waits on before acking a client.
     ///
     /// # Errors
     ///
@@ -65,10 +67,10 @@ impl HttpReplicator {
             if held >= target.get() {
                 break;
             }
-            if !self.peers.has(peer, digest) {
+            if !self.peers.holds_durably(peer, digest) {
                 let len = self.local.size(digest)?;
                 if !self.peers.put(peer, digest, self.local.get(digest)?, len)
-                    || !self.peers.has(peer, digest)
+                    || !self.peers.holds_durably(peer, digest)
                 {
                     continue;
                 }

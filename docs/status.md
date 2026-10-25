@@ -17,9 +17,9 @@ short; set `maintenance_interval_secs` well above a worst-case pass.
 
 **Reads and probes.** `GET|HEAD|PUT /cas/v1/blobs/...` answer from this node's local
 storage only (never by asking its own peers), so two nodes listing each other cannot
-recurse. A node's own `has`/`size` fall through to peers on a local miss (a `HEAD`,
-no body), which is what lets the S3 face serve a locally evicted blob; `get` still
-does the verified fetch-through. `peers` must list each URL once; set
+recurse. A node's `has` is local-only (it means "held and counted here"); `size` falls
+through to peers on a local miss (a `HEAD`, no body) and `get` does the verified
+fetch-through, which is how the S3 face serves a locally evicted blob. `peers` must list each URL once; set
 `advertise_url` to this node's own URL to share one peer list across nodes (the
 matching entry is ignored).
 
@@ -28,3 +28,9 @@ matching entry is ignored).
 oracle counts a peer only if it holds the blob *and* reports `write_only`, so a peer
 listed `durable = true` that actually runs `lru` is not a permanent home. `durable`
 stays only as a hint of whom to probe and replicate to.
+
+**Fetch-through and capacity.** An `lru` node stores a peer-fetched blob (eviction
+manages its budget). A `write_only` node serves the verified bytes without storing
+them, so a read can never push it past its capacity, and writing a blob a peer already
+holds still passes the capacity gate. `push()` counts a peer only when it reports
+`write_only`.

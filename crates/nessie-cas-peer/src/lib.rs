@@ -180,7 +180,10 @@ mod tests {
         let d = plant(&blobs, b"held only by the peer");
         let swarm = SwarmCas::new(MemCas::new(), set(&[(&url, true)]));
         assert_eq!(swarm.size(&d).unwrap(), Some(21));
-        assert!(swarm.has(&d).unwrap());
+        assert!(
+            !swarm.has(&d).unwrap(),
+            "remote readability is size/get, not has"
+        );
         assert!(
             swarm.local().iter_local().unwrap().is_empty(),
             "HEAD only, no body stored"
@@ -226,5 +229,44 @@ mod tests {
         let (d1, _) = stub::spawn();
         let (rep, d) = pushable(&[(&d1, true), (&format!("{d1}/"), true)]);
         assert_eq!(rep.push(&d, NonZeroUsize::new(2).unwrap()).unwrap(), 1);
+    }
+
+    #[test]
+    fn push_counts_only_write_only_peers() {
+        let (lru_has, lru_has_blobs) = stub::spawn_mode("lru");
+        let (lru_not, lru_not_blobs) = stub::spawn_mode("lru");
+        let (wo, wo_blobs) = stub::spawn_mode("write_only");
+        let (rep, d) = pushable(&[(&lru_has, true), (&lru_not, true), (&wo, true)]);
+        lru_has_blobs
+            .lock()
+            .unwrap()
+            .insert(d.to_string(), b"x".to_vec());
+        // A mislabelled lru peer counts whether or not it already had the blob.
+        assert_eq!(rep.push(&d, NonZeroUsize::new(3).unwrap()).unwrap(), 1);
+        assert!(wo_blobs.lock().unwrap().contains_key(&d.to_string()));
+        assert!(
+            lru_not_blobs.lock().unwrap().contains_key(&d.to_string()),
+            "pushed, not counted"
+        );
+    }
+
+    #[test]
+    fn write_only_fetch_serves_verified_bytes_without_storing_them() {
+        let (url, blobs) = stub::spawn();
+        let d = plant(&blobs, b"serve, do not keep");
+        let swarm = SwarmCas::new(MemCas::new(), set(&[(&url, true)])).with_cache_fills(false);
+        assert_eq!(read(swarm.get(&d).unwrap()), b"serve, do not keep");
+        assert!(!swarm.local().has(&d).unwrap());
+        assert!(!swarm.has(&d).unwrap(), "has is local-only");
+        // A forged body is still rejected, never served.
+        let forged = Digest::compute(b"honest");
+        blobs
+            .lock()
+            .unwrap()
+            .insert(forged.to_string(), b"forged".to_vec());
+        assert!(matches!(
+            swarm.get(&forged),
+            Err(BackendError::BlobNotFound(_))
+        ));
     }
 }
