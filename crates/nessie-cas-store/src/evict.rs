@@ -200,6 +200,7 @@ mod tests {
             Arc::new(MockClock::new()),
             PeerId::new(me),
         )
+        .expect("store")
     }
 
     fn put_committed(store: &CasStore<MemCas>, bytes: &[u8]) -> Digest {
@@ -216,7 +217,8 @@ mod tests {
             Arc::new(MemRouter::new(PeerId::new("me"))),
             Arc::new(MockClock::new()),
             PeerId::new("me"),
-        );
+        )
+        .expect("store");
         assert!(matches!(
             store.evict_to_budget(&RootRegistry::new(), &NoDurableOracle, &RefuseToReplicate),
             Err(BackendError::FeatureNotSupported { .. })
@@ -324,7 +326,8 @@ mod tests {
             Arc::new(swarm.node(PeerId::new("nuc1"))),
             Arc::new(MockClock::new()),
             PeerId::new("nuc1"),
-        );
+        )
+        .expect("store");
         let cache = cache_store("nuc2", Arc::new(swarm.node(PeerId::new("nuc2"))), 0, 1);
 
         let bytes = b"shared-blob".to_vec();

@@ -82,30 +82,36 @@ pub struct CasStore<C: ReclaimableCas> {
 impl<C: ReclaimableCas> CasStore<C> {
     /// Wrap `inner` with retention `policy`, advertising to `router` as node `me`
     /// and timing grace windows with `clock`.
+    ///
+    /// # Errors
+    ///
+    /// Any [`BackendError`] from enumerating the backend's existing blobs. This
+    /// fails closed: a store that cannot seed write-times from `iter_local()` must
+    /// not exist, because GC treats an unknown write-time as outside the grace
+    /// window and would sweep young blobs the moment the backend recovered.
     pub fn new(
         inner: C,
         policy: RetentionPolicy,
         router: Arc<dyn ContentRouter>,
         clock: Arc<dyn Clock>,
         me: PeerId,
-    ) -> Self {
+    ) -> Result<Self, BackendError> {
         // The AccessLog is in memory, so after a restart every surviving blob has an
         // unknown write-time, which GC treats as outside the grace window. Seed them
         // all as "written now": the first sweep is delayed by one grace window.
-        // Best-effort: if enumeration fails, GC's own `iter_local` will surface it.
         let mut state = StoreState::default();
         let now = clock.now();
-        for blob in inner.iter_local().unwrap_or_default() {
+        for blob in inner.iter_local()? {
             state.access.seed_written(&blob.digest, now);
         }
-        Self {
+        Ok(Self {
             inner,
             policy,
             router,
             clock,
             me,
             state: Mutex::new(state),
-        }
+        })
     }
 
     /// This store's retention policy.
@@ -196,6 +202,7 @@ mod tests {
             Arc::new(MockClock::new()),
             PeerId::new(me),
         )
+        .expect("store")
     }
 
     #[test]

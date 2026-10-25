@@ -98,7 +98,10 @@ mod tests {
     use crate::policy::RetentionPolicy;
     use crate::resolver::CanonicalResolver;
     use crate::roots::{RootRegistry, RootSource};
-    use nessie_backend_core::{ActionResult, CasBackend, Digest, OutputFile, PeerId};
+    use nessie_backend_core::{
+        ActionResult, BackendError, CasBackend, Digest, LocalBlob, OutputFile, PeerId,
+        ReclaimableCas,
+    };
     use nessie_backend_mem::{MemCas, MemRouter};
     use std::collections::BTreeMap;
     use std::io::Cursor;
@@ -119,7 +122,8 @@ mod tests {
             Arc::new(MemRouter::new(PeerId::new("me"))),
             clock.clone(),
             PeerId::new("me"),
-        );
+        )
+        .expect("store");
         Fixture {
             store,
             clock,
@@ -222,7 +226,8 @@ mod tests {
             Arc::new(MemRouter::new(PeerId::new("me"))),
             clock.clone(),
             PeerId::new("me"),
-        );
+        )
+        .expect("store");
         let garbage = put(&first, b"garbage");
         first.committed(&garbage);
         let CasStore { inner, .. } = first; // "restart": same backend, empty AccessLog
@@ -232,7 +237,8 @@ mod tests {
             Arc::new(MemRouter::new(PeerId::new("me"))),
             clock.clone(),
             PeerId::new("me"),
-        );
+        )
+        .expect("store");
         let roots = RootRegistry::new();
 
         store.gc(&roots, &CanonicalResolver).unwrap();
@@ -243,6 +249,70 @@ mod tests {
         clock.advance(Duration::from_secs(101));
         store.gc(&roots, &CanonicalResolver).unwrap();
         assert!(!store.has(&garbage).unwrap(), "past grace: swept");
+    }
+
+    /// A backend whose first `iter_local` fails and later ones succeed (a transient
+    /// startup fault), sharing its blobs across clones like a durable store would.
+    #[derive(Clone)]
+    struct FlakyOnce {
+        cas: Arc<MemCas>,
+        failed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CasBackend for FlakyOnce {
+        fn has(&self, d: &Digest) -> Result<bool, BackendError> {
+            self.cas.has(d)
+        }
+        fn get(&self, d: &Digest) -> Result<Box<dyn std::io::Read + Send>, BackendError> {
+            self.cas.get(d)
+        }
+        fn put(&self, src: &mut dyn std::io::Read) -> Result<Digest, BackendError> {
+            self.cas.put(src)
+        }
+    }
+
+    impl ReclaimableCas for FlakyOnce {
+        fn iter_local(&self) -> Result<Vec<LocalBlob>, BackendError> {
+            if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(BackendError::Internal("transient enumeration fault".into()));
+            }
+            self.cas.iter_local()
+        }
+        fn reclaim(&self, d: &Digest) -> Result<bool, BackendError> {
+            self.cas.reclaim(d)
+        }
+    }
+
+    #[test]
+    fn failed_startup_enumeration_cannot_yield_a_store_that_sweeps_young_blobs() {
+        // #126 review P1: swallowing the seed error left a store with no write-times;
+        // once the backend recovered, GC saw unknown (=old) blobs and swept them.
+        let backend = FlakyOnce {
+            cas: Arc::new(MemCas::new()),
+            failed: Arc::default(),
+        };
+        let young = backend
+            .cas
+            .put(&mut Cursor::new(b"young".to_vec()))
+            .unwrap();
+        let clock = Arc::new(MockClock::new());
+        let build = || {
+            CasStore::new(
+                backend.clone(),
+                RetentionPolicy::durable(Duration::from_secs(100)),
+                Arc::new(MemRouter::new(PeerId::new("me"))),
+                clock.clone(),
+                PeerId::new("me"),
+            )
+        };
+
+        assert!(build().is_err(), "fail closed: no store without a seed");
+        let store = build().expect("second enumeration succeeds");
+        store.gc(&RootRegistry::new(), &CanonicalResolver).unwrap();
+        assert!(
+            store.has(&young).unwrap(),
+            "young blob survives the first GC"
+        );
     }
 
     #[test]
@@ -271,7 +341,8 @@ mod tests {
             Arc::new(MemRouter::new(PeerId::new("me"))),
             Arc::new(MockClock::new()),
             PeerId::new("me"),
-        );
+        )
+        .expect("store");
         let roots = RootRegistry::new();
         assert!(matches!(
             store.gc(&roots, &CanonicalResolver),
