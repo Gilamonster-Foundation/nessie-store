@@ -31,7 +31,19 @@ the machine-checked list of what exists.
   after #137.
 - **Auth is lab-only.** S3 uses one static SigV4 key; the daemon refuses to
   start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI is
-  unauthenticated and off by default. mTLS is not built.
+  unauthenticated and off by default unless `[tls] mtls = true` (below).
+- **REAPI mTLS, S3 server TLS** (`[tls] mtls = true`, needs a node identity from
+  `nessie-store identity issue` and an `authorized_keys` file). REAPI then
+  requires a client certificate whose operator is listed; S3 serves HTTPS with
+  the node certificate and keeps SigV4. The certificate carries `localhost`,
+  `127.0.0.1`, `::1` and `[tls] names`; `nessie-store identity show` and the
+  startup log print its SHA-256 for clients to pin. A Bazel client:
+  `nessie-store identity export-client-cert --out DIR` writes `client.crt` and
+  `client.key` (a delegated sub-agent; the node seed is never exported), then
+  `bazel build --remote_cache=grpcs://HOST:8980 --tls_client_certificate=DIR/client.crt
+  --tls_client_key=DIR/client.key --tls_certificate=<node certificate PEM>`.
+  Bazel also needs the node certificate as its trust root; per-agent revocation
+  is #155.
 - **S3 scope.** `PutObject`, `GetObject`, `HeadObject` on content-addressed
   keys (`cas/{xx}/{sha256}` or flat `{prefix}{sha256}`). No `ListObjectsV2`,
   no arbitrary key names; a body that doesn't hash to its key is refused.

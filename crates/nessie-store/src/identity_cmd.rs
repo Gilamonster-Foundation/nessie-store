@@ -35,6 +35,38 @@ pub fn issue(
     Ok(node.fingerprint())
 }
 
+/// Write `client.crt` and `client.key` (PEM) into `out`: a credential for a
+/// Bazel client (`--tls_client_certificate` / `--tls_client_key`).
+///
+/// The credential is a **delegated sub-agent** of the node in `identity_dir`
+/// (attenuation-only, a fresh key, rooted at the same operator), so the node's
+/// own seed never leaves `identity_dir`. Refuses to overwrite either file.
+pub fn export_client_cert(identity_dir: &Path, out: &Path) -> anyhow::Result<Fingerprint> {
+    let node = NodeIdentity::load(identity_dir)?;
+    let metadata = AgentMetadata {
+        role: "bazel-client".to_string(),
+        issued_at: chrono::Utc::now().to_rfc3339(),
+        ..node.metadata().clone()
+    };
+    let client = node.delegate(metadata)?;
+    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    write_new(&out.join("client.crt"), client.cert_pem().as_bytes(), 0o644)?;
+    write_new(&out.join("client.key"), client.key_pem()?.as_bytes(), 0o600)?;
+    Ok(client.fingerprint())
+}
+
+fn write_new(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

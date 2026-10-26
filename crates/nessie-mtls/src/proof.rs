@@ -25,11 +25,19 @@ impl PeerProof {
     /// Mint the self-signed certificate for the agent key `seed`, embedding
     /// `self` as the extension. The certificate key is `seed`'s ed25519 key.
     pub fn certificate(&self, seed: &[u8; 32]) -> Result<CertificateDer<'static>, MtlsError> {
-        Ok(self.build(seed)?.der().clone())
+        Ok(self.build(seed, &[])?.der().clone())
     }
 
     /// As [`certificate`](Self::certificate), keeping the rcgen handle for PEM.
-    pub(crate) fn build(&self, seed: &[u8; 32]) -> Result<rcgen::Certificate, MtlsError> {
+    ///
+    /// `names` become subject alternative names (DNS names or IP addresses) so a
+    /// TLS client that checks the host can use the certificate; the mesh
+    /// verifier ignores them.
+    pub(crate) fn build(
+        &self,
+        seed: &[u8; 32],
+        names: &[String],
+    ) -> Result<rcgen::Certificate, MtlsError> {
         let gen_err = |e: &dyn std::fmt::Display| MtlsError::Generate(e.to_string());
         let pkcs8 = pkcs8_der(seed)?;
         let key = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&pkcs8, &rcgen::PKCS_ED25519)
@@ -37,6 +45,16 @@ impl PeerProof {
         let json = serde_json::to_vec(self).map_err(|e| gen_err(&e))?;
         let mut params =
             rcgen::CertificateParams::new(Vec::<String>::new()).map_err(|e| gen_err(&e))?;
+        for n in names {
+            params
+                .subject_alt_names
+                .push(match n.parse::<std::net::IpAddr>() {
+                    Ok(ip) => rcgen::SanType::IpAddress(ip),
+                    Err(_) => {
+                        rcgen::SanType::DnsName(n.clone().try_into().map_err(|e| gen_err(&e))?)
+                    }
+                });
+        }
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "nessie-mtls");

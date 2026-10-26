@@ -17,6 +17,7 @@ rustls = { workspace = true }
 rcgen = { workspace = true }
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 zeroize = "1"
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

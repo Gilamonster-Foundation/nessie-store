@@ -51,6 +51,8 @@ daemon = [
     "dep:reqwest",
     "dep:tokio-util",
     "dep:tokio-stream",
+    "dep:tokio-rustls",
+    "dep:tonic",
 ]
 # PyO3 bindings (the pip wheel) — only `config` + `identity`. Built with
 # `--no-default-features --features python` so the wheel is light (serde/toml/uuid,
@@ -94,6 +96,9 @@ reqwest = { workspace = true, optional = true, features = ["blocking"] }
 # SnapMirror receive: bridge the async request body into a sync reader (no buffering).
 tokio-util = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }
+# REAPI TLS: accept TLS ourselves (tonic cannot take a custom client verifier).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
+tonic = { workspace = true, optional = true }
 
 # PyO3 wheel.
 pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
@@ -107,6 +112,11 @@ anyhow = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+hyper-util = "0.1"
+rustls = { workspace = true }
+http = { workspace = true }
+nessie-mtls = { path = "../nessie-mtls", version = "0.3.1" }
+agent-mesh-protocol = { workspace = true }
 ssh-key = { workspace = true }
 tempfile = "3"
 s3s = { workspace = true }
