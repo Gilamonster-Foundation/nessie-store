@@ -85,7 +85,7 @@ byte_budget = 107374182400   # 100 GiB
 backend = "disk"
 path = "/var/lib/nessie-store/cas"
 #
-# Static peers (lab only: plain http, unauthenticated; mTLS is the fast-follow).
+# Static peers (plain http and unauthenticated unless [tls] mtls = true, which needs https:// URLs).
 # A miss is fetched from peers and verified against its digest; `durable = true` is
 # a hint of whom to probe and replicate to, believed only if that peer reports
 # x-nessie-mode: write_only. List each URL once; advertise_url is this node's own

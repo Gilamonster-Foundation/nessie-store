@@ -2036,6 +2036,7 @@ dependencies = [
  "nessie-backend-mem",
  "nessie-cas-store",
  "reqwest 0.12.28",
+ "rustls",
  "tokio",
 ]
 
@@ -2168,6 +2169,7 @@ dependencies = [
  "object_store",
  "pyo3",
  "pythonize",
+ "rand 0.8.7",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",

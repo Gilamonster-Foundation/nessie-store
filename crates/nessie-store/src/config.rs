@@ -70,7 +70,7 @@ pub struct CasConfig {
     /// Empty = a standalone node.
     pub peers: Vec<CasPeer>,
     /// Serve `GET|HEAD|PUT /cas/v1/blobs/{digest}` so peers can reach this node.
-    /// **Lab only: the routes are unauthenticated; mTLS is the fast-follow.**
+    /// Unauthenticated unless `[tls] mtls = true`, which serves them on `peer_listen`.
     pub peer_api: bool,
     /// This node's own peer URL, as other nodes list it. A `peers` entry equal to
     /// it is ignored, so one shared peer list can be deployed to every node.
@@ -212,13 +212,30 @@ pub enum BackendKind {
 
 /// `[tls]` — mutual-TLS trust. The identity itself lives under
 /// `data_dir/identity/` (see `nessie-store identity issue`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
     /// `authorized_keys` file (one `ssh-ed25519` public key per line, no options) listing the ed25519 keys a peer's GitHub
     /// binding must be signed by. Unset = `data_dir/authorized_keys`. A missing
     /// file trusts nobody (fail closed).
     pub authorized_keys: Option<PathBuf>,
+    /// Serve `/cas/v1/*` over mutual TLS on [`peer_listen`](Self::peer_listen) and
+    /// dial peers over `https` with the node identity. Default false, so an upgrade
+    /// does not break a lab swarm. The ONTAP REST listener is unaffected: Basic auth,
+    /// no client certificate.
+    pub mtls: bool,
+    /// Where the mTLS peer API listens (only when `mtls = true`).
+    pub peer_listen: SocketAddr,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            authorized_keys: None,
+            mtls: false,
+            peer_listen: SocketAddr::from(([0, 0, 0, 0], 8443)),
+        }
+    }
 }
 
 /// Top-level daemon configuration.
@@ -325,7 +342,12 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("parsing config {}: {e}", path.display()))?;
         cfg.apply_env();
         if let Some(cas) = &cfg.cas {
-            cas.effective_peers()?;
+            let peers = cas.effective_peers()?;
+            if cfg.mtls()
+                && let Some(p) = peers.iter().find(|p| !p.url.starts_with("https://"))
+            {
+                anyhow::bail!("[tls] mtls = true but [cas] peer {} is not https://", p.url);
+            }
         }
         Ok(cfg)
     }
@@ -355,6 +377,18 @@ impl Config {
     #[must_use]
     pub fn mesh_identity_dir(&self) -> PathBuf {
         self.data_dir.join("identity")
+    }
+
+    /// Whether `/cas/v1` runs over mutual TLS (`[tls] mtls`).
+    #[must_use]
+    pub fn mtls(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| t.mtls)
+    }
+
+    /// The mTLS peer listener address (`[tls] peer_listen`, default `0.0.0.0:8443`).
+    #[must_use]
+    pub fn peer_listen(&self) -> SocketAddr {
+        self.tls.clone().unwrap_or_default().peer_listen
     }
 
     /// The `authorized_keys` file mTLS trusts: `[tls] authorized_keys`, else
@@ -557,6 +591,34 @@ mod tests {
         let cfg: Config =
             toml::from_str("[tls]\nauthorized_keys = \"/etc/nessie/ak\"\n").expect("parse");
         assert_eq!(cfg.authorized_keys_path(), PathBuf::from("/etc/nessie/ak"));
+    }
+
+    #[test]
+    fn mtls_is_off_by_default_and_requires_https_peers() {
+        let def = Config::default();
+        assert!(!def.mtls());
+        assert_eq!(def.peer_listen(), "0.0.0.0:8443".parse().unwrap());
+        let cfg: Config =
+            toml::from_str("[tls]\nmtls = true\npeer_listen = \"127.0.0.1:9\"\n").unwrap();
+        assert!(cfg.mtls());
+        assert_eq!(cfg.peer_listen(), "127.0.0.1:9".parse().unwrap());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        let write = |url: &str| {
+            std::fs::write(
+                &path,
+                format!(
+                    "[tls]\nmtls = true\n[cas]\nbyte_budget = 1\npeers = [{{ url = \"{url}\" }}]\n"
+                ),
+            )
+            .unwrap();
+        };
+        write("http://a:1");
+        let err = Config::load(&path).unwrap_err().to_string();
+        assert!(err.contains("not https://"), "{err}");
+        write("https://a:1");
+        Config::load(&path).unwrap();
     }
 
     #[test]

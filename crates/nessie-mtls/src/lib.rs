@@ -34,10 +34,12 @@ mod authorized_keys;
 mod error;
 mod identity;
 pub mod proof;
+mod tls;
 mod verifier;
 
 pub use authorized_keys::AuthorizedKeys;
 pub use error::MtlsError;
 pub use identity::NodeIdentity;
 pub use proof::PeerProof;
+pub use tls::{client_config, server_config};
 pub use verifier::MeshVerifier;

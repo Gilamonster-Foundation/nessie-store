@@ -169,14 +169,37 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
     let listen = cfg.listen;
     let tls_dir = cfg.tls_dir();
     let peer_api = cfg.cas.as_ref().is_some_and(|c| c.peer_api);
+    let mtls = cfg.mtls().then(|| {
+        (
+            cfg.peer_listen(),
+            nessie_store::peer_tls::mesh_configs(&cfg),
+        )
+    });
     let mut router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
     if peer_api {
         let node = faces
             .node
             .clone()
             .context("[cas] peer_api = true requires a [cas] node")?;
-        tracing::warn!("cas peer API mounted UNAUTHENTICATED (lab only; mTLS is the fast-follow)");
-        router = router.merge(nessie_store::cas_routes::peer_routes(node));
+        let peer_app = nessie_store::cas_routes::peer_routes(node);
+        if let Some((peer_listen, mesh)) = mtls {
+            // Its own listener: rustls demands client certs per connection, not per path.
+            let (server, _) = mesh?;
+            let listener = std::net::TcpListener::bind(peer_listen)
+                .with_context(|| format!("binding [tls] peer_listen {peer_listen}"))?;
+            tracing::info!(%peer_listen, "cas peer API listening (mTLS)");
+            tokio::spawn(async move {
+                if let Err(e) = nessie_store::peer_tls::serve_peer(listener, peer_app, server).await
+                {
+                    tracing::error!(%e, "cas peer API exited");
+                }
+            });
+        } else {
+            tracing::warn!(
+                "cas peer API mounted UNAUTHENTICATED (lab only; set [tls] mtls = true)"
+            );
+            router = router.merge(peer_app);
+        }
     }
 
     if no_tls {
