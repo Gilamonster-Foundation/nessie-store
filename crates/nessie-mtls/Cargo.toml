@@ -24,6 +24,8 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+# TLS 1.2 is compiled in for tests only, so the 1.2 refusal callbacks are reachable.
+rustls = { workspace = true, features = ["tls12"] }
 tokio = { workspace = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 rand = "0.8"

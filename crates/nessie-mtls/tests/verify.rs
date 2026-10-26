@@ -218,3 +218,64 @@ fn rejects_chain_with_bounded_generation_scope() {
     let err = verifier(&[&line]).verify_peer(&der).unwrap_err();
     assert!(matches!(err, MtlsError::BadChain(_)), "{err}");
 }
+
+fn assert_refused(text: String, p: &Peer, what: &str) {
+    let v = nessie_mtls::MeshVerifier::new(nessie_mtls::AuthorizedKeys::parse(&text));
+    let err = v.verify_peer(&cert(p)).expect_err(what);
+    assert!(matches!(err, MtlsError::NotAuthorized), "{what}: {err}");
+}
+
+#[test]
+fn rejects_ed25519_key_found_only_in_a_non_ed25519_entrys_comment() {
+    let p = peer();
+    assert_refused(
+        format!(
+            "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC migration note: {}",
+            p.ssh_line
+        ),
+        &p,
+        "key in an ssh-rsa comment",
+    );
+}
+
+#[test]
+fn rejects_ed25519_key_inside_quoted_option_text() {
+    let p = peer();
+    assert_refused(
+        format!(
+            "command=\"echo {}\" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC c",
+            p.ssh_line
+        ),
+        &p,
+        "key in a quoted option",
+    );
+}
+
+#[test]
+fn rejects_key_after_malformed_leading_text() {
+    let p = peer();
+    assert_refused(
+        format!("migrated key: {}", p.ssh_line),
+        &p,
+        "junk before key",
+    );
+    assert_refused(format!("bad\"opt {} c", p.ssh_line), &p, "unbalanced quote");
+}
+
+#[test]
+fn rejects_binding_with_tampered_signature_under_a_listed_key() {
+    let p = peer();
+    let v = verifier(&[&p.ssh_line]);
+    v.verify_peer(&cert(&p))
+        .expect("untampered control is admitted");
+    let mut bytes = p.proof.binding.signature.to_bytes();
+    bytes[0] ^= 0xff;
+    let mut proof = p.proof.clone();
+    proof.binding.signature = ed25519_dalek::Signature::from_bytes(&bytes);
+    // Root user key and SSH key are both correct and listed; only the signature is bad.
+    assert_eq!(proof.binding.user_pubkey, proof.chain.root_user_pubkey());
+    let err = v
+        .verify_peer(&proof.certificate(&p.seed).unwrap())
+        .unwrap_err();
+    assert!(matches!(err, MtlsError::NotAuthorized), "{err}");
+}

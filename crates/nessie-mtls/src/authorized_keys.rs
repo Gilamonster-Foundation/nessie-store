@@ -10,21 +10,25 @@ pub struct AuthorizedKeys {
 }
 
 impl AuthorizedKeys {
-    /// Parse OpenSSH `authorized_keys` text. Non-ed25519 and malformed lines are
-    /// skipped with a warning; an empty result trusts nobody.
+    /// Parse OpenSSH `authorized_keys` text with `ssh_key`'s entry parser, taking
+    /// only each entry's own public key (never text from options or comments).
+    /// Non-ed25519 entries and lines that do not parse are skipped with a warning
+    /// and contribute no key; an empty result trusts nobody.
     pub fn parse(text: &str) -> Self {
         let mut keys = Vec::new();
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            match ed25519_key(line) {
-                Some(Ok(k)) => keys.push(k),
-                Some(Err(e)) => {
-                    tracing::warn!(line = n + 1, error = %e, "authorized_keys: skipping malformed ed25519 line")
+        for entry in ssh_key::AuthorizedKeys::new(text) {
+            match entry {
+                // ssh_key is lax about quoting; an unbalanced quote is a malformed line.
+                Ok(e) if e.config_opts().as_str().matches('"').count() % 2 != 0 => {
+                    tracing::warn!(
+                        "authorized_keys: skipping entry with unbalanced quote in options"
+                    );
                 }
-                None => tracing::warn!(line = n + 1, "authorized_keys: skipping non-ed25519 line"),
+                Ok(e) => match e.public_key().key_data().ed25519() {
+                    Some(k) => keys.push(k.0),
+                    None => tracing::warn!("authorized_keys: skipping non-ed25519 entry"),
+                },
+                Err(e) => tracing::warn!(error = %e, "authorized_keys: skipping unparseable line"),
             }
         }
         Self { keys }
@@ -46,20 +50,4 @@ impl AuthorizedKeys {
     pub fn keys(&self) -> &[[u8; 32]] {
         &self.keys
     }
-}
-
-/// The ed25519 key on `line`, if it has one. Options before the key type
-/// (`no-pty,command="..."`) and a trailing comment are tolerated.
-fn ed25519_key(line: &str) -> Option<Result<[u8; 32], ssh_key::Error>> {
-    let mut tokens = line.split_whitespace();
-    tokens.find(|t| *t == "ssh-ed25519")?;
-    let blob = tokens.next()?;
-    Some(
-        ssh_key::PublicKey::from_openssh(&format!("ssh-ed25519 {blob}")).and_then(|k| {
-            k.key_data()
-                .ed25519()
-                .map(|e| e.0)
-                .ok_or(ssh_key::Error::AlgorithmUnknown)
-        }),
-    )
 }

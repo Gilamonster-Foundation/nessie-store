@@ -1,4 +1,5 @@
 //! Fixtures: every key is generated in the test body, nothing is checked in.
+// Each integration-test crate uses a different subset of these shared fixtures.
 #![allow(dead_code)]
 
 use agent_mesh_protocol::{AgentKey, AgentMetadata, Caveats, CertChain, GitHubBinding, UserKey};
