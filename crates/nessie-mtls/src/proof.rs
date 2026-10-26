@@ -44,7 +44,17 @@ impl PeerProof {
             .map_err(|e| gen_err(&e))?;
         let json = serde_json::to_vec(self).map_err(|e| gen_err(&e))?;
         let mut params =
-            rcgen::CertificateParams::new(names.to_vec()).map_err(|e| gen_err(&e))?;
+            rcgen::CertificateParams::new(Vec::<String>::new()).map_err(|e| gen_err(&e))?;
+        for n in names {
+            params
+                .subject_alt_names
+                .push(match n.parse::<std::net::IpAddr>() {
+                    Ok(ip) => rcgen::SanType::IpAddress(ip),
+                    Err(_) => {
+                        rcgen::SanType::DnsName(n.clone().try_into().map_err(|e| gen_err(&e))?)
+                    }
+                });
+        }
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "nessie-mtls");

@@ -46,7 +46,9 @@ fn a_delegated_client_chains_to_the_node_and_is_admitted_without_sharing_its_see
     let child = n.delegate(metadata("bazel-client")).unwrap();
     assert_ne!(child.fingerprint(), n.fingerprint());
     let der = child.certificate().unwrap();
-    verifier(&[&line]).verify_peer(&der).expect("child admitted");
+    verifier(&[&line])
+        .verify_peer(&der)
+        .expect("child admitted");
     // Not admitted by a verifier that trusts a different operator key.
     let (_, other) = ssh_key();
     verifier(&[&other]).verify_peer(&der).unwrap_err();

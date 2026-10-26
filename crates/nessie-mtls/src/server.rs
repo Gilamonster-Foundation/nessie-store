@@ -28,11 +28,10 @@ pub fn server_config(
     clients: Option<Arc<MeshVerifier>>,
     alpn: &[&[u8]],
 ) -> Result<ServerConfig, MtlsError> {
-    let builder = ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .map_err(|e| MtlsError::Generate(e.to_string()))?;
+    let builder =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|e| MtlsError::Generate(e.to_string()))?;
     let builder = match clients {
         Some(v) => builder.with_client_cert_verifier(v),
         None => builder.with_no_client_auth(),

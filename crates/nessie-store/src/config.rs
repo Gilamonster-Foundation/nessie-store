@@ -219,6 +219,14 @@ pub struct TlsConfig {
     /// binding must be signed by. Unset = `data_dir/authorized_keys`. A missing
     /// file trusts nobody (fail closed).
     pub authorized_keys: Option<PathBuf>,
+    /// Secure the REAPI face with mutual TLS (client certificates judged against
+    /// `authorized_keys`) and the S3 face with server TLS using the node
+    /// certificate. Default `false`: both serve as before.
+    pub mtls: bool,
+    /// Extra DNS names / IPs for the node certificate (`localhost`, `127.0.0.1`
+    /// and `::1` are always included), so a TLS client that checks the host name
+    /// accepts it.
+    pub names: Vec<String>,
 }
 
 /// Top-level daemon configuration.
@@ -355,6 +363,11 @@ impl Config {
     #[must_use]
     pub fn mesh_identity_dir(&self) -> PathBuf {
         self.data_dir.join("identity")
+    }
+
+    /// Whether `[tls] mtls = true`.
+    pub fn mtls_enabled(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| t.mtls)
     }
 
     /// The `authorized_keys` file mTLS trusts: `[tls] authorized_keys`, else

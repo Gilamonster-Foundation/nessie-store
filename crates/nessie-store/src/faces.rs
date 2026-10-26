@@ -130,6 +130,7 @@ pub fn spawn_reapi(
     rc: ReapiServerConfig,
     backend: Arc<dyn CasBackend>,
     signer: DevSelfSigner,
+    tls: Option<Arc<crate::face_tls::FaceTls>>,
 ) -> anyhow::Result<()> {
     let reapi_cfg = nessie_reapi::ReapiConfig {
         instance_name: rc.instance_name.clone(),
@@ -146,6 +147,18 @@ pub fn spawn_reapi(
         ac_update = rc.ac_update_enabled,
         "REAPI cache face enabled (SHA-256-native, self-attesting)"
     );
+    if let Some(tls) = tls {
+        // Bind now: a port clash with mTLS on should stop startup, not log and
+        // leave the cache unreachable.
+        let listener = std::net::TcpListener::bind(addr)?;
+        tracing::info!("REAPI over mutual TLS (client certificates required)");
+        tokio::spawn(async move {
+            if let Err(e) = crate::face_tls::serve_reapi_tls(router, listener, &tls).await {
+                tracing::error!(%e, "REAPI gRPC server exited");
+            }
+        });
+        return Ok(());
+    }
     tokio::spawn(async move {
         if let Err(e) = router.serve(addr).await {
             tracing::error!(%e, "REAPI gRPC server exited");
@@ -182,9 +195,27 @@ async fn handle_s3_transport_error(err: nessie_s3::HttpError) -> axum::http::Sta
 ///
 /// Currently infallible; the bind happens inside the spawned task so a port clash
 /// is logged rather than taking down the control plane.
-pub fn spawn_s3(sc: S3ServerConfig, backend: Arc<dyn CasBackend>) -> anyhow::Result<()> {
+pub fn spawn_s3(
+    sc: S3ServerConfig,
+    backend: Arc<dyn CasBackend>,
+    tls: Option<Arc<crate::face_tls::FaceTls>>,
+) -> anyhow::Result<()> {
     let app = s3_app(&sc, backend);
     let addr = sc.listen;
+    if let Some(tls) = tls {
+        let listener = std::net::TcpListener::bind(addr)?;
+        tracing::info!(
+            %addr,
+            cert_sha256 = %tls.cert_sha256(),
+            "S3 cache face over HTTPS (pin this certificate fingerprint; SigV4 authenticates)"
+        );
+        tokio::spawn(async move {
+            if let Err(e) = crate::face_tls::serve_s3_tls(app, listener, &tls).await {
+                tracing::error!(%e, "S3 server exited");
+            }
+        });
+        return Ok(());
+    }
     tracing::info!(
         %addr,
         access_key = %sc.access_key,

@@ -125,6 +125,11 @@ impl NodeIdentity {
         Self::new(key, binding)
     }
 
+    /// The metadata of this agent's own certificate link.
+    pub fn metadata(&self) -> &AgentMetadata {
+        &self.key.cert().metadata
+    }
+
     /// The agent's fingerprint: the identity peers see and logs record.
     pub fn fingerprint(&self) -> Fingerprint {
         self.key.fingerprint()
