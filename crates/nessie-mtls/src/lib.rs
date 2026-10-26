@@ -41,5 +41,5 @@ pub use authorized_keys::AuthorizedKeys;
 pub use error::MtlsError;
 pub use identity::NodeIdentity;
 pub use proof::PeerProof;
-pub use server::server_config;
+pub use server::{client_config, server_config};
 pub use verifier::MeshVerifier;

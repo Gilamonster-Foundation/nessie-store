@@ -1,6 +1,7 @@
 //! The configured peer list and the three HTTP verbs spoken to it.
 
 use std::io::Read;
+use std::sync::Arc;
 use std::time::Duration;
 
 use nessie_backend_core::{BackendError, Digest};
@@ -9,7 +10,7 @@ use reqwest::blocking::{Body, Client, Response};
 /// One static peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
-    /// Base URL, e.g. `http://host:8443` (no trailing path).
+    /// Base URL, e.g. `http://host:8443` (`https://` under mTLS) (no trailing path).
     pub url: String,
     /// Whether the peer is a durable store of record.
     pub durable: bool,
@@ -42,15 +43,32 @@ impl PeerSet {
     /// # Errors
     ///
     /// [`BackendError::Internal`] if the HTTP client cannot be built.
-    pub fn new(mut peers: Vec<Peer>) -> Result<Self, BackendError> {
+    pub fn new(peers: Vec<Peer>) -> Result<Self, BackendError> {
+        Self::with_tls(peers, None)
+    }
+
+    /// As [`new`](Self::new), but with `tls` the client presents the node
+    /// certificate and verifies servers with the config's verifier (mTLS). Peer
+    /// URLs are then expected to be `https://`.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Internal`] if the HTTP client cannot be built.
+    pub fn with_tls(
+        mut peers: Vec<Peer>,
+        tls: Option<Arc<rustls::ClientConfig>>,
+    ) -> Result<Self, BackendError> {
         // Distinct holders only: a URL listed twice must not count as two replicas.
         let mut seen = std::collections::HashSet::new();
         peers.retain(|p| seen.insert(p.url.trim_end_matches('/').to_owned()));
-        let client = std::thread::spawn(|| {
-            Client::builder()
+        let client = std::thread::spawn(move || {
+            let mut b = Client::builder()
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
-                .build()
+                .timeout(Duration::from_secs(30));
+            if let Some(tls) = tls {
+                b = b.use_preconfigured_tls((*tls).clone());
+            }
+            b.build()
         })
         .join()
         .map_err(|_| BackendError::Internal("peer client thread panicked".into()))?

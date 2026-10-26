@@ -11,7 +11,7 @@
 //!   and, on a local miss, fetches through from peers via `put_keyed`, which verifies.
 //! - [`StaticDurabilityOracle`] / [`HttpReplicator`]: the cache-eviction gates.
 //!
-//! **Lab only:** the wire is unauthenticated plain HTTP; mTLS is the fast-follow.
+//! The wire is plain HTTP unless the daemon hands [`PeerSet::with_tls`] an mTLS client config.
 //! Integrity does not depend on the wire: every byte is verified against its digest
 //! before it is stored or served.
 

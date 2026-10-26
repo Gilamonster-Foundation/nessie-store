@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use rustls::ServerConfig;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
+use rustls::{ClientConfig, ServerConfig};
 
 use crate::{MeshVerifier, MtlsError, NodeIdentity};
 
@@ -39,4 +39,29 @@ pub fn server_config(
     let mut cfg = builder.with_cert_resolver(Arc::new(Fixed(node.node_certified_key()?)));
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(cfg)
+}
+
+impl rustls::client::ResolvesClientCert for Fixed {
+    fn resolve(&self, _: &[&[u8]], _: &[rustls::SignatureScheme]) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
+    }
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
+/// A TLS 1.3-only client configuration that presents `node`'s certificate and
+/// accepts only servers `servers` admits (the dialling half of mTLS).
+pub fn client_config(
+    node: &NodeIdentity,
+    servers: Arc<MeshVerifier>,
+) -> Result<ClientConfig, MtlsError> {
+    Ok(
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|e| MtlsError::Generate(e.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(servers)
+            .with_client_cert_resolver(Arc::new(Fixed(node.node_certified_key()?))),
+    )
 }

@@ -50,7 +50,7 @@ the machine-checked list of what exists.
 - **ActionCache.** Result bodies live in the shared store; attestations are
   in memory and lost on restart.
 - **Peers.** Static peers shipped (#127): see [CAS peer plane](#cas-peer-plane-static-peers)
-  below. HTTP-only and unauthenticated until mTLS. Pin and unpin shipped (#144):
+  below. Plain HTTP and unauthenticated unless `[tls] mtls = true` (#151): then `/cas/v1` is served on its own mTLS listener (`[tls] peer_listen`) and peers are `https://`. Pin and unpin shipped (#144):
   `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only, in memory until #137.
 
 See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
@@ -60,9 +60,10 @@ See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
 `[cas] peers = [{ url = "http://host:port", durable = true }]` (`durable` is a hint, verified: see below) turns on fetch-through
 (`SwarmCas`), a HEAD-backed durability oracle and a PUT replicator; `peer_api = true`
 mounts `GET|HEAD|PUT /cas/v1/blobs/{algo}:{hex}` so others can reach this node.
-**Lab only: the routes are unauthenticated, and the peer client does not trust the
-daemon's self-signed certificate, so peers must reach each other over plain `http`
-(run the daemon with `--no-tls`). mTLS is the fast-follow.** Integrity never depends on the wire: every byte is verified against
+**By default the routes are unauthenticated and peers speak plain `http` (run the
+daemon with `--no-tls`). With `[tls] mtls = true` they are served only on
+`peer_listen` and require a client certificate the mesh verifier admits; peer URLs
+must be `https://`.** Integrity never depends on the wire: every byte is verified against
 its digest before it is stored or served.
 
 **Probe cost.** Cache eviction asks every peer, one after another, whether it holds
