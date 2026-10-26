@@ -2,7 +2,7 @@
 
 use agent_mesh_protocol::Fingerprint;
 
-use crate::{AuthorizedKeys, MtlsError};
+use crate::{AuthorizedKeys, MtlsError, PeerProof};
 
 /// Admits a peer by the mesh-proof rules; implements both rustls verifier traits.
 #[derive(Debug)]
@@ -18,9 +18,33 @@ impl MeshVerifier {
 
     /// Apply the acceptance rules to a peer certificate, returning the peer's
     /// agent fingerprint.
-    pub fn verify_peer(&self, _end_entity: &[u8]) -> Result<Fingerprint, MtlsError> {
-        let _ = &self.authorized;
-        todo!()
+    ///
+    /// Admitted iff, in order: the certificate's key is ed25519 and equals the
+    /// chain's agent key; the chain verifies (signatures and attenuation, rooted
+    /// at a user); the binding is for the chain's root user key; and the binding
+    /// verifies against some key in `authorized_keys`. The handshake signature
+    /// proving possession is checked by the rustls trait impls.
+    pub fn verify_peer(&self, end_entity: &[u8]) -> Result<Fingerprint, MtlsError> {
+        let (cert_key, proof) = PeerProof::from_certificate(end_entity)?;
+        if cert_key != proof.chain.agent_pubkey {
+            return Err(MtlsError::KeyMismatch);
+        }
+        proof
+            .chain
+            .verify()
+            .map_err(|e| MtlsError::BadChain(e.to_string()))?;
+        if proof.binding.user_pubkey != proof.chain.root_user_pubkey() {
+            return Err(MtlsError::BindingUserMismatch);
+        }
+        if !self
+            .authorized
+            .keys()
+            .iter()
+            .any(|k| proof.binding.verify(k).is_ok())
+        {
+            return Err(MtlsError::NotAuthorized);
+        }
+        Ok(proof.chain.agent_fingerprint())
     }
 }
 

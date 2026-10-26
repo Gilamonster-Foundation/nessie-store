@@ -108,11 +108,7 @@ fn seed_never_appears_in_debug_or_errors() {
 #[test]
 fn pem_accessors_and_certified_key_are_usable() {
     let (_dir, node, _) = issued();
-    assert!(
-        node.cert_pem()
-            .unwrap()
-            .starts_with("-----BEGIN CERTIFICATE-----")
-    );
+    assert!(node.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
     assert!(
         node.key_pem()
             .unwrap()

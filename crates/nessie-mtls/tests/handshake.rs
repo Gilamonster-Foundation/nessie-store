@@ -109,7 +109,13 @@ async fn handshake_fails_when_server_does_not_list_the_client() {
     let (server, client) = (node(&u1, &s1), node(&u2, &s2));
     let (sc, cc) = configs(&server, &[&l1], &client, &[&l1, &l2]);
     let (s, c) = run(sc, cc).await;
-    assert!(s.is_err(), "server must refuse the unlisted client");
+    let why = s
+        .expect_err("server must refuse the unlisted client")
+        .to_string();
+    assert!(
+        why.contains("NotAuthorized"),
+        "refused for the wrong reason: {why}"
+    );
     assert!(c.is_err(), "client must see the refusal");
 }
 
@@ -120,7 +126,13 @@ async fn handshake_fails_when_client_does_not_list_the_server() {
     let (server, client) = (node(&u1, &s1), node(&u2, &s2));
     let (sc, cc) = configs(&server, &[&l1, &l2], &client, &[&l2]);
     let (_s, c) = run(sc, cc).await;
-    assert!(c.is_err(), "client must refuse the unlisted server");
+    let why = c
+        .expect_err("client must refuse the unlisted server")
+        .to_string();
+    assert!(
+        why.contains("NotAuthorized"),
+        "refused for the wrong reason: {why}"
+    );
 }
 
 #[tokio::test]
