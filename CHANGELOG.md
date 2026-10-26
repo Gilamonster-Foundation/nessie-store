@@ -7,6 +7,15 @@ All notable changes to nessie-store are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`nessie-mtls`: agent-mesh node identity, certificate and verifier (#150).** A node's
+  identity is an agent-mesh `AgentKey` (`<data_dir>/identity/agent.seed`, `agent.chain.json`,
+  `binding.json`; issued by `nessie-store identity issue`). Its self-signed ed25519 certificate
+  carries the signed `CertChain` and `GitHubBinding` in one extension
+  (`2.25.8763957256297098986`). `MeshVerifier` implements both rustls verifier traits and admits
+  a peer only when the cert key equals the chain's agent key, the chain verifies, the binding is
+  for the chain's root user, and the binding is signed by a key in `[tls] authorized_keys`
+  (a missing file trusts nobody). TLS 1.3 only. Listener wiring follows in #151/#152.
+
 - **`write_only` acknowledges a write only after R verified copies (#139).**
   `[cas] replication_factor` is R, the total copies including this node (default 2;
   an error under `lru`). After the local write `put`/`put_keyed` push to `durable`

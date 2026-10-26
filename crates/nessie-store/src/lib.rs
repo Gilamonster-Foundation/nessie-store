@@ -28,6 +28,8 @@ pub mod error;
 #[cfg(feature = "daemon")]
 pub mod faces;
 #[cfg(feature = "daemon")]
+pub mod identity_cmd;
+#[cfg(feature = "daemon")]
 pub mod routes;
 #[cfg(feature = "daemon")]
 pub mod snapmirror;
