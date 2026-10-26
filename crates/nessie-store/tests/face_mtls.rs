@@ -166,6 +166,18 @@ async fn exported_client_cert_is_a_delegated_chain_the_server_accepts_without_th
             .any(|w| w == node_seed.as_slice())
     );
 
+    // A direct child of the node: delegated by it, not issued from the user key.
+    let (_, proof) = nessie_mtls::PeerProof::from_certificate(&cert).unwrap();
+    let (node_key, _) =
+        nessie_mtls::PeerProof::from_certificate(&node.certificate().unwrap()).unwrap();
+    match proof.chain.issuer {
+        agent_mesh_protocol::Issuer::Agent { pubkey, parent } => {
+            assert_eq!(pubkey, node_key, "issued by the node's agent key");
+            assert_eq!(parent.agent_pubkey, node_key);
+        }
+        agent_mesh_protocol::Issuer::User(_) => panic!("issued straight from the user key"),
+    }
+
     // The chain verifies and chains to the operator.
     let (_, line) = ssh(1);
     MeshVerifier::new(AuthorizedKeys::parse(&line))

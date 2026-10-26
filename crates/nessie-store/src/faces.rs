@@ -124,8 +124,9 @@ fn probe_put_keyed(
 ///
 /// # Errors
 ///
-/// Currently infallible; returns `Result` so a future binding/validation step can
-/// fail here without changing the call site.
+/// With `tls` (`[tls] mtls = true`) the listener binds here, synchronously, so a
+/// port clash or a bad address is returned and stops startup. Without it the bind
+/// happens inside the spawned task and a clash is only logged; this never fails.
 pub fn spawn_reapi(
     rc: ReapiServerConfig,
     backend: Arc<dyn CasBackend>,
@@ -193,8 +194,9 @@ async fn handle_s3_transport_error(err: nessie_s3::HttpError) -> axum::http::Sta
 ///
 /// # Errors
 ///
-/// Currently infallible; the bind happens inside the spawned task so a port clash
-/// is logged rather than taking down the control plane.
+/// With `tls` (`[tls] mtls = true`) the listener binds here, synchronously, so a
+/// port clash is returned and stops startup. Without it the bind happens inside
+/// the spawned task, so a clash is logged rather than taking down the control plane.
 pub fn spawn_s3(
     sc: S3ServerConfig,
     backend: Arc<dyn CasBackend>,
