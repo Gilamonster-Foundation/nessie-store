@@ -7,8 +7,8 @@
 //!   and whose single extension carries the already-signed chain and binding
 //!   (the libp2p-TLS pattern). No CA.
 //! * [`AuthorizedKeys`] — the SSH `authorized_keys` file that is the only trust
-//!   root: a peer is admitted iff its operator's binding is signed by a listed
-//!   ed25519 key.
+//!   root (format: one `ssh-ed25519` public key per line, no options): a peer
+//!   is admitted iff its operator's binding is signed by a listed key.
 //! * [`MeshVerifier`] — implements rustls' `ServerCertVerifier` and
 //!   `ClientCertVerifier` over the above.
 //!

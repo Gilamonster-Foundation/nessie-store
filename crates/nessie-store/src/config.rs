@@ -215,7 +215,7 @@ pub enum BackendKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
-    /// OpenSSH `authorized_keys` file listing the ed25519 keys a peer's GitHub
+    /// `authorized_keys` file (one `ssh-ed25519` public key per line, no options) listing the ed25519 keys a peer's GitHub
     /// binding must be signed by. Unset = `data_dir/authorized_keys`. A missing
     /// file trusts nobody (fail closed).
     pub authorized_keys: Option<PathBuf>,

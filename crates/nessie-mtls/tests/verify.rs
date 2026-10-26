@@ -16,14 +16,38 @@ fn accepts_chain_and_binding_signed_by_listed_ssh_key() {
 }
 
 #[test]
-fn accepts_authorized_keys_line_with_options_comment_and_other_algorithms() {
+fn accepts_plain_ssh_ed25519_line_with_spaced_comment_and_skips_other_lines() {
     let p = peer();
     let text = format!(
-        "# comment\n\nssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC bogus\nno-pty,command=\"x\" {} me@host\n",
+        "# comment\n\nssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC bogus\n{} comment with spaces\n",
         p.ssh_line
     );
-    let v = nessie_mtls::MeshVerifier::new(nessie_mtls::AuthorizedKeys::parse(&text));
-    v.verify_peer(&cert(&p)).expect("admitted");
+    let keys = nessie_mtls::AuthorizedKeys::parse(&text);
+    assert_eq!(keys.keys(), &[p.proof.binding.ssh_pubkey]);
+    nessie_mtls::MeshVerifier::new(keys)
+        .verify_peer(&cert(&p))
+        .expect("admitted");
+}
+
+#[test]
+fn options_lines_contribute_no_key_even_when_benign() {
+    let p = peer();
+    let keys = nessie_mtls::AuthorizedKeys::parse(&format!(
+        "no-pty {}\nrestrict,from=\"*\" {}",
+        p.ssh_line, p.ssh_line
+    ));
+    assert!(keys.keys().is_empty());
+}
+
+#[test]
+fn escaped_quote_in_command_option_cannot_smuggle_a_key() {
+    let (attacker, actual) = (peer(), peer());
+    let text = format!(
+        "command=\"echo\\\" {} note\" {}",
+        attacker.ssh_line, actual.ssh_line
+    );
+    let keys = nessie_mtls::AuthorizedKeys::parse(&text);
+    assert!(keys.keys().is_empty(), "{:?}", keys.keys());
 }
 
 #[test]
