@@ -1,10 +1,17 @@
 //! The rustls verifiers.
 
-use agent_mesh_protocol::Fingerprint;
+use agent_mesh_protocol::{CertChain, Fingerprint, GitHubBinding};
 
 use crate::{AuthorizedKeys, MtlsError, PeerProof};
 
 /// Admits a peer by the mesh-proof rules; implements both rustls verifier traits.
+///
+/// **Per-agent revocation is not enforced yet.** A chain that verifies and whose
+/// operator is listed stays admitted until the operator's binding key leaves
+/// `authorized_keys`. Revocation by generation is tracked in
+/// [#155](https://github.com/Gilamonster-Foundation/nessie-store/issues/155).
+/// A chain with a bounded generation scope is refused outright (fail closed),
+/// since no current generation is available to honour it.
 #[derive(Debug)]
 pub struct MeshVerifier {
     authorized: AuthorizedKeys,
@@ -19,11 +26,11 @@ impl MeshVerifier {
     /// Apply the acceptance rules to a peer certificate, returning the peer's
     /// agent fingerprint.
     ///
-    /// Admitted iff, in order: the certificate's key is ed25519 and equals the
-    /// chain's agent key; the chain verifies (signatures and attenuation, rooted
-    /// at a user); the binding is for the chain's root user key; and the binding
-    /// verifies against some key in `authorized_keys`. The handshake signature
-    /// proving possession is checked by the rustls trait impls.
+    /// Admitted iff the certificate's key is ed25519 and equals the chain's agent
+    /// key, the chain verifies (signatures, attenuation, rooted at a user; a
+    /// bounded generation scope is refused), and [`admit`](Self::admit) accepts
+    /// it. The handshake signature proving possession is checked by the rustls
+    /// trait impls.
     pub fn verify_peer(&self, end_entity: &[u8]) -> Result<Fingerprint, MtlsError> {
         let (cert_key, proof) = PeerProof::from_certificate(end_entity)?;
         if cert_key != proof.chain.agent_pubkey {
@@ -33,18 +40,25 @@ impl MeshVerifier {
             .chain
             .verify()
             .map_err(|e| MtlsError::BadChain(e.to_string()))?;
-        if proof.binding.user_pubkey != proof.chain.root_user_pubkey() {
+        self.admit(&proof.chain, &proof.binding)
+    }
+
+    /// The acceptance rules that apply to an already **verified** chain: the
+    /// binding is for the chain's root user and is signed by a listed key.
+    /// Any later per-chain policy (revocation, #155) belongs here.
+    fn admit(&self, chain: &CertChain, binding: &GitHubBinding) -> Result<Fingerprint, MtlsError> {
+        if binding.user_pubkey != chain.root_user_pubkey() {
             return Err(MtlsError::BindingUserMismatch);
         }
         if !self
             .authorized
             .keys()
             .iter()
-            .any(|k| proof.binding.verify(k).is_ok())
+            .any(|k| binding.verify(k).is_ok())
         {
             return Err(MtlsError::NotAuthorized);
         }
-        Ok(proof.chain.agent_fingerprint())
+        Ok(chain.agent_fingerprint())
     }
 }
 

@@ -201,3 +201,20 @@ fn rejects_garbage_and_trailing_bytes() {
         Err(MtlsError::BadCertificate(_))
     ));
 }
+
+#[test]
+fn rejects_chain_with_bounded_generation_scope() {
+    use agent_mesh_protocol::Scope;
+    let user = UserKey::generate();
+    let (ssh, line) = ssh_key();
+    let mut md = metadata("nessie");
+    md.caveats.valid_for_generation = Scope::only([7u64]);
+    let agent = AgentKey::issue(&user, md);
+    let proof = PeerProof {
+        chain: agent.cert().clone(),
+        binding: binding(&user, &ssh),
+    };
+    let der = proof.certificate(&agent.signing_key_bytes()).unwrap();
+    let err = verifier(&[&line]).verify_peer(&der).unwrap_err();
+    assert!(matches!(err, MtlsError::BadChain(_)), "{err}");
+}
