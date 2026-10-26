@@ -2060,6 +2060,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "ssh-key",
  "tempfile",
  "thiserror 1.0.69",

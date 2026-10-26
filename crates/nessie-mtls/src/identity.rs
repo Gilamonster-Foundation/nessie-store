@@ -27,6 +27,7 @@ const BINDING: &str = "binding.json";
 pub struct NodeIdentity {
     key: AgentKey,
     cert: rcgen::Certificate,
+    names: Vec<String>,
 }
 
 impl std::fmt::Debug for NodeIdentity {
@@ -55,14 +56,37 @@ impl NodeIdentity {
             binding,
         };
         Ok(Self {
-            cert: proof.build(&seed)?,
+            cert: proof.build(&seed, &[])?,
             key,
+            names: Vec::new(),
         })
     }
 
     fn proof(&self) -> Result<PeerProof, MtlsError> {
         // The binding lives inside the certificate extension; recover it from there.
         PeerProof::from_certificate(self.cert.der()).map(|(_, p)| p)
+    }
+
+    /// The same identity with `names` (DNS names or IPs) as the certificate's
+    /// subject alternative names. The key and proof are unchanged, so the agent
+    /// fingerprint is too; the certificate (and its [`cert_sha256`](Self::cert_sha256))
+    /// is a deterministic function of key, proof and names.
+    pub fn with_names(mut self, names: &[String]) -> Result<Self, MtlsError> {
+        let seed = Zeroizing::new(self.key.signing_key_bytes());
+        self.cert = self.proof()?.build(&seed, names)?;
+        self.names = names.to_vec();
+        Ok(self)
+    }
+
+    /// Delegate a sub-agent from this node (attenuation-only, rooted at the same
+    /// operator) and give it a fresh key, so it can authenticate as a client
+    /// without ever holding this node's seed. Keeps this node's certificate names.
+    pub fn delegate(&self, metadata: AgentMetadata) -> Result<Self, MtlsError> {
+        let child = self
+            .key
+            .delegate(metadata)
+            .map_err(|e| MtlsError::Mesh(e.to_string()))?;
+        Self::new(child, self.proof()?.binding)?.with_names(&self.names)
     }
 
     /// Issue a fresh agent key from `user`, carrying `binding` (which must be for
@@ -122,6 +146,15 @@ impl NodeIdentity {
             vec![self.certificate()?],
             signer,
         )))
+    }
+
+    /// Lowercase hex SHA-256 of the certificate DER: the value a client pins.
+    pub fn cert_sha256(&self) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(self.cert.der().as_ref())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
 
     /// The certificate as PEM.
