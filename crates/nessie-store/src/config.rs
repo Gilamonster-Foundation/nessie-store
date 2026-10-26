@@ -219,11 +219,16 @@ pub struct TlsConfig {
     /// binding must be signed by. Unset = `data_dir/authorized_keys`. A missing
     /// file trusts nobody (fail closed).
     pub authorized_keys: Option<PathBuf>,
-    /// Serve `/cas/v1/*` over mutual TLS on [`peer_listen`](Self::peer_listen) and
-    /// dial peers over `https` with the node identity. Default false, so an upgrade
-    /// does not break a lab swarm. The ONTAP REST listener is unaffected: Basic auth,
-    /// no client certificate.
+    /// Secure the REAPI face with mutual TLS (client certificates judged against
+    /// `authorized_keys`), the S3 face with server TLS using the node certificate,
+    /// and serve `/cas/v1/*` on [`peer_listen`](Self::peer_listen) over mutual TLS
+    /// with peers dialled over `https`. Default `false`: everything serves as
+    /// before. The ONTAP REST listener is unaffected: Basic auth, no client cert.
     pub mtls: bool,
+    /// Extra DNS names / IPs for the node certificate (`localhost`, `127.0.0.1`
+    /// and `::1` are always included), so a TLS client that checks the host name
+    /// accepts it.
+    pub names: Vec<String>,
     /// Where the mTLS peer API listens (only when `mtls = true`).
     pub peer_listen: SocketAddr,
 }
@@ -233,6 +238,7 @@ impl Default for TlsConfig {
         Self {
             authorized_keys: None,
             mtls: false,
+            names: Vec::new(),
             peer_listen: SocketAddr::from(([0, 0, 0, 0], 8443)),
         }
     }
@@ -343,7 +349,7 @@ impl Config {
         cfg.apply_env();
         if let Some(cas) = &cfg.cas {
             let peers = cas.effective_peers()?;
-            if cfg.mtls()
+            if cfg.mtls_enabled()
                 && let Some(p) = peers.iter().find(|p| !p.url.starts_with("https://"))
             {
                 anyhow::bail!("[tls] mtls = true but [cas] peer {} is not https://", p.url);
@@ -379,9 +385,9 @@ impl Config {
         self.data_dir.join("identity")
     }
 
-    /// Whether `/cas/v1` runs over mutual TLS (`[tls] mtls`).
+    /// Whether `[tls] mtls = true`.
     #[must_use]
-    pub fn mtls(&self) -> bool {
+    pub fn mtls_enabled(&self) -> bool {
         self.tls.as_ref().is_some_and(|t| t.mtls)
     }
 
@@ -596,11 +602,11 @@ mod tests {
     #[test]
     fn mtls_is_off_by_default_and_requires_https_peers() {
         let def = Config::default();
-        assert!(!def.mtls());
+        assert!(!def.mtls_enabled());
         assert_eq!(def.peer_listen(), "0.0.0.0:8443".parse().unwrap());
         let cfg: Config =
             toml::from_str("[tls]\nmtls = true\npeer_listen = \"127.0.0.1:9\"\n").unwrap();
-        assert!(cfg.mtls());
+        assert!(cfg.mtls_enabled());
         assert_eq!(cfg.peer_listen(), "127.0.0.1:9".parse().unwrap());
 
         let dir = tempfile::tempdir().unwrap();

@@ -31,8 +31,12 @@ pub fn mesh_configs(
         &cfg.authorized_keys_path(),
     )));
     Ok((
-        nessie_mtls::server_config(&id, verifier.clone())?,
-        nessie_mtls::client_config(&id, verifier)?,
+        Arc::new(nessie_mtls::server_config(
+            &id,
+            Some(verifier.clone()),
+            &[b"http/1.1"],
+        )?),
+        Arc::new(nessie_mtls::client_config(&id, verifier)?),
     ))
 }
 

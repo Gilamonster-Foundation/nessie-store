@@ -76,6 +76,24 @@ enum IdentityCmd {
         #[arg(long, default_value = "nessie")]
         host: String,
     },
+    /// Print this node's agent fingerprint and the SHA-256 of the certificate the
+    /// cache faces serve (what S3 clients pin).
+    Show {
+        /// Path to the config file (locates `data_dir`).
+        #[arg(long, default_value = "nessie-store.toml")]
+        config: PathBuf,
+    },
+    /// Write `client.crt` and `client.key` for a Bazel client
+    /// (`--tls_client_certificate` / `--tls_client_key`): a delegated sub-agent of
+    /// this node, never the node's own seed.
+    ExportClientCert {
+        /// Path to the config file (locates `data_dir`).
+        #[arg(long, default_value = "nessie-store.toml")]
+        config: PathBuf,
+        /// Directory to write `client.crt` and `client.key` into.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -93,22 +111,39 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Serve { config, no_tls } => serve(&config, no_tls).await,
-        Cmd::Identity {
-            cmd:
-                IdentityCmd::Issue {
-                    config,
-                    user_key,
-                    binding,
-                    role,
-                    host,
-                },
+        Cmd::Identity { cmd } => identity(cmd),
+    }
+}
+
+fn identity(cmd: IdentityCmd) -> anyhow::Result<()> {
+    match cmd {
+        IdentityCmd::Issue {
+            config,
+            user_key,
+            binding,
+            role,
+            host,
         } => {
             let dir = Config::load(&config)?.mesh_identity_dir();
             let fp = nessie_store::identity_cmd::issue(&user_key, &binding, &role, &host, &dir)?;
             println!("issued agent {} into {}", fp.hex(), dir.display());
-            Ok(())
+        }
+        IdentityCmd::Show { config } => {
+            let (agent, sha256) =
+                nessie_store::face_tls::served_cert_sha256(&Config::load(&config)?)?;
+            println!("agent {agent}\ncertificate sha256 {sha256}");
+        }
+        IdentityCmd::ExportClientCert { config, out } => {
+            let dir = Config::load(&config)?.mesh_identity_dir();
+            let fp = nessie_store::identity_cmd::export_client_cert(&dir, &out)?;
+            println!(
+                "wrote client.crt and client.key for delegated agent {} into {}",
+                fp.hex(),
+                out.display()
+            );
         }
     }
+    Ok(())
 }
 
 async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()> {
@@ -153,23 +188,24 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
     // a blob written over REAPI gRPC is the blob an S3 client reads, and the store
     // retention maintenance sweeps. Building a store per consumer would break that.
     let faces = nessie_store::faces::build_faces(&cfg)?;
+    let face_tls = nessie_store::face_tls::FaceTls::from_config(&cfg)?;
     if let (Some(node), Some(cas_cfg)) = (&faces.node, &cfg.cas) {
         tracing::info!(mode = ?cas_cfg.mode, backend = ?cas_cfg.backend, "cas node enabled; scheduling retention maintenance");
         nessie_store::cas_node::spawn_maintenance(node.clone());
     }
     if let Some((backend, signer)) = faces.backend {
         if let Some(rc) = cfg.reapi.clone().filter(|r| r.enabled) {
-            nessie_store::faces::spawn_reapi(rc, backend.clone(), signer)?;
+            nessie_store::faces::spawn_reapi(rc, backend.clone(), signer, face_tls.clone())?;
         }
         if let Some(sc) = cfg.s3.clone().filter(|s| s.enabled) {
-            nessie_store::faces::spawn_s3(sc, backend)?;
+            nessie_store::faces::spawn_s3(sc, backend, face_tls)?;
         }
     }
 
     let listen = cfg.listen;
     let tls_dir = cfg.tls_dir();
     let peer_api = cfg.cas.as_ref().is_some_and(|c| c.peer_api);
-    let mtls = cfg.mtls().then(|| {
+    let mtls = cfg.mtls_enabled().then(|| {
         (
             cfg.peer_listen(),
             nessie_store::peer_tls::mesh_configs(&cfg),

@@ -125,7 +125,7 @@ fn ontap_keeps_basic_auth_and_cas_needs_a_client_cert() {
     let v = Arc::new(MeshVerifier::new(AuthorizedKeys::parse(&line)));
     let tls = nessie_mtls::client_config(&node(&ssh), v).unwrap();
     let mesh = reqwest::blocking::Client::builder()
-        .use_preconfigured_tls((*tls).clone())
+        .use_preconfigured_tls(tls)
         .build()
         .unwrap();
     assert_eq!(
