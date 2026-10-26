@@ -2144,6 +2144,7 @@ dependencies = [
 name = "nessie-store"
 version = "0.3.1"
 dependencies = [
+ "agent-mesh-protocol",
  "anyhow",
  "axum",
  "axum-server",
@@ -2159,6 +2160,7 @@ dependencies = [
  "nessie-cas-disk",
  "nessie-cas-peer",
  "nessie-cas-store",
+ "nessie-mtls",
  "nessie-nfs",
  "nessie-ontap-protocol",
  "nessie-reapi",
@@ -2172,6 +2174,8 @@ dependencies = [
  "s3s",
  "serde",
  "serde_json",
+ "ssh-key",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util",

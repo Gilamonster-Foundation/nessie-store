@@ -47,6 +47,35 @@ enum Cmd {
         #[arg(long)]
         no_tls: bool,
     },
+    /// Manage this node's agent-mesh identity (mTLS).
+    Identity {
+        #[command(subcommand)]
+        cmd: IdentityCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCmd {
+    /// Issue this node's agent key from the operator's user key and write
+    /// `agent.seed`, `agent.chain.json` and `binding.json` under `<data_dir>/identity/`.
+    /// Never prints the seed.
+    Issue {
+        /// Path to the config file (locates `data_dir`).
+        #[arg(long, default_value = "nessie-store.toml")]
+        config: PathBuf,
+        /// The operator's agent-mesh user key (PKCS#8 PEM).
+        #[arg(long)]
+        user_key: PathBuf,
+        /// The user's GitHubBinding JSON (`amesh bind github` output).
+        #[arg(long)]
+        binding: PathBuf,
+        /// Role label recorded in the signed chain.
+        #[arg(long, default_value = "nessie")]
+        role: String,
+        /// Host label recorded in the signed chain.
+        #[arg(long, default_value = "nessie")]
+        host: String,
+    },
 }
 
 #[tokio::main]
@@ -64,6 +93,21 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Serve { config, no_tls } => serve(&config, no_tls).await,
+        Cmd::Identity {
+            cmd:
+                IdentityCmd::Issue {
+                    config,
+                    user_key,
+                    binding,
+                    role,
+                    host,
+                },
+        } => {
+            let dir = Config::load(&config)?.mesh_identity_dir();
+            let fp = nessie_store::identity_cmd::issue(&user_key, &binding, &role, &host, &dir)?;
+            println!("issued agent {} into {}", fp.hex(), dir.display());
+            Ok(())
+        }
     }
 }
 
