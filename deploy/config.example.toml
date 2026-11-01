@@ -85,7 +85,8 @@ byte_budget = 107374182400   # 100 GiB
 backend = "disk"
 path = "/var/lib/nessie-store/cas"
 #
-# Static peers (plain http and unauthenticated unless [tls] mtls = true, which needs https:// URLs).
+# Static peers (plain http and unauthenticated unless [tls] mtls = true, which needs https:// URLs;
+# see docs/MTLS.md for the identity / authorized_keys setup).
 # A miss is fetched from peers and verified against its digest; `durable = true` is
 # a hint of whom to probe and replicate to, believed only if that peer reports
 # x-nessie-mode: write_only. List each URL once; advertise_url is this node's own
@@ -101,3 +102,11 @@ path = "/var/lib/nessie-store/cas"
 # enabled = true
 # listen = "0.0.0.0:9000"
 # access_key = "nessie"
+
+# Mutual TLS from agent-mesh keys (docs/MTLS.md). Needs `nessie-store identity issue`
+# and an authorized_keys file (default: <data_dir>/authorized_keys). Revocation: #155.
+# [tls]
+# mtls = true
+# peer_listen = "0.0.0.0:8443"
+# names = ["nessie-1.example.net"]
+# authorized_keys = "/etc/nessie-store/authorized_keys"
