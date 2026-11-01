@@ -6,15 +6,17 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
-### Added (v0.4.1)
+## [0.4.1] — 2026-11-01
+
+mTLS with agent-mesh keys on the peer API, REAPI and S3 faces, off by default (`[tls] mtls`).
+
+### Added
 - **mTLS with agent-mesh keys, end to end (#149).** Peer API on `[tls] peer_listen` and
   `https://` peers (#151), REAPI client certificates and S3 server TLS with a pinnable
   fingerprint (#152), and the operator walkthrough [docs/MTLS.md](docs/MTLS.md) (#153):
   `identity issue` / `show` / `export-client-cert`, `authorized_keys`, `[tls] mtls = true`.
   The mTLS peer client is https-only and never follows redirects. **Revocation is not yet
   honoured** (#155, v0.4.2).
-
-### Added
 - **`nessie-mtls`: agent-mesh node identity, certificate and verifier (#150).** A node's
   identity is an agent-mesh `AgentKey` (`<data_dir>/identity/agent.seed`, `agent.chain.json`,
   `binding.json`; issued by `nessie-store identity issue`). Its self-signed ed25519 certificate
@@ -24,6 +26,14 @@ All notable changes to nessie-store are documented here. The format follows
   for the chain's root user, and the binding is signed by a key in `[tls] authorized_keys`
   (a missing file trusts nobody). TLS 1.3 only. Listener wiring follows in #151/#152.
 
+## [0.4.0] — 2026-11-01
+
+CAS on disk, a content-keyed S3 face, and static-peer sharing:
+`nessie-cas-disk`, `[cas] backend = "disk"`, LRU (default) and `write_only` retention,
+scrub and repair, `/cas/v1` peer routes with fetch-through and pinning, and the S3 face.
+The peer API is unauthenticated in this release (lab only; mTLS is 0.4.1).
+
+### Added
 - **`write_only` acknowledges a write only after R verified copies (#139).**
   `[cas] replication_factor` is R, the total copies including this node (default 2;
   an error under `lru`). After the local write `put`/`put_keyed` push to `durable`
@@ -159,7 +169,7 @@ All notable changes to nessie-store are documented here. The format follows
 ### Planned
 - Live-ZFS / Trident-on-k3s acceptance gate (incl. a real two-instance `zfs`
   replication check) — #70.
-- SMB support (v0.4.0) — epic #51.
+- SMB support (v0.5.0) — epic #51.
 
 ## [0.3.1] — 2026-06-26
 
