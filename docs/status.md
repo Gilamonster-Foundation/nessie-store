@@ -29,16 +29,30 @@ the machine-checked list of what exists.
   every pass and counted as `pending_restore`; it shares the pass's byte budget,
   and nothing is fetched when the capacity gate would refuse the blob anyway. Pins persist across restart only
   after #137.
-- **Auth is lab-only.** S3 uses one static SigV4 key; the daemon refuses to
-  start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI is
-  unauthenticated and off by default. mTLS is not built.
+- **Auth is lab-only unless `[tls] mtls = true`.** S3 uses one static SigV4 key; the
+  daemon refuses to start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI and
+  the peer API are unauthenticated without mTLS; with it they require a certificate
+  from an operator in `authorized_keys` ([MTLS.md](MTLS.md)). Revocation is not yet
+  honoured (#155).
+- **REAPI mTLS, S3 server TLS** (`[tls] mtls = true`, needs a node identity from
+  `nessie-store identity issue` and an `authorized_keys` file). REAPI then
+  requires a client certificate whose operator is listed; S3 serves HTTPS with
+  the node certificate and keeps SigV4. The certificate carries `localhost`,
+  `127.0.0.1`, `::1` and `[tls] names`; `nessie-store identity show` and the
+  startup log print its SHA-256 for clients to pin. A Bazel client:
+  `nessie-store identity export-client-cert --out DIR` writes `client.crt` and
+  `client.key` (a delegated sub-agent; the node seed is never exported), then
+  `bazel build --remote_cache=grpcs://HOST:8980 --tls_client_certificate=DIR/client.crt
+  --tls_client_key=DIR/client.key --tls_certificate=<node certificate PEM>`.
+  Bazel also needs the node certificate as its trust root. Walkthrough:
+  [MTLS.md](MTLS.md); revocation is #155.
 - **S3 scope.** `PutObject`, `GetObject`, `HeadObject` on content-addressed
   keys (`cas/{xx}/{sha256}` or flat `{prefix}{sha256}`). No `ListObjectsV2`,
   no arbitrary key names; a body that doesn't hash to its key is refused.
 - **ActionCache.** Result bodies live in the shared store; attestations are
   in memory and lost on restart.
 - **Peers.** Static peers shipped (#127): see [CAS peer plane](#cas-peer-plane-static-peers)
-  below. HTTP-only and unauthenticated until mTLS. Pin and unpin shipped (#144):
+  below. Plain HTTP and unauthenticated unless `[tls] mtls = true` (#151): then `/cas/v1` is served on its own mTLS listener (`[tls] peer_listen`) and peers are `https://`. Pin and unpin shipped (#144):
   `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only, in memory until #137.
 
 See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
@@ -48,9 +62,10 @@ See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
 `[cas] peers = [{ url = "http://host:port", durable = true }]` (`durable` is a hint, verified: see below) turns on fetch-through
 (`SwarmCas`), a HEAD-backed durability oracle and a PUT replicator; `peer_api = true`
 mounts `GET|HEAD|PUT /cas/v1/blobs/{algo}:{hex}` so others can reach this node.
-**Lab only: the routes are unauthenticated, and the peer client does not trust the
-daemon's self-signed certificate, so peers must reach each other over plain `http`
-(run the daemon with `--no-tls`). mTLS is the fast-follow.** Integrity never depends on the wire: every byte is verified against
+**By default the routes are unauthenticated and peers speak plain `http` (run the
+daemon with `--no-tls`). With `[tls] mtls = true` they are served only on
+`peer_listen` and require a client certificate the mesh verifier admits; peer URLs
+must be `https://`.** Integrity never depends on the wire: every byte is verified against
 its digest before it is stored or served.
 
 **Probe cost.** Cache eviction asks every peer, one after another, whether it holds

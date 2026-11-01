@@ -13,8 +13,11 @@ homepage.workspace = true
 nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.0" }
 nessie-cas-store = { path = "../nessie-cas-store", version = "0.4.0" }
 reqwest = { workspace = true }
+rustls = { workspace = true }
 
 [dev-dependencies]
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.0" }
 axum = { workspace = true }
 tokio = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

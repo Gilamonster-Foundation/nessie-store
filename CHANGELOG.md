@@ -6,6 +6,22 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **mTLS with agent-mesh keys, end to end (#149).** Peer API on `[tls] peer_listen` and
+  `https://` peers (#151), REAPI client certificates and S3 server TLS with a pinnable
+  fingerprint (#152), and the operator walkthrough [docs/MTLS.md](docs/MTLS.md) (#153):
+  `identity issue` / `show` / `export-client-cert`, `authorized_keys`, `[tls] mtls = true`.
+  The mTLS peer client is https-only and never follows redirects. **Revocation is not yet
+  honoured** (#155, v0.4.2).
+- **`nessie-mtls`: agent-mesh node identity, certificate and verifier (#150).** A node's
+  identity is an agent-mesh `AgentKey` (`<data_dir>/identity/agent.seed`, `agent.chain.json`,
+  `binding.json`; issued by `nessie-store identity issue`). Its self-signed ed25519 certificate
+  carries the signed `CertChain` and `GitHubBinding` in one extension
+  (`2.25.8763957256297098986`). `MeshVerifier` implements both rustls verifier traits and admits
+  a peer only when the cert key equals the chain's agent key, the chain verifies, the binding is
+  for the chain's root user, and the binding is signed by a key in `[tls] authorized_keys`
+  (a missing file trusts nobody). TLS 1.3 only. Listener wiring follows in #151/#152.
+
 ## [0.4.0] — 2026-11-01
 
 CAS on disk, a content-keyed S3 face, and static-peer sharing:

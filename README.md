@@ -86,6 +86,7 @@ cannot silently drift out of sync.
 | `nessie-cas-store` | retention engine: `lru` eviction and `write_only` capacity |
 | `nessie-reapi` | Bazel REAPI v2 (cache subset) gRPC face over the CAS/AC backends |
 | `nessie-s3` | S3 object-API face over the CAS, for digest-keyed cache clients |
+| `nessie-mtls` | mutual TLS from agent-mesh keys: node identity, mesh-proof certificate, `authorized_keys` verifier |
 | `nessie-backend-mem` | HashMap reference backend |
 | `nessie-cas-disk` | persistent on-disk CAS: write-then-rename commit, verified reads |
 | `nessie-cas-peer` | static-peer swarm: HTTP fetch-through (`SwarmCas`), durability oracle, replicator |

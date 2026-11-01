@@ -19,6 +19,7 @@ members = [
     "crates/nessie-cas-store",
     "crates/nessie-reapi",
     "crates/nessie-s3",
+    "crates/nessie-mtls",
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",
@@ -127,6 +128,14 @@ http = "1"
 # TLS (ONTAP REST is HTTPS-only): rustls server + self-signed cert generation.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rcgen = "0.13"
+
+# Mesh-key mTLS (nessie-mtls): the node identity is an agent-mesh AgentKey, the
+# trust list is an SSH authorized_keys file, the peer certificate is parsed (not
+# validated as a PKI chain) with x509-parser. Same agent-mesh-protocol line the
+# sibling agent crates track.
+agent-mesh-protocol = "0.8"
+ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
+x509-parser = "0.16"
 
 # HTTP client (ontap-passthrough backend; s3 backend uses object_store)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
