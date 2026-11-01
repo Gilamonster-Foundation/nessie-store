@@ -42,7 +42,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Shawn Hartsock <hartsock@users.noreply.github.com>"]
@@ -126,7 +126,7 @@ hyper = "1"
 http = "1"
 
 # TLS (ONTAP REST is HTTPS-only): rustls server + self-signed cert generation.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"
 
 # Mesh-key mTLS (nessie-mtls): the node identity is an agent-mesh AgentKey, the

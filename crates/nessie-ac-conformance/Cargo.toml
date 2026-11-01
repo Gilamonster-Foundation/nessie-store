@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.1" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.2" }
 # Reused to assert an ActionCacheBackend does not regress the CAS contract of its
 # CasBackend supertrait (the `it_is_also_a_cas` property).
-nessie-cas-conformance = { path = "../nessie-cas-conformance", version = "0.4.1" }
+nessie-cas-conformance = { path = "../nessie-cas-conformance", version = "0.4.2" }

@@ -117,7 +117,7 @@ Pin that SHA-256 in S3 clients that support it. The daemon logs it at startup to
 
 ## Not yet: revocation
 
-**Revoking an agent or a generation is not honoured** (#155, v0.4.2). The only lever
+**Revoking an agent or a generation is not honoured** (#155, v0.4.3). The only lever
 today is removing the operator's key from `authorized_keys` **and restarting every
 node** (see step 3). A leaked agent key under a still-listed operator stays valid.
 Until #155 lands, treat mTLS as authentication of the operator, not as a revocable
