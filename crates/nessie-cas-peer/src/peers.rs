@@ -1,6 +1,7 @@
 //! The configured peer list and the three HTTP verbs spoken to it.
 
 use std::io::Read;
+use std::sync::Arc;
 use std::time::Duration;
 
 use nessie_backend_core::{BackendError, Digest};
@@ -9,7 +10,7 @@ use reqwest::blocking::{Body, Client, Response};
 /// One static peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
-    /// Base URL, e.g. `http://host:8443` (no trailing path).
+    /// Base URL, e.g. `http://host:8443` (`https://` under mTLS) (no trailing path).
     pub url: String,
     /// Whether the peer is a durable store of record.
     pub durable: bool,
@@ -42,15 +43,36 @@ impl PeerSet {
     /// # Errors
     ///
     /// [`BackendError::Internal`] if the HTTP client cannot be built.
-    pub fn new(mut peers: Vec<Peer>) -> Result<Self, BackendError> {
+    pub fn new(peers: Vec<Peer>) -> Result<Self, BackendError> {
+        Self::with_tls(peers, None)
+    }
+
+    /// As [`new`](Self::new), but with `tls` the client presents the node
+    /// certificate and verifies servers with the config's verifier (mTLS). Peer
+    /// URLs are then expected to be `https://`.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Internal`] if the HTTP client cannot be built.
+    pub fn with_tls(
+        mut peers: Vec<Peer>,
+        tls: Option<Arc<rustls::ClientConfig>>,
+    ) -> Result<Self, BackendError> {
         // Distinct holders only: a URL listed twice must not count as two replicas.
         let mut seen = std::collections::HashSet::new();
         peers.retain(|p| seen.insert(p.url.trim_end_matches('/').to_owned()));
-        let client = std::thread::spawn(|| {
-            Client::builder()
+        let client = std::thread::spawn(move || {
+            let mut b = Client::builder()
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
-                .build()
+                .timeout(Duration::from_secs(30));
+            if let Some(tls) = tls {
+                // A redirect (or an `http://` peer) must not leave the mTLS channel.
+                b = b
+                    .use_preconfigured_tls((*tls).clone())
+                    .https_only(true)
+                    .redirect(reqwest::redirect::Policy::none());
+            }
+            b.build()
         })
         .join()
         .map_err(|_| BackendError::Internal("peer client thread panicked".into()))?
@@ -120,5 +142,135 @@ impl PeerSet {
             .body(body)
             .send()
             .is_ok_and(|r| r.status().is_success())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use nessie_backend_core::Digest;
+
+    use super::{Peer, PeerSet};
+
+    /// A plaintext server that counts connections and would happily answer a peer
+    /// request as a durable holder.
+    fn counting_http() -> (String, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                h.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nx-nessie-mode: write_only\r\nconnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        (url, hits)
+    }
+
+    /// An admitted (trusted-cert) HTTPS server answering everything with `302 → to`.
+    /// Returns its URL and a client config that trusts it.
+    fn https_redirector(to: String) -> (String, Arc<rustls::ClientConfig>) {
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let der = ck.cert.der().clone();
+        let key = rustls::pki_types::PrivateKeyDer::try_from(ck.key_pair.serialize_der()).unwrap();
+        let server = Arc::new(
+            rustls::ServerConfig::builder_with_provider(ring())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![der.clone()], key)
+                .unwrap(),
+        );
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(der).unwrap();
+        let client = Arc::new(
+            rustls::ClientConfig::builder_with_provider(ring())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let l = tokio::net::TcpListener::from_std(l).unwrap();
+                    let acc = tokio_rustls::TlsAcceptor::from(server);
+                    loop {
+                        let (tcp, _) = l.accept().await.unwrap();
+                        let (acc, to) = (acc.clone(), to.clone());
+                        tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let Ok(mut s) = acc.accept(tcp).await else { return };
+                            let mut buf = [0u8; 1024];
+                            let _ = s.read(&mut buf).await;
+                            let r = format!(
+                                "HTTP/1.1 302 Found\r\nlocation: {to}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                            );
+                            let _ = s.write_all(r.as_bytes()).await;
+                            let _ = s.shutdown().await;
+                        });
+                    }
+                });
+        });
+        (format!("https://localhost:{port}"), client)
+    }
+
+    fn ring() -> Arc<rustls::crypto::CryptoProvider> {
+        Arc::new(rustls::crypto::ring::default_provider())
+    }
+
+    fn digest() -> Digest {
+        Digest::compute(b"hi")
+    }
+
+    /// Regression (PR #157 round 2, P1): an admitted HTTPS peer redirecting to
+    /// plain HTTP must not be followed — no plaintext request, no holder claim.
+    #[test]
+    fn https_peer_redirect_to_http_is_not_followed() {
+        let (plain, hits) = counting_http();
+        let (url, tls) = https_redirector(format!("{plain}/cas/v1/blobs/x"));
+        let peers = PeerSet::with_tls(vec![Peer { url, durable: true }], Some(tls)).unwrap();
+        let p = &peers.peers()[0];
+        assert!(!peers.holds_durably(p, &digest()));
+        assert!(peers.get(p, &digest()).is_none());
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "plaintext endpoint was contacted"
+        );
+    }
+
+    /// With TLS configured, a `http://` peer fails closed (never contacted).
+    #[test]
+    fn tls_mode_refuses_plain_http_peer() {
+        let (plain, hits) = counting_http();
+        let (_, tls) = https_redirector(String::new());
+        let peers = PeerSet::with_tls(
+            vec![Peer {
+                url: plain,
+                durable: true,
+            }],
+            Some(tls),
+        )
+        .unwrap();
+        let p = &peers.peers()[0];
+        assert!(!peers.holds_durably(p, &digest()));
+        assert!(peers.get(p, &digest()).is_none());
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 }

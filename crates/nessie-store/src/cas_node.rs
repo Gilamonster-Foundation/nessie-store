@@ -150,6 +150,20 @@ impl CasNode {
     /// [`retention_policy`] validation errors; `backend = "disk"` without `path`;
     /// a disk root that cannot be opened; a backend that cannot be enumerated.
     pub fn from_config(cfg: &CasConfig, me: PeerId) -> anyhow::Result<Self> {
+        Self::from_config_tls(cfg, me, None)
+    }
+
+    /// As [`from_config`](Self::from_config); with `tls` the peer client speaks mTLS
+    /// (the peers in `cfg` are then `https://` URLs).
+    ///
+    /// # Errors
+    ///
+    /// As [`from_config`](Self::from_config).
+    pub fn from_config_tls(
+        cfg: &CasConfig,
+        me: PeerId,
+        tls: Option<Arc<rustls::ClientConfig>>,
+    ) -> anyhow::Result<Self> {
         let policy = retention_policy(cfg)?;
         let peer_copies = peer_copies(cfg)?;
         let blobs: Box<dyn ReclaimableCas> = match cfg.backend {
@@ -179,7 +193,7 @@ impl CasNode {
                     None,
                 )
             } else {
-                let peers = Arc::new(PeerSet::new(
+                let peers = Arc::new(PeerSet::with_tls(
                     peer_list
                         .iter()
                         .map(|p| Peer {
@@ -187,6 +201,7 @@ impl CasNode {
                             durable: p.durable,
                         })
                         .collect(),
+                    tls,
                 )?);
                 // write_only: serve fetched bytes without storing them (capacity gate).
                 let swarm = SwarmCas::new(blobs, peers.clone())

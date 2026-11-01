@@ -40,10 +40,17 @@ pub fn build_faces(cfg: &Config) -> anyhow::Result<Faces> {
     if let Some(sc) = cfg.s3.as_ref().filter(|s| s.enabled) {
         check_s3_secret(sc)?;
     }
+    let tls = cfg
+        .mtls_enabled()
+        .then(|| crate::peer_tls::mesh_configs(cfg).map(|(_, client)| client))
+        .transpose()?;
     let node = cfg
         .cas
         .as_ref()
-        .map(|c| CasNode::from_config(c, PeerId::new(cfg.data_lif.clone())).map(Arc::new))
+        .map(|c| {
+            CasNode::from_config_tls(c, PeerId::new(cfg.data_lif.clone()), tls.clone())
+                .map(Arc::new)
+        })
         .transpose()?;
     let backend = if reapi_on || s3_on {
         Some(build_cas_backend(node.clone())?)

@@ -10,7 +10,7 @@
 //! allowed (201): the pin protects the blob when it arrives. Pins live in memory and
 //! are lost on restart until roots persist (#137).
 //!
-//! **Lab only: unauthenticated; mTLS is the fast-follow.** Integrity does not rest
+//! Unauthenticated unless the daemon serves them on the mTLS peer listener. Integrity does not rest
 //! on the wire — `get` and `put_keyed` verify every byte against the digest.
 
 use std::io::{Cursor, Read};
