@@ -12,7 +12,7 @@ Sister project to [monty-tui](https://github.com/hartsock/monty-tui) and [scrybe
 
 ## Status
 
-**v0.3.1 — early development, public.** The ONTAP REST control plane and one real
+**v0.4.0 — early development, public.** The ONTAP REST control plane and one real
 substrate (ZFS) work end to end, alongside an embedded userspace NFSv3 data plane.
 The [crate inventory](#crate-inventory) is the source of truth for what is
 implemented today versus planned. Pre-1.0, the protocol surface may still shift.

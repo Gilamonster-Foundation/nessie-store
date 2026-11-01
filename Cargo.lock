@@ -1541,7 +1541,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nessie-ac-conformance"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-backend-core",
  "nessie-cas-conformance",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-conformance"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-backend-core",
  "pyo3",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-mem"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-ac-conformance",
  "nessie-backend-conformance",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-backend-zfs"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "nessie-backend-conformance",
@@ -1601,14 +1601,14 @@ dependencies = [
 
 [[package]]
 name = "nessie-cas-conformance"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-backend-core",
 ]
 
 [[package]]
 name = "nessie-cas-disk"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-backend-core",
  "nessie-cas-conformance",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-cas-peer"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "axum",
  "nessie-backend-core",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-cas-store"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-backend-core",
  "nessie-backend-mem",
@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-nfs"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "nessie-nfsserve",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-nfsserve"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-ontap-protocol"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "nessie-backend-core",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-reapi"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "nessie-backend-core",
  "nessie-backend-mem",
@@ -1689,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-s3"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "nessie-store"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",

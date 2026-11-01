@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.0" }
 s3s = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -21,7 +21,7 @@ tokio-util = { workspace = true }
 tokio-stream = { workspace = true }
 
 [dev-dependencies]
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.0" }
 tokio = { workspace = true }
 object_store = { workspace = true }
 axum = { workspace = true }

@@ -52,8 +52,12 @@ jobs:
             echo "::notice::CARGO_REGISTRY_TOKEN unset — skipping crates.io publish"
             exit 0
           fi
-          for c in nessie-backend-core nessie-ontap-protocol nessie-backend-conformance \
-                   nessie-backend-mem nessie-backend-zfs nessie-nfsserve nessie-nfs nessie-store; do
+          # Dependency order, including path dev-deps that carry a version
+          # (crates.io resolves those too): conformance crates before backend-mem.
+          for c in nessie-backend-core nessie-backend-conformance nessie-cas-conformance \
+                   nessie-ac-conformance nessie-backend-mem nessie-backend-zfs \
+                   nessie-ontap-protocol nessie-nfsserve nessie-nfs nessie-cas-store \
+                   nessie-cas-disk nessie-cas-peer nessie-reapi nessie-s3 nessie-store; do
             echo "::group::publish $c"
             cargo publish -p "$c" --locked || echo "::warning::publish $c failed (already published?)"
             sleep 20  # crates.io index propagation before the next crate

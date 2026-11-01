@@ -6,6 +6,13 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-01
+
+CAS on disk, a content-keyed S3 face, and static-peer sharing:
+`nessie-cas-disk`, `[cas] backend = "disk"`, LRU (default) and `write_only` retention,
+scrub and repair, `/cas/v1` peer routes with fetch-through and pinning, and the S3 face.
+The peer API is unauthenticated in this release (lab only; mTLS is 0.4.1).
+
 ### Added
 - **`write_only` acknowledges a write only after R verified copies (#139).**
   `[cas] replication_factor` is R, the total copies including this node (default 2;
@@ -142,7 +149,7 @@ All notable changes to nessie-store are documented here. The format follows
 ### Planned
 - Live-ZFS / Trident-on-k3s acceptance gate (incl. a real two-instance `zfs`
   replication check) — #70.
-- SMB support (v0.4.0) — epic #51.
+- SMB support (v0.5.0) — epic #51.
 
 ## [0.3.1] — 2026-06-26
 
