@@ -83,7 +83,7 @@ jobs:
         platform:
           - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, manylinux: auto }
           - { runner: ubuntu-24.04, target: aarch64-unknown-linux-gnu, manylinux: auto }
-          - { runner: macos-14, target: universal2-apple-darwin, manylinux: "off" }
+          - { runner: macos-latest, target: universal2-apple-darwin, manylinux: "off" }
           - { runner: windows-latest, target: x86_64-pc-windows-msvc, manylinux: "off" }
     steps:
       - uses: actions/checkout@v4
