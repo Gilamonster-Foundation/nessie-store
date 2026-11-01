@@ -6,6 +6,10 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-01
+
+mTLS with agent-mesh keys on the peer API, REAPI and S3 faces, off by default (`[tls] mtls`).
+
 ### Added
 - **mTLS with agent-mesh keys, end to end (#149).** Peer API on `[tls] peer_listen` and
   `https://` peers (#151), REAPI client certificates and S3 server TLS with a pinnable

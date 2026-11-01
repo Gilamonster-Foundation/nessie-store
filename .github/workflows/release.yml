@@ -57,7 +57,8 @@ jobs:
           for c in nessie-backend-core nessie-backend-conformance nessie-cas-conformance \
                    nessie-ac-conformance nessie-backend-mem nessie-backend-zfs \
                    nessie-ontap-protocol nessie-nfsserve nessie-nfs nessie-cas-store \
-                   nessie-cas-disk nessie-cas-peer nessie-reapi nessie-s3 nessie-store; do
+                   nessie-cas-disk nessie-cas-peer nessie-mtls nessie-reapi nessie-s3 \
+                   nessie-store; do
             echo "::group::publish $c"
             cargo publish -p "$c" --locked || echo "::warning::publish $c failed (already published?)"
             sleep 20  # crates.io index propagation before the next crate

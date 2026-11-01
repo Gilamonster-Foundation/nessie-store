@@ -16,7 +16,7 @@ homepage.workspace = true
 live-fs = []
 
 [dependencies]
-nessie-nfsserve = { path = "../nessie-nfsserve", version = "0.4.0" }
+nessie-nfsserve = { path = "../nessie-nfsserve", version = "0.4.1" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

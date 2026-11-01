@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.0" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.1" }
 
 [dev-dependencies]
-nessie-cas-conformance = { path = "../nessie-cas-conformance", version = "0.4.0" }
+nessie-cas-conformance = { path = "../nessie-cas-conformance", version = "0.4.1" }

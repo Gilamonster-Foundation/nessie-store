@@ -62,20 +62,20 @@ python = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
 # Daemon-only (optional; pulled in by the `daemon` feature).
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.0", optional = true }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.0", optional = true }
-nessie-cas-store = { path = "../nessie-cas-store", version = "0.4.0", optional = true }
-nessie-cas-disk = { path = "../nessie-cas-disk", version = "0.4.0", optional = true }
-nessie-cas-peer = { path = "../nessie-cas-peer", version = "0.4.0", optional = true }
-nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.4.0", optional = true }
-nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.4.0", optional = true }
-nessie-nfs = { path = "../nessie-nfs", version = "0.4.0", optional = true }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.1", optional = true }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.1", optional = true }
+nessie-cas-store = { path = "../nessie-cas-store", version = "0.4.1", optional = true }
+nessie-cas-disk = { path = "../nessie-cas-disk", version = "0.4.1", optional = true }
+nessie-cas-peer = { path = "../nessie-cas-peer", version = "0.4.1", optional = true }
+nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.4.1", optional = true }
+nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.4.1", optional = true }
+nessie-nfs = { path = "../nessie-nfs", version = "0.4.1", optional = true }
 # REAPI (Bazel remote cache) gRPC face — pulled in by the `daemon` feature, wired
 # beside axum in `serve()` when `[reapi]` is enabled. Excluded from the light wheel.
-nessie-reapi = { path = "../nessie-reapi", version = "0.4.0", optional = true }
-nessie-s3 = { path = "../nessie-s3", version = "0.4.0", optional = true }
+nessie-reapi = { path = "../nessie-reapi", version = "0.4.1", optional = true }
+nessie-s3 = { path = "../nessie-s3", version = "0.4.1", optional = true }
 # Mesh-key mTLS: `nessie-store identity issue` is a thin CLI over it.
-nessie-mtls = { path = "../nessie-mtls", version = "0.4.0", optional = true }
+nessie-mtls = { path = "../nessie-mtls", version = "0.4.1", optional = true }
 agent-mesh-protocol = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
@@ -115,14 +115,14 @@ uuid = { workspace = true }
 hyper-util = "0.1"
 rustls = { workspace = true }
 http = { workspace = true }
-nessie-mtls = { path = "../nessie-mtls", version = "0.4.0" }
+nessie-mtls = { path = "../nessie-mtls", version = "0.4.1" }
 agent-mesh-protocol = { workspace = true }
 ssh-key = { workspace = true }
 rand = "0.8"
 tempfile = "3"
 s3s = { workspace = true }
-nessie-s3 = { path = "../nessie-s3", version = "0.4.0" }
-nessie-reapi = { path = "../nessie-reapi", version = "0.4.0" }
+nessie-s3 = { path = "../nessie-s3", version = "0.4.1" }
+nessie-reapi = { path = "../nessie-reapi", version = "0.4.1" }
 bytes = { workspace = true }
 object_store = { workspace = true }
 futures = { workspace = true }
@@ -131,8 +131,8 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 uuid = { workspace = true }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.0" }
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.0" }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.1" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.1" }
 
 # --- Linux packaging -------------------------------------------------------
 # `.deb` via cargo-deb; `.rpm` via cargo-generate-rpm. Asset source paths are
