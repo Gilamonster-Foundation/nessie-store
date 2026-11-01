@@ -6,6 +6,14 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-01
+
+### Fixed
+- **`nessie-mtls` and `nessie-store` 0.4.1 did not build from crates.io.** The workspace took
+  `rustls` without its `std` feature; inside the workspace another crate enabled it, but the
+  published `nessie-mtls` built alone and lost `ServerConfig::builder_with_provider`. `rustls`
+  now names `std` explicitly. 0.4.1 is on crates.io for every crate except these two.
+
 ## [0.4.1] — 2026-11-01
 
 mTLS with agent-mesh keys on the peer API, REAPI and S3 faces, off by default (`[tls] mtls`).
