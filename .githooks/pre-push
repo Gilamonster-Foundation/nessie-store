@@ -12,7 +12,8 @@
 # --all-features below compiles every crate's PyO3 bindings, covering the parity.
 # The ci.yml `portability-windows` job (cross-check the Unix-only crates to the
 # MSVC target) is CI-only too — it needs a cross-target toolchain, so it is a
-# documented non-parity, not drift.
+# documented non-parity, not drift. So is ci.yml's `Each published crate builds
+# alone` step (one `cargo check -p` per crate; whole-tree, CI-only by design).
 #
 # No `--no-verify` bypass: the hook is the local equivalent of the CI gate.
 # Heavy cargo output is redirected to a log and only concise status is printed

@@ -9,7 +9,8 @@
 # too heavy for a pre-push hook, so it is a documented non-parity (like kyln's
 # live-substrate UAT). The `portability-windows` job (cross-check the Unix-only
 # crates to the MSVC target) is likewise CI-only — it needs a cross-target
-# toolchain. The aggressive supersets (deep-regression, cross-os, security-audit,
+# toolchain. The `Each published crate builds alone` step is CI-only too (a
+# whole-tree check, one build per crate). The aggressive supersets (deep-regression, cross-os, security-audit,
 # live-zfs, release) likewise live in their own scheduled workflows and are not
 # mirrored in the hook.
 
@@ -47,6 +48,15 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy (zero warnings)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Each crate builds alone, as `cargo publish` verifies it: no feature borrowed
+      # from a sibling through workspace unification (0.4.1's nessie-mtls lost
+      # rustls `std` this way). HOOK PARITY: CI-only, a whole-tree check.
+      - name: Each published crate builds alone
+        run: |
+          for c in $(cargo metadata --format-version 1 --no-deps --locked \
+                     | python3 -c 'import json,sys; [print(p["name"]) for p in json.load(sys.stdin)["packages"] if p.get("publish") != []]'); do
+            cargo check -p "$c" --lib --locked
+          done
 
   test:
     runs-on: ${{ vars.GMF_LINUX_RUNNER || 'ubuntu-24.04' }}
