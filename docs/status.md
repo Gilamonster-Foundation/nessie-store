@@ -29,9 +29,11 @@ the machine-checked list of what exists.
   every pass and counted as `pending_restore`; it shares the pass's byte budget,
   and nothing is fetched when the capacity gate would refuse the blob anyway. Pins persist across restart only
   after #137.
-- **Auth is lab-only.** S3 uses one static SigV4 key; the daemon refuses to
-  start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI is
-  unauthenticated and off by default unless `[tls] mtls = true` (below).
+- **Auth is lab-only unless `[tls] mtls = true`.** S3 uses one static SigV4 key; the
+  daemon refuses to start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI and
+  the peer API are unauthenticated without mTLS; with it they require a certificate
+  from an operator in `authorized_keys` ([MTLS.md](MTLS.md)). Revocation is not yet
+  honoured (#155).
 - **REAPI mTLS, S3 server TLS** (`[tls] mtls = true`, needs a node identity from
   `nessie-store identity issue` and an `authorized_keys` file). REAPI then
   requires a client certificate whose operator is listed; S3 serves HTTPS with
@@ -42,8 +44,8 @@ the machine-checked list of what exists.
   `client.key` (a delegated sub-agent; the node seed is never exported), then
   `bazel build --remote_cache=grpcs://HOST:8980 --tls_client_certificate=DIR/client.crt
   --tls_client_key=DIR/client.key --tls_certificate=<node certificate PEM>`.
-  Bazel also needs the node certificate as its trust root; per-agent revocation
-  is #155.
+  Bazel also needs the node certificate as its trust root. Walkthrough:
+  [MTLS.md](MTLS.md); revocation is #155.
 - **S3 scope.** `PutObject`, `GetObject`, `HeadObject` on content-addressed
   keys (`cas/{xx}/{sha256}` or flat `{prefix}{sha256}`). No `ListObjectsV2`,
   no arbitrary key names; a body that doesn't hash to its key is refused.

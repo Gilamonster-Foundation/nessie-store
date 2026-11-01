@@ -414,6 +414,7 @@ merge each slice on green, in dependency order).
 | Pin / unpin roots | `POST`/`DELETE /cas/v1/roots/{digest}`, peer API only; in memory until #137 | ✅ #128, #144 |
 | Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ✅ #139, #145 |
 | Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ✅ #140, #146 |
+| mTLS | agent-mesh node identity + `authorized_keys` verifier; peer API, REAPI, S3 server TLS; operator walkthrough (revocation #155 pending) | ✅ #150, #151, #152, #153 |
 | Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
 | NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
 | Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
