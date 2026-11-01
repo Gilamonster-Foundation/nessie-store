@@ -52,10 +52,13 @@ jobs:
       # from a sibling through workspace unification (0.4.1's nessie-mtls lost
       # rustls `std` this way). HOOK PARITY: CI-only, a whole-tree check.
       - name: Each published crate builds alone
+        shell: bash
         run: |
-          for c in $(cargo metadata --format-version 1 --no-deps --locked \
-                     | python3 -c 'import json,sys; [print(p["name"]) for p in json.load(sys.stdin)["packages"] if p.get("publish") != []]'); do
-            cargo check -p "$c" --lib --locked
+          crates=$(cargo metadata --format-version 1 --no-deps --locked \
+                   | python3 -c 'import json,sys; [print(p["name"]) for p in json.load(sys.stdin)["packages"] if p.get("publish") != []]')
+          test -n "$crates"
+          for c in $crates; do
+            cargo check -p "$c" --locked
           done
 
   test:
