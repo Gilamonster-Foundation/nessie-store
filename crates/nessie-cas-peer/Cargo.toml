@@ -19,3 +19,5 @@ rustls = { workspace = true }
 nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
 axum = { workspace = true }
 tokio = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

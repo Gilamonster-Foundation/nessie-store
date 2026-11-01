@@ -2035,9 +2035,11 @@ dependencies = [
  "nessie-backend-core",
  "nessie-backend-mem",
  "nessie-cas-store",
+ "rcgen",
  "reqwest 0.12.28",
  "rustls",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
