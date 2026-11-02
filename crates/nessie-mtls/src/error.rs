@@ -27,6 +27,12 @@ pub enum MtlsError {
     /// No key in `authorized_keys` makes the binding verify.
     #[error("binding is not signed by any key in authorized_keys")]
     NotAuthorized,
+    /// The agent, or a link of its chain, is revoked (agent fingerprint, hex).
+    #[error("agent is revoked: {0}")]
+    Revoked(String),
+    /// The revocation log is unusable (missing, unreadable, invalid or rolled back).
+    #[error("revocation log unavailable, refusing: {0}")]
+    Revocation(String),
     /// Only TLS 1.3 is accepted.
     #[error("TLS 1.2 handshakes are not accepted")]
     Tls12Refused,

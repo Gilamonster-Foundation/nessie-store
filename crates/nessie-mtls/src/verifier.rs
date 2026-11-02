@@ -1,52 +1,77 @@
 //! The rustls verifiers.
 
-use agent_mesh_protocol::{CertChain, Fingerprint, GitHubBinding};
+use agent_mesh_protocol::{CertChain, Fingerprint, GitHubBinding, GuardError, RevocationGuard};
 
 use crate::{AuthorizedKeys, MtlsError, PeerProof};
 
 /// Admits a peer by the mesh-proof rules; implements both rustls verifier traits.
 ///
-/// **Per-agent revocation is not enforced yet.** A chain that verifies and whose
-/// operator is listed stays admitted until the operator's binding key leaves
-/// `authorized_keys`. Revocation by generation is tracked in
-/// [#155](https://github.com/Gilamonster-Foundation/nessie-store/issues/155).
-/// A chain with a bounded generation scope is refused outright (fail closed),
-/// since no current generation is available to honour it.
+/// With a [`RevocationGuard`] ([`with_revocation`](Self::with_revocation)) every
+/// chain is checked against the user's revocation log as it stands *now*: a
+/// revoked agent or an out-of-generation chain is refused, and so is every peer
+/// while the log is missing, unreadable or rolled back (fail closed). Without a
+/// guard no revocation is checked, and a chain with a bounded generation scope
+/// is refused outright since no current generation is known.
 #[derive(Debug)]
 pub struct MeshVerifier {
     authorized: AuthorizedKeys,
+    revocation: Option<RevocationGuard>,
 }
 
 impl MeshVerifier {
-    /// A verifier trusting exactly `authorized`.
+    /// A verifier trusting exactly `authorized`, checking no revocation.
     pub fn new(authorized: AuthorizedKeys) -> Self {
-        Self { authorized }
+        Self {
+            authorized,
+            revocation: None,
+        }
+    }
+
+    /// A verifier trusting `authorized` that also honours `guard`'s revocation log.
+    pub fn with_revocation(authorized: AuthorizedKeys, guard: RevocationGuard) -> Self {
+        Self {
+            authorized,
+            revocation: Some(guard),
+        }
+    }
+
+    /// The guard, if revocation is configured.
+    pub fn revocation(&self) -> Option<&RevocationGuard> {
+        self.revocation.as_ref()
     }
 
     /// Apply the acceptance rules to a peer certificate, returning the peer's
     /// agent fingerprint.
     ///
     /// Admitted iff the certificate's key is ed25519 and equals the chain's agent
-    /// key, the chain verifies (signatures, attenuation, rooted at a user; a
-    /// bounded generation scope is refused), and [`admit`](Self::admit) accepts
-    /// it. The handshake signature proving possession is checked by the rustls
-    /// trait impls.
+    /// key, and [`admit`](Self::admit) accepts the chain. The handshake signature
+    /// proving possession is checked by the rustls trait impls.
     pub fn verify_peer(&self, end_entity: &[u8]) -> Result<Fingerprint, MtlsError> {
         let (cert_key, proof) = PeerProof::from_certificate(end_entity)?;
         if cert_key != proof.chain.agent_pubkey {
             return Err(MtlsError::KeyMismatch);
         }
-        proof
-            .chain
-            .verify()
-            .map_err(|e| MtlsError::BadChain(e.to_string()))?;
         self.admit(&proof.chain, &proof.binding)
     }
 
-    /// The acceptance rules that apply to an already **verified** chain: the
-    /// binding is for the chain's root user and is signed by a listed key.
-    /// Any later per-chain policy (revocation, #155) belongs here.
-    fn admit(&self, chain: &CertChain, binding: &GitHubBinding) -> Result<Fingerprint, MtlsError> {
+    /// The one acceptance point: the chain verifies (against the current
+    /// revocation state when a guard is configured, else plainly), the binding
+    /// is for the chain's root user and is signed by a listed key.
+    pub fn admit(
+        &self,
+        chain: &CertChain,
+        binding: &GitHubBinding,
+    ) -> Result<Fingerprint, MtlsError> {
+        match &self.revocation {
+            Some(g) => g.check(chain).map_err(|e| match e {
+                GuardError::Revoked(a) => MtlsError::Revoked(a),
+                GuardError::BadCertChain(m) => MtlsError::BadChain(m),
+                GuardError::Unavailable(m) => MtlsError::Revocation(m),
+            })?,
+            None => chain
+                .verify()
+                .map_err(|e| MtlsError::BadChain(e.to_string()))?,
+        }
         if binding.user_pubkey != chain.root_user_pubkey() {
             return Err(MtlsError::BindingUserMismatch);
         }
