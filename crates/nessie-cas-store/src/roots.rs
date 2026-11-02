@@ -39,9 +39,20 @@ pub trait RootSource: Send + Sync {
 /// roots are explicit registrations. Every registered root is pinned (and seeds the
 /// durable closure). This is the first-slice [`RootSource`]: it needs no
 /// `list_actions()` enumeration added to the AC trait.
+///
+/// A node that persists its pins also records here the root `Tree` blob its ref
+/// names ([`replace`](Self::replace)); that blob is pinned too, so eviction never
+/// removes what the ref points at. It is not one of the [`pins`](Self::pins).
 #[derive(Default)]
 pub struct RootRegistry {
-    inner: Mutex<BTreeSet<Digest>>,
+    inner: Mutex<Refs>,
+}
+
+/// The pins and the root tree blob recording them, swapped together.
+#[derive(Default)]
+struct Refs {
+    pins: BTreeSet<Digest>,
+    tree: Option<Digest>,
 }
 
 impl RootRegistry {
@@ -53,28 +64,36 @@ impl RootRegistry {
 
     /// Register `root` as a live root (git ref-update). Idempotent.
     pub fn register(&self, root: Digest) {
-        self.inner
-            .lock()
-            .expect("root registry mutex poisoned")
-            .insert(root);
+        self.refs().pins.insert(root);
     }
 
     /// Remove `root` (git ref-delete). Idempotent.
     pub fn unregister(&self, root: &Digest) {
-        self.inner
-            .lock()
-            .expect("root registry mutex poisoned")
-            .remove(root);
+        self.refs().pins.remove(root);
+    }
+
+    /// The registered pins, without the persisted root tree.
+    #[must_use]
+    pub fn pins(&self) -> BTreeSet<Digest> {
+        self.refs().pins.clone()
+    }
+
+    /// Swap in a whole pin set and the root tree blob that now records it.
+    pub fn replace(&self, pins: BTreeSet<Digest>, tree: Option<Digest>) {
+        *self.refs() = Refs { pins, tree };
+    }
+
+    fn refs(&self) -> std::sync::MutexGuard<'_, Refs> {
+        self.inner.lock().expect("root registry mutex poisoned")
     }
 }
 
 impl RootSource for RootRegistry {
     fn roots(&self) -> Result<RootSet, BackendError> {
-        let set = self
-            .inner
-            .lock()
-            .expect("root registry mutex poisoned")
-            .clone();
+        let set: BTreeSet<Digest> = {
+            let refs = self.refs();
+            refs.pins.iter().chain(&refs.tree).cloned().collect()
+        };
         Ok(RootSet {
             seed: set.clone(),
             pinned: set,
@@ -108,5 +127,15 @@ mod tests {
         reg.unregister(&a);
         assert!(reg.roots().unwrap().seed.is_empty());
         reg.unregister(&a); // idempotent
+    }
+
+    #[test]
+    fn replaced_tree_is_pinned_but_is_not_a_pin() {
+        let reg = RootRegistry::new();
+        let pin = Digest::compute(b"pin");
+        let tree = Digest::compute(b"tree");
+        reg.replace(BTreeSet::from([pin.clone()]), Some(tree.clone()));
+        assert_eq!(reg.pins(), BTreeSet::from([pin.clone()]));
+        assert_eq!(reg.roots().unwrap().pinned, BTreeSet::from([pin, tree]));
     }
 }

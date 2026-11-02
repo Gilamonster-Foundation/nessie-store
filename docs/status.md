@@ -48,8 +48,7 @@ see [design/demand-paged-nfs-gateways.md](design/demand-paged-nfs-gateways.md)
   `byte_budget` at their real size, across restarts and after a restore, so
   corruption costs capacity. A restore that failed (no peer, no room) is retried
   every pass and counted as `pending_restore`; it shares the pass's byte budget,
-  and nothing is fetched when the capacity gate would refuse the blob anyway. Pins persist across restart only
-  after #137.
+  and nothing is fetched when the capacity gate would refuse the blob anyway.
 - **Auth is lab-only unless `[tls] mtls = true`.** S3 uses one static SigV4 key; the
   daemon refuses to start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI and
   the peer API are unauthenticated without mTLS; with it they require a certificate
@@ -74,7 +73,9 @@ see [design/demand-paged-nfs-gateways.md](design/demand-paged-nfs-gateways.md)
   in memory and lost on restart.
 - **Peers.** Static peers shipped (#127): see [CAS peer plane](#cas-peer-plane-static-peers)
   below. Plain HTTP and unauthenticated unless `[tls] mtls = true` (#151): then `/cas/v1` is served on its own mTLS listener (`[tls] peer_listen`) and peers are `https://`. Pin and unpin shipped (#144):
-  `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only, in memory until #137.
+  `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only. With `backend = "disk"`
+  pins survive restart (#137): `<path>/refs/roots` names a `Tree` of them in the CAS,
+  and a ref that cannot be read back refuses startup (delete it to drop the pins).
 
 See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
 

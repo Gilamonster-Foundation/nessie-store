@@ -7,8 +7,8 @@
 //!
 //! A pin keeps a blob out of `lru` eviction; under `write_only` nothing is evicted, so
 //! a pin is accepted and changes nothing. Pinning a digest this node does not hold is
-//! allowed (201): the pin protects the blob when it arrives. Pins live in memory and
-//! are lost on restart until roots persist (#137).
+//! allowed (201): the pin protects the blob when it arrives. On a disk store the pin is
+//! persisted before the reply; one that cannot be stored is an error, never a 201.
 //!
 //! Unauthenticated unless the daemon serves them on the mTLS peer listener. Integrity does not rest
 //! on the wire — `get` and `put_keyed` verify every byte against the digest.
@@ -49,6 +49,7 @@ fn status(e: &BackendError) -> StatusCode {
     match e {
         BackendError::BlobNotFound(_) => StatusCode::NOT_FOUND,
         BackendError::InvalidArgument(_) => StatusCode::BAD_REQUEST,
+        BackendError::CapacityExceeded { .. } => StatusCode::INSUFFICIENT_STORAGE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -115,22 +116,22 @@ async fn put_blob(
 }
 
 async fn pin_root(State(node): State<Arc<CasNode>>, Path(d): Path<String>) -> StatusCode {
-    match parse(&d) {
-        Ok(digest) => {
-            node.roots().register(digest);
-            StatusCode::CREATED
-        }
+    let Ok(digest) = parse(&d) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    match blocking(move || node.pin(digest)).await {
+        Ok(()) => StatusCode::CREATED,
         Err(s) => s,
     }
 }
 
 /// Idempotent: unpinning a digest that was never pinned is still 204.
 async fn unpin_root(State(node): State<Arc<CasNode>>, Path(d): Path<String>) -> StatusCode {
-    match parse(&d) {
-        Ok(digest) => {
-            node.roots().unregister(&digest);
-            StatusCode::NO_CONTENT
-        }
+    let Ok(digest) = parse(&d) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    match blocking(move || node.unpin(&digest)).await {
+        Ok(()) => StatusCode::NO_CONTENT,
         Err(s) => s,
     }
 }

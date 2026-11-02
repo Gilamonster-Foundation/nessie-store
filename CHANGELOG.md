@@ -6,6 +6,18 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Pins survive a restart (#137).** With `[cas] backend = "disk"`, `POST|DELETE
+  /cas/v1/roots/{digest}` persist before replying: the pin set is a `Tree` stored in the
+  CAS, and `<path>/refs/roots` names it (written temp + rename). Startup reloads it and
+  **refuses to start** if the ref cannot be read back (unparseable, tree missing or
+  corrupt); delete `refs/roots` to start with no pins. Face uploads (REAPI, S3) are not
+  pins.
+
+### Changed
+- The peer API answers `CapacityExceeded` with `507`: a pin the store cannot record
+  (full `write_only` node) was a `201`, a blob `PUT` past capacity was a `500`.
+
 ## [0.4.3] — 2026-11-02
 
 mTLS honours agent-mesh revocation; macOS wheels return (`macos-latest`).
