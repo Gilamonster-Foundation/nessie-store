@@ -104,9 +104,12 @@ path = "/var/lib/nessie-store/cas"
 # access_key = "nessie"
 
 # Mutual TLS from agent-mesh keys (docs/MTLS.md). Needs `nessie-store identity issue`
-# and an authorized_keys file (default: <data_dir>/authorized_keys). Revocation: #155.
+# and an authorized_keys file (default: <data_dir>/authorized_keys).
 # [tls]
 # mtls = true
 # peer_listen = "0.0.0.0:8443"
 # names = ["nessie-1.example.net"]
 # authorized_keys = "/etc/nessie-store/authorized_keys"
+# Honour agent-mesh revocation (`amesh revocation export`). Unset = nothing is checked.
+# A configured log that is missing or older than the last seen refuses everyone.
+# revocation_log = "/etc/nessie-store/revocation.json"

@@ -44,8 +44,9 @@ file trusts **nobody**.
 
 **The file is read once, at startup.** Adding or removing a line has no effect on a
 running daemon: restart every affected node after editing it. A removed operator can
-still complete new handshakes until that restart, and connections already open are
-never rechecked. The same goes for any change to `[tls]`.
+still complete new handshakes until that restart. The same goes for any change to
+`[tls]`. To cut off one agent (or a generation) without touching the operator, use
+revocation (step 7).
 
 ## 4. Turn it on
 
@@ -115,10 +116,32 @@ nessie-store identity show --config nessie-store.toml
 
 Pin that SHA-256 in S3 clients that support it. The daemon logs it at startup too.
 
-## Not yet: revocation
+## 7. Revocation
 
-**Revoking an agent or a generation is not honoured** (#155, v0.4.3). The only lever
-today is removing the operator's key from `authorized_keys` **and restarting every
-node** (see step 3). A leaked agent key under a still-listed operator stays valid.
-Until #155 lands, treat mTLS as authentication of the operator, not as a revocable
-credential.
+Revoke one agent, or bump the generation, with `amesh`; nessie reads the resulting
+log and honours it without a restart.
+
+```toml
+[tls]
+revocation_log = "/etc/nessie-store/revocation.json"   # `amesh revocation export`
+```
+
+- Every handshake (peer API, REAPI, and the peer client judging servers) is checked
+  against the log as it stands then: a revoked agent, or a chain outside the current
+  generation, is refused.
+- **Open connections are rechecked on every request** (peer API and REAPI): the next
+  request after the log gains a revocation gets `403`, with no reconnect.
+- **The peer client does not reuse connections** and TLS session resumption is off, so
+  every outgoing request re-judges the server against your log: revoking a server there
+  stops the next fetch or push, without any change on that server. The price is one
+  handshake per peer request.
+- **Fail closed.** With `revocation_log` set, a log that is missing, unreadable,
+  invalid, another operator's, or older than the head last seen refuses every
+  handshake and request until fixed. At startup that stops the daemon. The last head
+  seen is kept in `<log name>.seen.json` beside the log (agent-mesh's rule), so
+  swapping in an older copy cannot un-revoke anyone.
+- Unset, nothing is checked and startup logs a warning.
+- `nessie-store identity show` prints the loaded log's counter and generation, or
+  `no revocation log configured`.
+- The log is the **operator's own**: it applies to agents of that operator. S3 has no
+  client certificates, so there is nothing to revoke there; it stays on SigV4.

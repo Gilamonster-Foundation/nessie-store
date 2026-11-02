@@ -42,7 +42,7 @@ pub fn build_faces(cfg: &Config) -> anyhow::Result<Faces> {
     }
     let tls = cfg
         .mtls_enabled()
-        .then(|| crate::peer_tls::mesh_configs(cfg).map(|(_, client)| client))
+        .then(|| crate::peer_tls::mesh_configs(cfg).map(|(_, client, _)| client))
         .transpose()?;
     let node = cfg
         .cas

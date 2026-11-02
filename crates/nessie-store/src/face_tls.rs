@@ -8,26 +8,15 @@
 //!   SigV4 stays the authentication, and clients pin [`FaceTls::cert_sha256`].
 
 use std::net::TcpListener as StdListener;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
 use anyhow::Context as _;
 use nessie_mtls::{AuthorizedKeys, MeshVerifier, NodeIdentity};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
-use tokio_rustls::server::TlsStream;
-use tonic::transport::server::{Connected, Router};
 
 use crate::config::Config;
 
 /// Names every node certificate carries, so loopback clients can verify it.
 const LOCAL_NAMES: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
-
-/// A peer that has not finished its handshake by then is dropped.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The node certificate and the client verifier the cache faces share.
 pub struct FaceTls {
@@ -43,9 +32,19 @@ impl FaceTls {
         authorized: AuthorizedKeys,
         names: &[String],
     ) -> anyhow::Result<Self> {
+        Self::with_verifier(node, Arc::new(MeshVerifier::new(authorized)), names)
+    }
+
+    /// Like [`new`](Self::new) with a ready-made verifier (e.g. one honouring a
+    /// revocation log).
+    pub fn with_verifier(
+        node: NodeIdentity,
+        verifier: Arc<MeshVerifier>,
+        names: &[String],
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             node: served_node(node, names)?,
-            verifier: Arc::new(MeshVerifier::new(authorized)),
+            verifier,
         })
     }
 
@@ -62,10 +61,10 @@ impl FaceTls {
                 dir.display()
             )
         })?;
-        let authorized = AuthorizedKeys::load(&cfg.authorized_keys_path());
-        Ok(Some(Arc::new(Self::new(
+        let verifier = crate::peer_tls::mesh_verifier(cfg, &node)?;
+        Ok(Some(Arc::new(Self::with_verifier(
             node,
-            authorized,
+            verifier,
             &cfg_names(cfg),
         )?)))
     }
@@ -123,81 +122,42 @@ pub fn served_cert_sha256(cfg: &Config) -> anyhow::Result<(String, String)> {
     Ok((node.fingerprint().hex(), node.cert_sha256()))
 }
 
-/// A finished server-side TLS stream, as tonic wants it.
-struct TlsConn(TlsStream<TcpStream>);
-
-impl Connected for TlsConn {
-    type ConnectInfo = ();
-    fn connect_info(&self) -> Self::ConnectInfo {}
-}
-
-impl AsyncRead for TlsConn {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for TlsConn {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(cx, buf)
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_flush(cx)
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_shutdown(cx)
-    }
-}
-
-fn tokio_listener(l: StdListener) -> std::io::Result<TcpListener> {
-    l.set_nonblocking(true)?;
-    TcpListener::from_std(l)
+/// What `identity show` says about revocation: the loaded log's counter and
+/// generation, or that none is configured.
+///
+/// # Errors
+///
+/// A configured log that is missing, invalid or rolled back (the same refusal
+/// the daemon makes).
+pub fn revocation_summary(cfg: &Config) -> anyhow::Result<String> {
+    let Some(log) = cfg.revocation_log() else {
+        return Ok("no revocation log configured".to_owned());
+    };
+    let node = NodeIdentity::load(&cfg.mesh_identity_dir())
+        .context("loading the node identity (run `nessie-store identity issue`)")?;
+    let guard = agent_mesh_protocol::RevocationGuard::open(&log, node.user_fingerprint())
+        .with_context(|| format!("[tls] revocation_log {} is not usable", log.display()))?;
+    let state = guard.state()?;
+    Ok(format!(
+        "revocation log counter {} generation {}",
+        state.len, state.generation
+    ))
 }
 
 /// Serve `router` on `listener` over mutual TLS until the listener fails.
 ///
 /// Handshakes run off the accept loop, so a stalled or refused peer never delays
-/// another; only peers the verifier admitted reach tonic.
+/// another; only peers the verifier admitted reach tonic, and every request is
+/// re-judged against the revocation state as it stands then.
 pub async fn serve_reapi_tls(
-    router: Router,
+    router: tonic::transport::server::Router,
     listener: StdListener,
     tls: &FaceTls,
 ) -> anyhow::Result<()> {
-    let acceptor = TlsAcceptor::from(tls.reapi_config()?);
-    let listener = tokio_listener(listener)?;
-    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<TlsConn>>(64);
-    tokio::spawn(async move {
-        loop {
-            let (tcp, peer) = match listener.accept().await {
-                Ok(x) => x,
-                Err(e) => {
-                    tracing::error!(%e, "REAPI accept failed");
-                    // ponytail: a persistent accept error ends the face; supervise if it ever flaps.
-                    return;
-                }
-            };
-            let (acceptor, tx) = (acceptor.clone(), tx.clone());
-            tokio::spawn(async move {
-                match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
-                    Ok(Ok(s)) => {
-                        let _ = tx.send(Ok(TlsConn(s))).await;
-                    }
-                    Ok(Err(e)) => tracing::debug!(%peer, %e, "REAPI TLS handshake refused"),
-                    Err(_) => tracing::debug!(%peer, "REAPI TLS handshake timed out"),
-                }
-            });
-        }
-    });
-    router
-        .serve_with_incoming(tokio_stream::wrappers::ReceiverStream::new(rx))
+    // tonic 0.12 keeps `Routes` private inside `Router`; this is its only way out.
+    #[allow(deprecated)]
+    let app = router.into_router();
+    crate::peer_tls::serve_checked(listener, app, tls.reapi_config()?, tls.verifier.clone())
         .await?;
     Ok(())
 }

@@ -129,9 +129,10 @@ fn identity(cmd: IdentityCmd) -> anyhow::Result<()> {
             println!("issued agent {} into {}", fp.hex(), dir.display());
         }
         IdentityCmd::Show { config } => {
-            let (agent, sha256) =
-                nessie_store::face_tls::served_cert_sha256(&Config::load(&config)?)?;
-            println!("agent {agent}\ncertificate sha256 {sha256}");
+            let cfg = Config::load(&config)?;
+            let (agent, sha256) = nessie_store::face_tls::served_cert_sha256(&cfg)?;
+            let revocation = nessie_store::face_tls::revocation_summary(&cfg)?;
+            println!("agent {agent}\ncertificate sha256 {sha256}\n{revocation}");
         }
         IdentityCmd::ExportClientCert { config, out } => {
             let dir = Config::load(&config)?.mesh_identity_dir();
@@ -188,6 +189,11 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
     // a blob written over REAPI gRPC is the blob an S3 client reads, and the store
     // retention maintenance sweeps. Building a store per consumer would break that.
     let faces = nessie_store::faces::build_faces(&cfg)?;
+    if cfg.mtls_enabled() && cfg.revocation_log().is_none() {
+        tracing::warn!(
+            "[tls] mtls = true without [tls] revocation_log: revoking an agent or a generation has no effect"
+        );
+    }
     let face_tls = nessie_store::face_tls::FaceTls::from_config(&cfg)?;
     if let (Some(node), Some(cas_cfg)) = (&faces.node, &cfg.cas) {
         tracing::info!(mode = ?cas_cfg.mode, backend = ?cas_cfg.backend, "cas node enabled; scheduling retention maintenance");
@@ -220,12 +226,13 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
         let peer_app = nessie_store::cas_routes::peer_routes(node);
         if let Some((peer_listen, mesh)) = mtls {
             // Its own listener: rustls demands client certs per connection, not per path.
-            let (server, _) = mesh?;
+            let (server, _, verifier) = mesh?;
             let listener = std::net::TcpListener::bind(peer_listen)
                 .with_context(|| format!("binding [tls] peer_listen {peer_listen}"))?;
             tracing::info!(%peer_listen, "cas peer API listening (mTLS)");
             tokio::spawn(async move {
-                if let Err(e) = nessie_store::peer_tls::serve_peer(listener, peer_app, server).await
+                if let Err(e) =
+                    nessie_store::peer_tls::serve_peer(listener, peer_app, server, verifier).await
                 {
                     tracing::error!(%e, "cas peer API exited");
                 }

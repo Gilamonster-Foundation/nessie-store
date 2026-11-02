@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "agent-mesh-protocol"
-version = "0.8.1"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e781eb35046b5203561b6a162f031a153f0ea67baeff62c5718e5ec20a0bd60f"
+checksum = "88a33149f97a2b3da807a7f802ced026de4ad813962036462b93081e1a2e4b24"
 dependencies = [
  "blake3",
  "content-addressable",

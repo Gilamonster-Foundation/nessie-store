@@ -133,7 +133,7 @@ rcgen = "0.13"
 # trust list is an SSH authorized_keys file, the peer certificate is parsed (not
 # validated as a PKI chain) with x509-parser. Same agent-mesh-protocol line the
 # sibling agent crates track.
-agent-mesh-protocol = "0.8"
+agent-mesh-protocol = "0.8.3"
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
 x509-parser = "0.16"
 
