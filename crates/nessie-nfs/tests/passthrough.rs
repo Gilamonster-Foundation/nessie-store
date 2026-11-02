@@ -75,7 +75,7 @@ async fn mkdir_readdir_and_remove() {
         let r = fs.readdir(root, cookie, 1).await.unwrap();
         for e in &r.entries {
             seen.push(String::from_utf8_lossy(e.name.as_ref()).to_string());
-            cookie = e.fileid;
+            cookie = e.cookie;
         }
         if r.end || r.entries.is_empty() {
             break;
@@ -387,4 +387,83 @@ async fn link_into_missing_directory_is_an_error() {
     assert!(fs.link(fid, 999_999_999, &name("f2")).await.is_err());
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Hard links vs directory enumeration and handles (PR #114 review) --------
+
+/// Names listed by paging `readdir` with a window of `page` entries.
+async fn list_names(fs: &PassthroughFs, dir: u64, page: usize) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut cookie = 0u64;
+    loop {
+        let r = fs.readdir(dir, cookie, page).await.unwrap();
+        for e in &r.entries {
+            seen.push(String::from_utf8_lossy(e.name.as_ref()).to_string());
+            cookie = e.cookie;
+        }
+        if r.end || r.entries.is_empty() {
+            break;
+        }
+    }
+    seen.sort();
+    seen
+}
+
+#[tokio::test]
+async fn readdir_lists_every_hard_link_name_even_when_paged() {
+    // Regression (PR #114 review, P1): hard links share a fileid, and readdir
+    // keyed its entries by fileid, so only one of the names was listed; the
+    // fileid was also the resume cookie, so a page boundary between two names
+    // of one inode dropped the second.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (fid, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    fs.link(fid, root, &name("b")).await.unwrap();
+    fs.link(fid, root, &name("c")).await.unwrap();
+
+    for page in [1, 2, 100] {
+        assert_eq!(
+            list_names(&fs, root, page).await,
+            ["a", "b", "c"],
+            "page={page}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn removing_one_link_keeps_the_handle_valid_for_the_other() {
+    // Regression (PR #114 review, P1): `remove` dropped the shared fileid's
+    // table entry even though another name survived, so the client's handle went
+    // NFS3ERR_STALE while the file still existed.
+    for remove_first in ["orig", "linked"] {
+        let dir = scratch();
+        let fs = PassthroughFs::new(&dir).unwrap();
+        let root = fs.root_dir();
+        let (fid, _) = fs
+            .create(root, &name("orig"), sattr3::default())
+            .await
+            .unwrap();
+        fs.write(fid, 0, b"bytes").await.unwrap();
+        fs.link(fid, root, &name("linked")).await.unwrap();
+
+        fs.remove(root, &name(remove_first)).await.unwrap();
+        let (data, _) = fs.read(fid, 0, 16).await.expect("handle must stay valid");
+        assert_eq!(data, b"bytes", "removed {remove_first}");
+        assert_eq!(fs.getattr(fid).await.unwrap().nlink, 1);
+
+        // Removing the last name does retire the handle.
+        let last = if remove_first == "orig" {
+            "linked"
+        } else {
+            "orig"
+        };
+        fs.remove(root, &name(last)).await.unwrap();
+        assert!(fs.getattr(fid).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

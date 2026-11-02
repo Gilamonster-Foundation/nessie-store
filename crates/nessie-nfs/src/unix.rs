@@ -41,7 +41,7 @@
 //! non-Unix `serve` stub. (Crate-level `forbid(unsafe_code)` / `deny(missing_docs)`
 //! live in `lib.rs` and cover this module.)
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::SeekFrom;
 use std::os::unix::ffi::OsStrExt;
@@ -109,9 +109,11 @@ fn fileid_from(dev: u64, ino: u64) -> fileid3 {
 /// An NFSv3 filesystem that passes operations through to a real directory tree.
 pub struct PassthroughFs {
     root: PathBuf,
-    /// fileid (= inode number) -> on-disk path. Populated lazily as the tree is
-    /// traversed; a miss yields `NFS3ERR_STALE` so the client re-resolves.
-    map: Mutex<HashMap<fileid3, PathBuf>>,
+    /// fileid (= inode number) -> every known on-disk name of it (hard links give
+    /// several). Populated lazily as the tree is traversed; a miss yields
+    /// `NFS3ERR_STALE` so the client re-resolves. An entry goes only when its
+    /// last known name is removed.
+    map: Mutex<HashMap<fileid3, Vec<PathBuf>>>,
     root_id: fileid3,
 }
 
@@ -121,7 +123,7 @@ impl PassthroughFs {
         let root = root.into().canonicalize()?;
         let root_id = fileid_of(&std::fs::symlink_metadata(&root)?);
         let mut map = HashMap::new();
-        map.insert(root_id, root.clone());
+        map.insert(root_id, vec![root.clone()]);
         Ok(Self {
             root,
             map: Mutex::new(map),
@@ -130,22 +132,49 @@ impl PassthroughFs {
     }
 
     fn path_of(&self, id: fileid3) -> Result<PathBuf, nfsstat3> {
-        self.map
-            .lock()
-            .expect("map lock")
-            .get(&id)
+        let map = self.map.lock().expect("map lock");
+        let paths = map.get(&id).ok_or(nfsstat3::NFS3ERR_STALE)?;
+        if let [only] = paths.as_slice() {
+            return Ok(only.clone());
+        }
+        // Several names: use one that still names this inode (another may have
+        // been renamed away or replaced since it was recorded).
+        paths
+            .iter()
+            .find(|p| {
+                std::fs::symlink_metadata(p)
+                    .map(|m| fileid_of(&m) == id)
+                    .unwrap_or(false)
+            })
             .cloned()
             .ok_or(nfsstat3::NFS3ERR_STALE)
+    }
+
+    /// Record `path` as a name of `id` (idempotent).
+    fn note_path(&self, id: fileid3, path: &Path) {
+        let mut map = self.map.lock().expect("map lock");
+        let paths = map.entry(id).or_default();
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_path_buf());
+        }
+    }
+
+    /// Forget `path` as a name of `id`; drop the entry with its last name.
+    fn forget_path(&self, id: fileid3, path: &Path) {
+        let mut map = self.map.lock().expect("map lock");
+        if let Some(paths) = map.get_mut(&id) {
+            paths.retain(|p| p != path);
+            if paths.is_empty() {
+                map.remove(&id);
+            }
+        }
     }
 
     /// Register `path` and return its (stable, `(dev,ino)`-derived) fileid.
     fn register(&self, path: &Path) -> Result<(fileid3, std::fs::Metadata), nfsstat3> {
         let meta = std::fs::symlink_metadata(path).map_err(|e| io_to_nfs(&e))?;
         let id = fileid_of(&meta);
-        self.map
-            .lock()
-            .expect("map lock")
-            .insert(id, path.to_path_buf());
+        self.note_path(id, path);
         Ok((id, meta))
     }
 
@@ -419,7 +448,7 @@ impl NFSFileSystem for PassthroughFs {
                 .await
                 .map_err(|e| io_to_nfs(&e))?;
         }
-        self.map.lock().expect("map lock").remove(&fileid_of(&meta));
+        self.forget_path(fileid_of(&meta), &path);
         Ok(())
     }
 
@@ -434,9 +463,13 @@ impl NFSFileSystem for PassthroughFs {
         let to_dir = self.path_of(to_dirid)?;
         let from = self.child_path(&from_dir, from_filename.as_ref())?;
         let to = self.child_path(&to_dir, to_filename.as_ref())?;
+        let from_id = std::fs::symlink_metadata(&from).ok().map(|m| fileid_of(&m));
         tokio::fs::rename(&from, &to)
             .await
             .map_err(|e| io_to_nfs(&e))?;
+        if let Some(id) = from_id {
+            self.forget_path(id, &from);
+        }
         let _ = self.register(&to);
         Ok(())
     }
@@ -452,32 +485,47 @@ impl NFSFileSystem for PassthroughFs {
         if !dmeta.is_dir() {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
-        // Order entries by stable fileid (a (dev,ino) hash) so the NFS cookie
-        // (start_after) is meaningful and pagination never duplicates or drops
-        // entries.
-        let mut by_id: BTreeMap<fileid3, PathBuf> = BTreeMap::new();
+        // Order entries by (fileid, name) and give each a cookie: the fileid for
+        // the first name of an inode, fileid+1, +2, ... for its further hard-link
+        // names (a 64-bit hash, so collisions with another fileid are not a
+        // practical concern). The cookie is stable across pages and never
+        // duplicates or drops an entry; `start_after` is a cookie.
+        let mut found: Vec<(fileid3, PathBuf)> = Vec::new();
         let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| io_to_nfs(&e))?;
         while let Some(ent) = rd.next_entry().await.map_err(|e| io_to_nfs(&e))? {
             let meta = match ent.metadata().await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            by_id.insert(fileid_of(&meta), ent.path());
+            found.push((fileid_of(&meta), ent.path()));
         }
-        let total_after = by_id.range((start_after + 1)..).count();
+        found.sort();
+        let mut listing: Vec<(u64, fileid3, PathBuf)> = Vec::with_capacity(found.len());
+        let mut dup = 0u64;
+        for (i, (id, path)) in found.into_iter().enumerate() {
+            dup = if i > 0 && listing[i - 1].1 == id {
+                dup + 1
+            } else {
+                0
+            };
+            listing.push((id.wrapping_add(dup), id, path));
+        }
+        let after: Vec<_> = listing.iter().filter(|(c, ..)| *c > start_after).collect();
+        let total_after = after.len();
         let mut entries = Vec::new();
-        for (id, path) in by_id.range((start_after + 1)..) {
+        for (cookie, id, path) in after {
             if entries.len() >= max_entries {
                 break;
             }
             let meta = std::fs::symlink_metadata(path).map_err(|e| io_to_nfs(&e))?;
-            self.map.lock().expect("map lock").insert(*id, path.clone());
+            self.note_path(*id, path);
             let name = path
                 .file_name()
                 .map(|n| filename3::from(n.as_bytes()))
                 .unwrap_or_else(|| filename3::from(&b""[..]));
             entries.push(DirEntry {
                 fileid: *id,
+                cookie: *cookie,
                 name,
                 attr: metadata_to_fattr3(*id, &meta),
             });

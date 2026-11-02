@@ -10,6 +10,8 @@ use crate::rpc::UnixCred;
 #[derive(Default, Debug)]
 pub struct DirEntrySimple {
     pub fileid: fileid3,
+    /// See [`DirEntry::cookie`].
+    pub cookie: u64,
     pub name: filename3,
 }
 #[derive(Default, Debug)]
@@ -21,6 +23,10 @@ pub struct ReadDirSimpleResult {
 #[derive(Default, Debug)]
 pub struct DirEntry {
     pub fileid: fileid3,
+    /// Position of this entry in the listing; the client hands it back as
+    /// `start_after` to resume. Distinct from `fileid` because hard links give
+    /// several names in one directory the same fileid.
+    pub cookie: u64,
     pub name: filename3,
     pub attr: fattr3,
 }
@@ -37,6 +43,7 @@ impl ReadDirSimpleResult {
             .iter()
             .map(|e| DirEntrySimple {
                 fileid: e.fileid,
+                cookie: e.cookie,
                 name: e.name.clone(),
             })
             .collect();

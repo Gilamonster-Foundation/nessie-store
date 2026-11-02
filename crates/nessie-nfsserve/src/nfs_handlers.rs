@@ -934,7 +934,7 @@ pub async fn nfsproc3_readdirplus(
                 let entry = entryplus3 {
                     fileid: entry.fileid,
                     name: entry.name,
-                    cookie: entry.fileid,
+                    cookie: entry.cookie,
                     name_attributes: nfs::post_op_attr::attributes(obj_attr),
                     name_handle: handle,
                 };
@@ -1059,7 +1059,7 @@ pub async fn nfsproc3_readdir(
                 let entry = entry3 {
                     fileid: entry.fileid,
                     name: entry.name,
-                    cookie: entry.fileid,
+                    cookie: entry.cookie,
                 };
                 // write the entry into a buffer first
                 let mut write_buf: Vec<u8> = Vec::new();
@@ -2240,6 +2240,13 @@ struct LINK3args {
 }
 xdr_struct!(LINK3args, file, link);
 
+/// `NFSPROC3_LINK` (RFC 1813 §3.3.15): create a hard link `link.name` in
+/// directory `link.dir` to the existing object `file`.
+///
+/// Replies `NFS3_OK` with the object's post-op attributes and the directory's
+/// `wcc_data`; on failure replies with the VFS error status and the same
+/// trailer. A read-only filesystem answers `NFS3ERR_ROFS`, and a filesystem that
+/// cannot hard-link answers `NFS3ERR_NOTSUPP` (its `link` impl's choice).
 pub async fn nfsproc3_link(
     xid: u32,
     input: &mut impl Read,
@@ -2403,4 +2410,222 @@ pub async fn nfsproc3_readlink(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod link_rpc_tests {
+    //! Drives `NFSPROC3_LINK`, `PATHCONF` and `FSINFO` through [`handle_nfs`]
+    //! (encoded call arguments in, decoded reply out), so removing the dispatch
+    //! arm or the advertised link support fails here, not only in a live mount.
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::nfs::{fattr3, fileid3, filename3, nfspath3, nfsstat3, sattr3};
+    use crate::transaction_tracker::TransactionTracker;
+    use crate::vfs::{NFSFileSystem, ReadDirResult};
+
+    /// Accepts only `link`; everything else is out of scope for these tests.
+    #[derive(Default)]
+    struct LinkVfs {
+        linked: Mutex<Vec<(fileid3, fileid3, Vec<u8>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NFSFileSystem for LinkVfs {
+        fn capabilities(&self) -> VFSCapabilities {
+            VFSCapabilities::ReadWrite
+        }
+        fn root_dir(&self) -> fileid3 {
+            1
+        }
+        async fn lookup(&self, _: fileid3, _: &filename3) -> Result<fileid3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn getattr(&self, _: fileid3) -> Result<fattr3, nfsstat3> {
+            Ok(fattr3::default())
+        }
+        async fn setattr(&self, _: fileid3, _: sattr3) -> Result<fattr3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn read(&self, _: fileid3, _: u64, _: u32) -> Result<(Vec<u8>, bool), nfsstat3> {
+            unimplemented!()
+        }
+        async fn write(&self, _: fileid3, _: u64, _: &[u8]) -> Result<fattr3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn create(
+            &self,
+            _: fileid3,
+            _: &filename3,
+            _: sattr3,
+        ) -> Result<(fileid3, fattr3), nfsstat3> {
+            unimplemented!()
+        }
+        async fn create_exclusive(&self, _: fileid3, _: &filename3) -> Result<fileid3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn mkdir(&self, _: fileid3, _: &filename3) -> Result<(fileid3, fattr3), nfsstat3> {
+            unimplemented!()
+        }
+        async fn remove(&self, _: fileid3, _: &filename3) -> Result<(), nfsstat3> {
+            unimplemented!()
+        }
+        async fn rename(
+            &self,
+            _: fileid3,
+            _: &filename3,
+            _: fileid3,
+            _: &filename3,
+        ) -> Result<(), nfsstat3> {
+            unimplemented!()
+        }
+        async fn readdir(&self, _: fileid3, _: u64, _: usize) -> Result<ReadDirResult, nfsstat3> {
+            unimplemented!()
+        }
+        async fn symlink(
+            &self,
+            _: fileid3,
+            _: &filename3,
+            _: &nfspath3,
+            _: &sattr3,
+        ) -> Result<(fileid3, fattr3), nfsstat3> {
+            unimplemented!()
+        }
+        async fn readlink(&self, _: fileid3) -> Result<nfspath3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn link(
+            &self,
+            id: fileid3,
+            dir: fileid3,
+            name: &filename3,
+        ) -> Result<fattr3, nfsstat3> {
+            if name.as_ref() == b"unsupported" {
+                return Err(nfsstat3::NFS3ERR_NOTSUPP);
+            }
+            self.linked
+                .lock()
+                .unwrap()
+                .push((id, dir, name.as_ref().to_vec()));
+            Ok(fattr3 {
+                nlink: 2,
+                ..Default::default()
+            })
+        }
+    }
+
+    fn ctx(vfs: Arc<LinkVfs>) -> RPCContext {
+        RPCContext {
+            local_port: 0,
+            client_addr: String::new(),
+            auth: auth_unix::default(),
+            vfs,
+            mount_signal: None,
+            export_name: Arc::new(String::new()),
+            transaction_tracker: Arc::new(TransactionTracker::new(Duration::from_secs(60))),
+        }
+    }
+
+    fn call(proc: u32) -> call_body {
+        call_body {
+            rpcvers: 2,
+            prog: nfs::PROGRAM,
+            vers: nfs::VERSION,
+            proc,
+            cred: opaque_auth::default(),
+            verf: opaque_auth::default(),
+        }
+    }
+
+    /// Run `proc` with XDR `args`; return the reply with the RPC header
+    /// consumed, ready to read the NFS status.
+    async fn dispatch(c: &RPCContext, proc: u32, args: &[u8]) -> Cursor<Vec<u8>> {
+        let mut out = Vec::new();
+        handle_nfs(7, call(proc), &mut Cursor::new(args.to_vec()), &mut out, c)
+            .await
+            .unwrap();
+        let mut reply = Cursor::new(out);
+        let mut hdr = rpc_msg::default();
+        hdr.deserialize(&mut reply).unwrap();
+        // Success reply: an unimplemented proc yields PROC_UNAVAIL instead, and
+        // then the status read below is garbage or an error.
+        assert!(
+            matches!(
+                hdr.body,
+                rpc_body::REPLY(reply_body::MSG_ACCEPTED(accepted_reply {
+                    reply_data: accept_body::SUCCESS,
+                    ..
+                }))
+            ),
+            "proc {proc} was not answered with SUCCESS: {hdr:?}"
+        );
+        reply
+    }
+
+    /// The NFS status word (an XDR u32).
+    fn status(r: &mut Cursor<Vec<u8>>) -> u32 {
+        let mut s = 0u32;
+        s.deserialize(r).unwrap();
+        s
+    }
+
+    fn link_args(vfs: &LinkVfs, file: fileid3, dir: fileid3, name: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        vfs.id_to_fh(file).serialize(&mut b).unwrap();
+        vfs.id_to_fh(dir).serialize(&mut b).unwrap();
+        filename3::from(name).serialize(&mut b).unwrap();
+        b
+    }
+
+    #[tokio::test]
+    async fn link_rpc_succeeds_and_reaches_the_vfs() {
+        // Regression (PR #114): NFSPROC3_LINK had no dispatch arm, so every LINK
+        // came back PROC_UNAVAIL.
+        let vfs = Arc::new(LinkVfs::default());
+        let c = ctx(vfs.clone());
+        let mut r = dispatch(&c, 15, &link_args(&vfs, 5, 1, b"new")).await;
+        assert_eq!(status(&mut r), nfsstat3::NFS3_OK as u32);
+        let mut attr = nfs::post_op_attr::default();
+        attr.deserialize(&mut r).unwrap();
+        match attr {
+            nfs::post_op_attr::attributes(a) => assert_eq!(a.nlink, 2),
+            other => panic!("expected attributes in LINK3resok, got {other:?}"),
+        }
+        assert_eq!(*vfs.linked.lock().unwrap(), vec![(5, 1, b"new".to_vec())]);
+    }
+
+    #[tokio::test]
+    async fn link_rpc_reports_the_vfs_error() {
+        let vfs = Arc::new(LinkVfs::default());
+        let c = ctx(vfs.clone());
+        let mut r = dispatch(&c, 15, &link_args(&vfs, 5, 1, b"unsupported")).await;
+        assert_eq!(status(&mut r), nfsstat3::NFS3ERR_NOTSUPP as u32);
+        assert!(vfs.linked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pathconf_and_fsinfo_advertise_hard_links() {
+        // Regression (PR #114): PATHCONF linkmax was 0 and FSINFO lacked FSF_LINK,
+        // telling clients hard links are unsupported before any LINK was tried.
+        let vfs = Arc::new(LinkVfs::default());
+        let c = ctx(vfs.clone());
+        let mut fh = Vec::new();
+        vfs.id_to_fh(1).serialize(&mut fh).unwrap();
+
+        let mut r = dispatch(&c, 20, &fh).await;
+        assert_eq!(status(&mut r), nfsstat3::NFS3_OK as u32);
+        let mut attr = nfs::post_op_attr::default();
+        attr.deserialize(&mut r).unwrap();
+        let mut linkmax = 0u32;
+        linkmax.deserialize(&mut r).unwrap();
+        assert!(linkmax > 1, "PATHCONF linkmax = {linkmax}");
+
+        let mut r = dispatch(&c, 19, &fh).await;
+        assert_eq!(status(&mut r), nfsstat3::NFS3_OK as u32);
+        let mut info = nfs::fsinfo3::default();
+        info.deserialize(&mut r).unwrap();
+        assert_ne!(info.properties & nfs::FSF_LINK, 0, "FSINFO lacks FSF_LINK");
+    }
 }
