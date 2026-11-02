@@ -197,8 +197,8 @@ fn publish_ref(refs: &Path, tree: &Digest) -> std::io::Result<()> {
     fs::rename(&tmp, refs.join(REF))
 }
 
-/// A test-only pause or fault point (`dir-sync`, `evicting`, `put-before-pin`); a no-op
-/// outside unit tests.
+/// A test-only pause or fault point (`dir-sync`, `evicting`, `put-before-pin`,
+/// `scrub-corrupt`); a no-op outside unit tests.
 pub(super) fn seam(node: &CasNode, at: &str) -> std::io::Result<()> {
     #[cfg(test)]
     {
@@ -354,6 +354,44 @@ mod tests {
         drop(node);
         let node = open(&cfg);
         node.maintain_once().unwrap();
+        assert!(node.has(&d).unwrap() && node.roots().pins().contains(&d));
+    }
+
+    /// Codex P1 on #165 round 2: scrub's corrupt verdict and its removal must be atomic
+    /// against a pinning re-put, or it deletes the bytes that re-put just repaired.
+    #[test]
+    fn scrub_keeps_a_blob_a_pinning_reput_repaired_after_its_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = CasConfig {
+            byte_budget: Some(1 << 20), // eviction is not the subject here
+            ..lru(dir.path())
+        };
+        let node = open(&cfg);
+        let bytes = b"repaired by a pinning re-put";
+        let d = Digest::compute(bytes);
+        node.put_keyed(&d, &mut &bytes[..]).unwrap();
+        let hex = d.to_string().rsplit_once(':').unwrap().1.to_owned();
+        let file = dir.path().join("blake3").join(&hex[..2]).join(&hex[2..]);
+        std::fs::write(&file, b"bit rot").unwrap();
+
+        set_seam(move |node, at| {
+            if at == "scrub-corrupt" {
+                node.put_and_pin(&d.clone(), &mut &bytes[..])
+                    .map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        });
+        let report = node.maintain_once().unwrap();
+        clear_seam();
+
+        let d = Digest::compute(bytes);
+        assert_eq!(report.scrub().corrupt, 1, "scrub saw the bit rot");
+        assert!(node.has(&d).unwrap(), "the repaired, pinned blob was kept");
+        let mut back = Vec::new();
+        std::io::Read::read_to_end(&mut node.get(&d).unwrap(), &mut back).unwrap();
+        assert_eq!(back, bytes);
+        drop(node);
+        let node = open(&cfg);
         assert!(node.has(&d).unwrap() && node.roots().pins().contains(&d));
     }
 }
