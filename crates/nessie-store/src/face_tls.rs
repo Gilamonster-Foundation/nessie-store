@@ -122,6 +122,28 @@ pub fn served_cert_sha256(cfg: &Config) -> anyhow::Result<(String, String)> {
     Ok((node.fingerprint().hex(), node.cert_sha256()))
 }
 
+/// What `identity show` says about revocation: the loaded log's counter and
+/// generation, or that none is configured.
+///
+/// # Errors
+///
+/// A configured log that is missing, invalid or rolled back (the same refusal
+/// the daemon makes).
+pub fn revocation_summary(cfg: &Config) -> anyhow::Result<String> {
+    let Some(log) = cfg.revocation_log() else {
+        return Ok("no revocation log configured".to_owned());
+    };
+    let node = NodeIdentity::load(&cfg.mesh_identity_dir())
+        .context("loading the node identity (run `nessie-store identity issue`)")?;
+    let guard = agent_mesh_protocol::RevocationGuard::open(&log, node.user_fingerprint())
+        .with_context(|| format!("[tls] revocation_log {} is not usable", log.display()))?;
+    let state = guard.state()?;
+    Ok(format!(
+        "revocation log counter {} generation {}",
+        state.len, state.generation
+    ))
+}
+
 /// Serve `router` on `listener` over mutual TLS until the listener fails.
 ///
 /// Handshakes run off the accept loop, so a stalled or refused peer never delays
