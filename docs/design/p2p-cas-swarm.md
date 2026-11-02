@@ -223,6 +223,11 @@ broker bytes" discipline). Only *discovery* differs between the two routers.
 
 ## Node storage modes — cache vs durable store of record
 
+> **Superseded (#138).** The shipped modes are `lru` (coldest-first; replicated blobs
+> before sole copies; pins and in-flight writes never) and `write_only` (never reclaims,
+> refuses writes at capacity). The reachability-GC "durable" mode described below is
+> retired.
+
 A nessie node runs its local disk in one of two modes. The two modes differ in
 their **retention rule** — *what is allowed to leave local disk, and why* — and
 the design deliberately borrows git's object-store model, because git already *is*
@@ -353,7 +358,9 @@ These gated the first implementable slice; all four are now settled.
 1. **Content routing / swarm shape → hybrid.** Both a NATS rendezvous router *and*
    a Kademlia DHT router are first-class behind the `ContentRouter` seam; the
    deployment selects (or composes) them. The axis is settled by refusing to pick
-   one — the seam makes carrying both affordable.
+   one — the seam makes carrying both affordable. *(Revised 2026-07-23: the mesh
+   `Bus` router is primary, NATS an alternative; see
+   [membership-and-identity.md](./membership-and-identity.md).)*
 2. **AC consistency model → eventual + attestation CRDT.** AC is a grow-only set of
    signed attestations, confirmed at `k`-of-`n` agreement. No consensus, no lease.
    This is also the ungameable-completion keystone — one mechanism, two payoffs.
@@ -363,13 +370,11 @@ These gated the first implementable slice; all four are now settled.
 4. **Native digest ↔ REAPI digest → multihash native, SHA-256 at the boundary.**
    Self-describing multihash (BLAKE3 default) internally; the REAPI face pins
    SHA-256 as its wire contract and translates at the boundary.
-5. **Node storage modes → cache and durable store of record.** A node runs local
-   disk either as a bounded **LRU cache** (cold blobs float to the swarm, restored
-   by digest from a durable node) or as a **durable store of record** that retains
-   all *reachable* blobs and runs **git-style reachability GC** to reclaim only
-   *unreachable* garbage. Paired safety: durable GC never collects a reachable
-   blob and cache eviction never loses one (a durable holder retains it) — so no
-   reachable blob is lost swarm-wide. Validated on the nuc1/nuc2/gnuc testbed.
+5. **Node storage modes → `lru` and `write_only` (#142).** A node runs local disk
+   as a bounded **LRU cache** (coldest first, replicated blobs before sole copies;
+   a sole copy can be dropped) or as **write-only** storage (never deletes, refuses
+   writes at capacity). The write-only mirror guarantee (#139) and scrub/repair
+   (#140) are shipped. The earlier durable reachability-GC design is historical.
    See [Node storage modes](#node-storage-modes--cache-vs-durable-store-of-record).
 
 ## First implementable slice — CAS spine (built ✅)
@@ -398,8 +403,8 @@ merge each slice on green, in dependency order).
 | AC CRDT | `Attestation`, grow-only set, k-of-n `Confirmed`, `ActionCacheBackend` + mem + conformance (signature verification behind a seam) | ✅ #88, #89 |
 | Content routing | `ContentRouter` seam + in-process `MemRouter`/`MemSwarm` | ✅ #90 |
 | Reachability | `Referenced` + `ReclaimableCas` seams; `ReferenceResolver` + `RootSource` + `reachable_closure` | ✅ #91, #92 |
-| Storage modes | `CasStore` + durable reachability GC + cache replica-gated LRU eviction | ✅ #93, #94 |
-| Formal PO-GC | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
+| Storage modes (historical) | `CasStore` + durable reachability GC + replica-gated LRU eviction; durable GC retired by #142 | ✅ #93, #94 |
+| Formal PO-GC (historical) | Lean mark-sweep + TLA+ concurrency/eviction safety (+ boundary counterexamples) | ✅ #95 |
 | Daemon wiring | `[cas]` config + `cas_node` + scheduled GC/evict maintenance | ✅ #97 |
 | Merkle DAG | `Tree` directory objects → transitive reachability + REAPI `Directory` | ✅ #99 |
 | REAPI seams | `CasBackend::put_keyed` + `size` (SHA-256-native path; no index) | ✅ #100 |
@@ -411,25 +416,44 @@ merge each slice on green, in dependency order).
 | REAPI ActionCache | `GetActionResult` (confirmed AC → `ar_to_reapi`) + `UpdateActionResult` (store body → self-attest, k=1) + `AttestationSigner`/`DevSelfSigner` seam | ✅ #108 |
 | REAPI GetTree | breadth-first `Directory` DAG walk re-emitting stored proto blobs; resume-token pagination; blocking-pool walk → bounded channel | ✅ #109 |
 | REAPI daemon wiring | `[reapi]` config + `build_router` seam + tonic server spawned beside axum in `serve()`; SHA-256-native self-attesting in-mem cache; startup `put_keyed` probe | ✅ #110 |
-| Identity/membership convergence | ride agent-mesh (`AgentKey`/`Fingerprint`/`CertChain`, auto-team membership) + agent-bridle (`HumanPrincipal`/`PrincipalBinding`); seam mapping for `SignerId`/`SignatureVerifier`/`AttestationSigner`; **routing corrected to iroh-QUIC mesh** — [membership-and-identity.md](./membership-and-identity.md) | ✅ design (2026-07-23) |
-| Mesh `Bus` router (primary) | signed provider records on `Topic(user_fp, "nessie/providers/v1")` over the agent-mesh `Bus`; the real first `ContentRouter` | 🔜 next (needs a running mesh) |
-| NATS router (alternative) | `async-nats` rendezvous provider records — for NATS-running environments, not the default fabric | ⏳ |
-| Kademlia router (open-swarm) | `libp2p` DHT — nessie-specific; the mesh itself declined a DHT | ⏳ later |
-| AC signer/verifier production fill | agent-mesh `AgentKey`/`MeshSigner` fills `AttestationSigner`/`SignatureVerifier` (retires `DevSelfSigner`/`TestKeyring`); GC by `issued_generation` + `verify_at` | ⏳ (with the mesh router) |
+| S3 face crate | `nessie-s3`: `PutObject`/`GetObject`/`HeadObject` over `s3s`; key *is* the digest; refuses framed `cas.v2` and non-content-addressed `ac`/`raw` | ✅ #118 |
+| S3 daemon wiring | `[s3]` config + `faces` module: **one** CAS backend shared by both faces, S3 mounted as an axum fallback beside the ONTAP surface | ✅ #119 |
+| Disk store | `nessie-cas-disk`: persistent `ReclaimableCas`, git-loose-object layout, temp + rename commit; restart-safe grace window in `CasStore::new` | ✅ #134, #132 |
+| Shared faces store | `[cas] backend = mem\|disk`; REAPI, S3 and maintenance share one `CasNode` store (`faces::build_faces`) | ✅ #136, #133 |
+| Flat S3 keys | `{prefix}{sha256}` accepted beside `cas/{xx}/{hex}` | ✅ #135 |
+| Static peers | `nessie-cas-peer`: static peer list, fetch-through, durability oracle | ✅ #127, #143 |
+| Retention modes | `[cas] mode = lru\|write_only`; reachability-GC `durable` retired | ✅ #142 |
+| Pin / unpin roots | `POST`/`DELETE /cas/v1/roots/{digest}`, peer API only; in memory until #137 | ✅ #128, #144 |
+| Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ✅ #139, #145 |
+| Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ✅ #140, #146 |
+| mTLS | agent-mesh node identity + `authorized_keys` verifier; peer API, REAPI, S3 server TLS; operator walkthrough; per-agent and generation revocation via `[tls] revocation_log` | ✅ #150, #151, #152, #153, #155, #162 |
+| Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
+| Identity/membership convergence | ride agent-mesh keys and agent-bridle principals instead of inventing identity; seam mapping and routing correction — [membership-and-identity.md](./membership-and-identity.md) | ✅ design (2026-07-23); transport half built (mTLS row above) |
+| Mesh `Bus` router (primary) | signed provider records on `Topic(user_fp, "nessie/providers/v1")` over the agent-mesh `Bus`; the first mesh-native `ContentRouter` (`StaticRouter` is the only real one today) | ⏳ needs a running mesh |
+| NATS router (alternative) | `async-nats` rendezvous provider records, for NATS-running environments, not the default fabric | ⏳ |
+| Kademlia router (open-swarm) | `libp2p` DHT; nessie-specific, the mesh itself declined a DHT | ⏳ later |
+| AC signer/verifier production fill | agent-mesh `AgentKey` fills `AttestationSigner`/`SignatureVerifier` (retires `DevSelfSigner`/`TestKeyring`, still wired in `faces.rs`); GC by `issued_generation` + `verify_at` | ⏳ |
 
 The single-node substrate is complete, machine-checked, runnable, **and now speaks a
 real protocol**: the CAS spine, the ActionCache attestation-CRDT (the ungameable-completion
-keystone), the content-router seam, both storage modes (durable reachability GC + cache
-replica-gated eviction) with the paired safety property proved in `formal/`, the Merkle-DAG
+keystone), the content-router seam, the retention modes (`lru` and `write_only`; the earlier durable
+reachability-GC proofs in `formal/` are historical), the Merkle-DAG
 `Tree` objects, the REAPI write/emit seams, the daemon that runs a configured CAS node with
 scheduled maintenance, and the full **REAPI gRPC cache face** (Capabilities + CAS +
 ByteStream + ActionCache + GetTree over a SHA-256 boundary) wired beside axum and gated on a
-`[reapi]` config block — *a Bazel remote cache with no BuildBarn to stand up*. What remains
-is *distribution*: a real `ContentRouter`. Grounding against the fleet's actual fabric
-(2026-07-23) settled the identity/membership convergence — nessie **rides agent-mesh**
-(iroh-QUIC, cert-chain auto-team membership) and agent-bridle (`HumanPrincipal`), inventing
-no roster or identity of its own — so the first router is the **mesh-native `Bus` router**,
-not a NATS one. See [membership-and-identity.md](./membership-and-identity.md).
+`[reapi]` config block — *a Bazel remote cache with no BuildBarn to stand up* — plus a
+second face over the **same** blobs: the **S3 object API**, for the many cache clients that
+speak S3 rather than gRPC. The two faces are not integrated with each other and do not need
+to be; a blob written over one is readable over the other because both name it by the same
+digest and the daemon hands them one backend. The S3 face serves the content-addressed
+prefix only, and *refuses* a write whose bytes do not hash to the key naming it — so a
+client configured to send framed or name-addressed objects gets an error that names the
+setting, not silent corruption. Static peers (`nessie-cas-peer`) and mTLS from agent-mesh keys are built. What remains is
+*distribution*: a real network `ContentRouter`. Grounding against the fleet's actual fabric
+(2026-07-23) settled that nessie **rides agent-mesh** (iroh-QUIC, cert-chain membership) and
+agent-bridle (`HumanPrincipal`), inventing no roster or identity of its own, so the first
+network router is the **mesh-native `Bus` router**, not a NATS one. See
+[membership-and-identity.md](./membership-and-identity.md).
 
 ## Open questions (deferred, tracked)
 
@@ -438,7 +462,8 @@ not a NATS one. See [membership-and-identity.md](./membership-and-identity.md).
 - **Attestation garbage collection** — grow-only sets grow; when is an AC entry's
   attestation set compacted, and under whose authority? *(Direction settled 2026-07-23:
   prune by agent-mesh `issued_generation` + `CertChain::verify_at(gen)` — a signer revoked
-  or expired at generation `G` has its attestations dropped. See membership-and-identity.md.)*
+  or expired at generation `G` has its attestations dropped. See membership-and-identity.md.
+  Not built: no attestation GC exists yet.)*
 - **REAPI dual-digest indexing** — index blobs under both multihash and SHA-256, or
   compute the SHA-256 view lazily on REAPI reads? Settle when the face is built.
 - **NFS read-through vs CAS** — the 2026-05-17 read-through surface is a third face;

@@ -1,0 +1,77 @@
+//! The rustls server configuration the cache faces terminate TLS with.
+
+use std::sync::Arc;
+
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
+use rustls::{ClientConfig, ServerConfig};
+
+use crate::{MeshVerifier, MtlsError, NodeIdentity};
+
+#[derive(Debug)]
+struct Fixed(Arc<CertifiedKey>);
+
+impl ResolvesServerCert for Fixed {
+    fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
+    }
+}
+
+/// A TLS 1.3-only server configuration presenting `node`'s certificate.
+///
+/// With `clients` the client certificate is **mandatory** and judged by that
+/// verifier (mTLS); with `None` there is no client authentication (server TLS
+/// only, for faces that authenticate some other way). `alpn` is the protocol
+/// list to offer, e.g. `[b"h2"]`.
+pub fn server_config(
+    node: &NodeIdentity,
+    clients: Option<Arc<MeshVerifier>>,
+    alpn: &[&[u8]],
+) -> Result<ServerConfig, MtlsError> {
+    let builder =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|e| MtlsError::Generate(e.to_string()))?;
+    let mtls = clients.is_some();
+    let builder = match clients {
+        Some(v) => builder.with_client_cert_verifier(v),
+        None => builder.with_no_client_auth(),
+    };
+    let mut cfg = builder.with_cert_resolver(Arc::new(Fixed(node.node_certified_key()?)));
+    cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    if mtls {
+        // A resumed handshake restores the old client certificate and skips the
+        // verifier, so revocation would not be seen: every connection is a full,
+        // freshly admitted handshake.
+        cfg.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        cfg.send_tls13_tickets = 0;
+    }
+    Ok(cfg)
+}
+
+impl rustls::client::ResolvesClientCert for Fixed {
+    fn resolve(&self, _: &[&[u8]], _: &[rustls::SignatureScheme]) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
+    }
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
+/// A TLS 1.3-only client configuration that presents `node`'s certificate and
+/// accepts only servers `servers` admits (the dialling half of mTLS).
+pub fn client_config(
+    node: &NodeIdentity,
+    servers: Arc<MeshVerifier>,
+) -> Result<ClientConfig, MtlsError> {
+    let mut cfg =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|e| MtlsError::Generate(e.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(servers)
+            .with_client_cert_resolver(Arc::new(Fixed(node.node_certified_key()?)));
+    // Never resume: a resumed handshake skips the server verifier (see `server_config`).
+    cfg.resumption = rustls::client::Resumption::disabled();
+    Ok(cfg)
+}

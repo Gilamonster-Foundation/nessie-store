@@ -121,11 +121,9 @@ impl Digest {
     /// Compute the digest of `data` with an explicit algorithm.
     #[must_use]
     pub fn compute_with(algo: DigestAlgo, data: &[u8]) -> Self {
-        let bytes = match algo {
-            DigestAlgo::Blake3 => blake3::hash(data).as_bytes().to_vec(),
-            DigestAlgo::Sha256 => sha2::Sha256::digest(data).to_vec(),
-        };
-        Self { algo, bytes }
+        let mut hasher = DigestHasher::new(algo);
+        hasher.update(data);
+        hasher.finalize()
     }
 
     /// True iff `data` hashes (under this digest's own algorithm) to this digest.
@@ -228,6 +226,70 @@ impl<'de> Deserialize<'de> for Digest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// An incremental hasher: feed bytes in any chunking, get the same [`Digest`]
+/// [`Digest::compute_with`] would produce over their concatenation.
+///
+/// This lets a backend hash while streaming to storage instead of buffering the
+/// blob. It is deliberately the *only* way to mint a [`Digest`] besides parsing —
+/// there is no constructor taking raw bytes, so a digest always comes from
+/// hashing real content.
+///
+/// Implements [`std::io::Write`], so `std::io::copy(&mut source, &mut hasher)`
+/// drives it.
+pub struct DigestHasher(HasherState);
+
+enum HasherState {
+    Blake3(Box<blake3::Hasher>),
+    Sha256(sha2::Sha256),
+}
+
+impl DigestHasher {
+    /// Start hashing with `algo`.
+    #[must_use]
+    pub fn new(algo: DigestAlgo) -> Self {
+        Self(match algo {
+            DigestAlgo::Blake3 => HasherState::Blake3(Box::new(blake3::Hasher::new())),
+            DigestAlgo::Sha256 => HasherState::Sha256(sha2::Sha256::new()),
+        })
+    }
+
+    /// Absorb `data` into the running hash.
+    pub fn update(&mut self, data: &[u8]) {
+        match &mut self.0 {
+            HasherState::Blake3(h) => {
+                h.update(data);
+            }
+            HasherState::Sha256(h) => sha2::Digest::update(h, data),
+        }
+    }
+
+    /// Finish hashing and return the [`Digest`] of everything absorbed.
+    #[must_use]
+    pub fn finalize(self) -> Digest {
+        match self.0 {
+            HasherState::Blake3(h) => Digest {
+                algo: DigestAlgo::Blake3,
+                bytes: h.finalize().as_bytes().to_vec(),
+            },
+            HasherState::Sha256(h) => Digest {
+                algo: DigestAlgo::Sha256,
+                bytes: h.finalize().to_vec(),
+            },
+        }
+    }
+}
+
+impl std::io::Write for DigestHasher {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -399,5 +461,39 @@ mod tests {
             Digest::from_multihash_bytes(&[0x1e, 0x20, 0x00, 0x00, 0x00]).unwrap_err(),
             DigestParseError::Truncated
         );
+    }
+
+    const BOTH: [DigestAlgo; 2] = [DigestAlgo::Blake3, DigestAlgo::Sha256];
+
+    fn sample() -> Vec<u8> {
+        (0..10_000u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    fn hasher_chunked_updates_equal_one_shot_compute() {
+        let data = sample();
+        for algo in BOTH {
+            for chunk in [1usize, 7, 4096] {
+                let mut h = DigestHasher::new(algo);
+                for c in data.chunks(chunk) {
+                    h.update(c);
+                }
+                assert_eq!(h.finalize(), Digest::compute_with(algo, &data));
+            }
+        }
+        let mut h = DigestHasher::new(DigestAlgo::DEFAULT);
+        h.update(&data);
+        assert_eq!(h.finalize(), Digest::compute(&data));
+    }
+
+    #[test]
+    fn hasher_driven_by_io_copy_equals_compute() {
+        let data = sample();
+        for algo in BOTH {
+            let mut h = DigestHasher::new(algo);
+            let n = std::io::copy(&mut std::io::Cursor::new(&data), &mut h).expect("copy");
+            assert_eq!(n, data.len() as u64);
+            assert_eq!(h.finalize(), Digest::compute_with(algo, &data));
+        }
     }
 }

@@ -6,7 +6,148 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-11-02
+
+mTLS honours agent-mesh revocation; macOS wheels return (`macos-latest`).
+
 ### Added
+- **mTLS honours agent-mesh revocation (#155).** `[tls] revocation_log` points at the
+  operator's revocation log. A revoked agent, or a chain outside the current generation,
+  fails the handshake on the peer API, REAPI and the peer client, and every request is
+  re-judged: an open inbound connection is refused on its next request, and the peer
+  client makes a fresh, fully verified handshake per request, so a server revoked in
+  *your* log is refused on the next fetch or push. A configured log that is missing,
+  unreadable or rolled back refuses everyone. `identity show` prints the log's counter
+  and generation. Needs `agent-mesh-protocol` 0.8.3.
+
+### Changed
+- **TLS session resumption is off for mTLS, both directions, and the peer client no longer
+  pools connections.** A resumed handshake skips certificate verification, so it would
+  have bypassed revocation. Cost: one handshake per peer request.
+- REAPI over mTLS now serves through the same acceptor as the peer API (axum-server)
+  instead of a hand-rolled accept loop.
+
+## [0.4.2] — 2026-11-01
+
+### Fixed
+- **`nessie-mtls` and `nessie-store` 0.4.1 did not build from crates.io.** The workspace took
+  `rustls` without its `std` feature; inside the workspace another crate enabled it, but the
+  published `nessie-mtls` built alone and lost `ServerConfig::builder_with_provider`. `rustls`
+  now names `std` explicitly. 0.4.1 is on crates.io for every crate except these two.
+
+## [0.4.1] — 2026-11-01
+
+mTLS with agent-mesh keys on the peer API, REAPI and S3 faces, off by default (`[tls] mtls`).
+
+### Added
+- **mTLS with agent-mesh keys, end to end (#149).** Peer API on `[tls] peer_listen` and
+  `https://` peers (#151), REAPI client certificates and S3 server TLS with a pinnable
+  fingerprint (#152), and the operator walkthrough [docs/MTLS.md](docs/MTLS.md) (#153):
+  `identity issue` / `show` / `export-client-cert`, `authorized_keys`, `[tls] mtls = true`.
+  The mTLS peer client is https-only and never follows redirects. **Revocation is not yet
+  honoured** (#155, v0.4.2).
+- **`nessie-mtls`: agent-mesh node identity, certificate and verifier (#150).** A node's
+  identity is an agent-mesh `AgentKey` (`<data_dir>/identity/agent.seed`, `agent.chain.json`,
+  `binding.json`; issued by `nessie-store identity issue`). Its self-signed ed25519 certificate
+  carries the signed `CertChain` and `GitHubBinding` in one extension
+  (`2.25.8763957256297098986`). `MeshVerifier` implements both rustls verifier traits and admits
+  a peer only when the cert key equals the chain's agent key, the chain verifies, the binding is
+  for the chain's root user, and the binding is signed by a key in `[tls] authorized_keys`
+  (a missing file trusts nobody). TLS 1.3 only. Listener wiring follows in #151/#152.
+
+## [0.4.0] — 2026-11-01
+
+CAS on disk, a content-keyed S3 face, and static-peer sharing:
+`nessie-cas-disk`, `[cas] backend = "disk"`, LRU (default) and `write_only` retention,
+scrub and repair, `/cas/v1` peer routes with fetch-through and pinning, and the S3 face.
+The peer API is unauthenticated in this release (lab only; mTLS is 0.4.1).
+
+### Added
+- **`write_only` acknowledges a write only after R verified copies (#139).**
+  `[cas] replication_factor` is R, the total copies including this node (default 2;
+  an error under `lru`). After the local write `put`/`put_keyed` push to `durable`
+  peers that report `x-nessie-mode: write_only` and fail with the new
+  `BackendError::Underreplicated { confirmed, required }` (S3 `503 ServiceUnavailable`,
+  REAPI `UNAVAILABLE`) when fewer than R - 1 confirm; the local copy stays. A peer's
+  `PUT /cas/v1/blobs` writes locally only, so mirroring never recurses. Startup refuses
+  R - 1 above the number of `durable` peers, so a standalone `write_only` node now needs
+  `replication_factor = 1`.
+
+- **Scrub and repair in every maintenance pass (#140).** `CasNode::maintain_once`
+  verifies up to `[cas] scrub_bytes_per_pass` bytes of local blobs (default 1 GiB; `0`
+  turns the scrub off), resuming where the last pass stopped (in memory; a restart
+  rescans from the start), in both modes, and reports counts in
+  `MaintenanceReport::scrub()`. A corrupt blob is reclaimed under `lru` (the next read
+  refetches it). Under `write_only` it is moved to
+  `<path>/quarantine/<algo>/<hex>.<n>` (`ReclaimableCas::quarantine`; never deleted,
+  never overwritten, never served or listed), refetched from a peer, digest-verified and
+  restored through the capacity gate. Quarantined bytes are still retained, so they stay
+  charged against `byte_budget` — at their real size, across restarts, and after a
+  successful restore: corruption costs capacity. Credits use what was charged, never a
+  corrupt file's current length. A restore that failed (no peer, no room) is retried on
+  every later pass and shows as `pending_restore`, drawing on the same
+  `scrub_bytes_per_pass` budget as the live scan (resuming where the last pass stopped);
+  nothing is fetched for a restore the capacity gate would refuse (`pending_no_capacity`).
+  A corrupt blob with an ungated re-put in flight is left for a later pass (`deferred`), so
+  that write can never publish a copy nothing is charged for. A mirrored `write_only` node also
+  pushes every scanned blob back to R copies with the write path's own push, so a blob a
+  down peer left short is finished on the next pass. `ReclaimableCas` gains `verify`,
+  `quarantine` and `iter_quarantine` (defaulted); `MaintenanceReport` variants now carry
+  a `scrub` field.
+
+### Changed
+- **BREAKING: `[cas] mode` is now `lru` (default) or `write_only`; `durable` is removed (#138).**
+  A config that still says `mode = "durable"` (or `"cache"`) fails to parse, naming the
+  two modes. `byte_budget` is now required in both modes, and `replication_factor` is
+  gone. `lru` evicts coldest-first over `byte_budget`: blobs with another known holder
+  first, then sole copies (a cache may drop its only copy); pinned roots, in-flight
+  writes and writes inside `gc_grace` are never evicted. `write_only` never reclaims;
+  `byte_budget` is its capacity, and a write past it is refused before anything is
+  committed (new `BackendError::CapacityExceeded` -> S3 `507 InsufficientStorage`,
+  REAPI `RESOURCE_EXHAUSTED`). The durable mark-and-sweep (`CasStore::gc`), the
+  "faces imply retain-all" switch (`CasNode::mark_face_backed`) and the Gc put-race TLA+
+  model are removed.
+
+### Added
+- **`nessie-cas-disk`: a persistent `ReclaimableCas`.** Git-loose-object layout
+  (digest-fanned files); a blob is written to a temp file and renamed into place before
+  it is visible, temp files are swept on open, and reads are verified. Select it with
+  `[cas] backend = "disk"`.
+- **`[cas] backend = "mem"|"disk"` + `path`; one store behind both faces.** `CasNode`
+  now holds a `CasStore<Box<dyn ReclaimableCas>>` (in-memory or `DiskCas`), and with
+  `[cas]` present REAPI, S3 and retention maintenance share that single store
+  (`faces::build_faces`, the entry point `main` calls). `MemActionCache` keeps result
+  bodies in any shared `CasBackend` (`MemActionCache::shared`); attestations stay in
+  memory. `backend = "disk"` without `path` is a config error. The daemon now refuses
+  to start the S3 face while its secret is the default `nessie`.
+- **S3 face accepts flat `{prefix}{sha256}` keys** (kyln's layout, no `cas/{xx}/` shard): a final segment of exactly 64 lowercase hex maps to the same digest as the sharded form; `ac/`, `raw/` and `cas.v2/` unchanged.
+- **S3 object-API face over the CAS (`nessie-s3`).** A second protocol face beside
+  the REAPI one, over the *same* content-addressed store: a blob written over REAPI
+  gRPC is the blob an S3 client reads, because both name it by the same digest.
+  Serves object keys of the form `{prefix}/cas/{xx}/{sha256-hex}` — the layout used
+  by cache clients that key blobs by their own digest, bazel-remote's S3 backend
+  being the one this was built against — so the S3 key *is* the digest and the face
+  needs no bucket index, no name→digest table and no configuration. Three of
+  `s3s`'s trait methods are implemented (`PutObject`, `GetObject`, `HeadObject`);
+  the rest keep the trait's default `NotImplemented`. Writes go through
+  `CasBackend::put_keyed`, so a body that does not hash to the digest in its key is
+  **refused, not stored**; that makes two client misconfigurations visible as errors
+  instead of silent corruption — framed `cas.v2/` objects (refused on write with a
+  message naming `--s3.storage_mode uncompressed`) and non-content-addressed `ac/` /
+  `raw/` keys (reported absent). Read paths report both as a plain cache *miss*, so
+  a misconfigured client degrades to a cold cache rather than failing builds.
+  Listing and mutable names — what a general-purpose S3 client needs — are not in
+  this slice. Daemon wiring (`[s3]`) follows separately.
+- **S3 face daemon wiring (`[s3]`).** The S3 object API is now servable: an `[s3]`
+  config block (absent = off, present-but-`enabled = false` = staged) binds an
+  `S3Service` as an axum fallback beside the ONTAP control plane, the way `[reapi]`
+  spawns tonic. SigV4 credentials come from `access_key`/`secret_key`, overridable
+  via `NESSIE_S3_ACCESS_KEY` / `NESSIE_S3_SECRET_KEY` so secrets stay out of the
+  TOML (same rule as `admin_password`). **Both cache faces now share one backend**,
+  built once in a new `faces` module: a blob written over REAPI gRPC is readable
+  over S3 and vice versa, which is asserted directly rather than left to documentation
+  — the previous wiring built a store per face, which would have quietly broken the
+  property with every unit test still green.
 - **SnapMirror live data plane (#69).** Cross-instance replication now moves real
   bytes. A new `ReplicationBackend` capability tier (`send_stream` / `receive_stream`,
   reached via `SnapshotBackend::as_replication`) is implemented by the `mem` and
@@ -20,6 +161,18 @@ All notable changes to nessie-store are documented here. The format follows
   `docs/design/snapmirror-data-plane.md` for the design (incl. fan-out / cascade
   topology). A two-instance integration test proves it end to end.
 
+### Changed
+- **MSRV raised to 1.96** (`rust-toolchain.toml` 1.88.0 → 1.96.1, workspace
+  `rust-version` 1.88 → 1.96, builder image `rust:1.88-bookworm` →
+  `rust:1.96-bookworm`). Required by `s3s` 0.16, and the reason to take it now
+  rather than pin around it: under the old 1.88 ceiling the MSRV-constrained
+  resolver dragged the SigV4 and checksum path down onto **release-candidate**
+  crypto crates (`sha2 0.11.0-rc.3`, `hmac 0.13.0-rc.3`, `md-5 0.11.0-rc.3`, plus a
+  hand-pinned `digest 0.11.0-rc.4` to make them compile together). On 1.96 all four
+  resolve to final releases and the pins are gone. One new clippy lint
+  (`manual_is_multiple_of`) fixed in `nessie-backend-core`; the rest of the
+  workspace is unchanged and the full suite passes.
+
 ### Documentation
 - **Durable-docs honesty pass.** The README now carries a machine-checked **crate
   inventory** separating *implemented* crates from *planned* ones, and a new
@@ -30,6 +183,10 @@ All notable changes to nessie-store are documented here. The format follows
   experimental NFS gateways (#71).
 
 ### Fixed
+- **Restart keeps young blobs inside the grace window.** `CasStore::new` seeds every
+  local blob's write-time with the current clock, so after a restart `lru` eviction
+  treats existing blobs as fresh for one `gc_grace` instead of as old. `new` returns
+  `Result` and fails closed if enumeration fails.
 - **Windows workspace build.** `nessie-nfs` is Unix-only (it relies on
   `std::os::unix`, `tokio::fs::symlink`, and AUTH_UNIX `chown`) but was not gated,
   so `cargo build/test --workspace` failed to compile on Windows (the nightly
@@ -41,7 +198,7 @@ All notable changes to nessie-store are documented here. The format follows
 ### Planned
 - Live-ZFS / Trident-on-k3s acceptance gate (incl. a real two-instance `zfs`
   replication check) — #70.
-- SMB support (v0.4.0) — epic #51.
+- SMB support (v0.5.0) — epic #51.
 
 ## [0.3.1] — 2026-06-26
 

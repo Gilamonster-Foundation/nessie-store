@@ -11,11 +11,15 @@ members = [
     # Phase 1 — Foundation:
     "crates/nessie-backend-core",
     "crates/nessie-backend-mem",
+    "crates/nessie-cas-disk",
+    "crates/nessie-cas-peer",
     "crates/nessie-backend-conformance",
     "crates/nessie-cas-conformance",
     "crates/nessie-ac-conformance",
     "crates/nessie-cas-store",
     "crates/nessie-reapi",
+    "crates/nessie-s3",
+    "crates/nessie-mtls",
 
     # Phase 2 — REST surface:
     "crates/nessie-ontap-protocol",
@@ -38,9 +42,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.3"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.96"
 authors = ["Shawn Hartsock <hartsock@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Gilamonster-Foundation/nessie-store"
@@ -101,6 +105,12 @@ tonic-build = "0.12"
 # have none). build.rs points prost-build at it.
 protoc-bin-vendored = "3"
 
+# S3 protocol adapter (the S3 face). Supplies routing, SigV4 and the XML wire
+# shapes behind a trait whose methods all default to NotImplemented, so the face
+# implements only the three a digest-keyed cache client calls. Its rustc 1.96
+# requirement is what sets the workspace MSRV above.
+s3s = "0.16"
+
 # Multi-threaded helpers (used where measurement justifies them)
 rayon = "1"
 parking_lot = "0.12"
@@ -116,11 +126,19 @@ hyper = "1"
 http = "1"
 
 # TLS (ONTAP REST is HTTPS-only): rustls server + self-signed cert generation.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"
 
+# Mesh-key mTLS (nessie-mtls): the node identity is an agent-mesh AgentKey, the
+# trust list is an SSH authorized_keys file, the peer certificate is parsed (not
+# validated as a PKI chain) with x509-parser. Same agent-mesh-protocol line the
+# sibling agent crates track.
+agent-mesh-protocol = "0.8.3"
+ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
+x509-parser = "0.16"
+
 # HTTP client (ontap-passthrough backend; s3 backend uses object_store)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 # Base64 (HTTP Basic auth credential decode)
 base64 = "0.22"

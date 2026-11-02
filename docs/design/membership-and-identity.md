@@ -1,13 +1,14 @@
 # Membership & identity — nessie rides agent-mesh, it does not reinvent it
 
-**Status:** design convergence, grounded 2026-07-23. Resolves the "coordinate
+**Status:** design convergence, grounded 2026-07-23; transport half built, updated
+2026-11-02 (see [What is built](#what-is-built-as-of-2026-11-02)). Resolves the "coordinate
 swarm-join with agent-mesh before building a router" decision, and **corrects** the
 routing assumption in [`p2p-cas-swarm.md`](./p2p-cas-swarm.md) (§ *Content routing*).
 
 ## Why this note exists
 
-The single-node CAS substrate and the whole REAPI face are built and merged. What
-remains is *distribution* — turning one node into a swarm — and the swarm needs an
+The single-node CAS substrate, the REAPI and S3 faces, the disk store and static peers
+are built and merged. What remains is *distribution* — turning one node into a swarm — and the swarm needs an
 identity, a membership set, and a way to answer *"who holds digest `H`?"*. Rather than
 invent those, nessie sits **atop** two systems that already own them, and that are
 being actively converged **right now** in the newt-web/newt-agent membership story
@@ -38,6 +39,32 @@ mesh-key) already stacks these. nessie slots in as the storage/verification subs
 L1/L2 are complete and published. L3 does not exist anywhere (confirmed below), and is
 nessie's contribution.
 
+## What is built (as of 2026-11-02)
+
+Since this note was written, the **transport half** of the convergence shipped, by a
+simpler route than the `Bus` described below:
+
+- **mTLS with agent-mesh keys** (`nessie-mtls`; #150–#153, #154, #156, #157, #158). A
+  node is an `AgentKey` issued from the operator's `UserKey`; its self-signed TLS
+  certificate carries the mesh `CertChain`. Peers and clients are admitted when the
+  chain verifies and the operator's GitHub binding is signed by a key in
+  `authorized_keys`. It runs over rustls on the peer API, REAPI and S3 server TLS,
+  **not** over iroh-QUIC, and trust is `authorized_keys`, **not** the `user_fp`
+  auto-team rule. Walkthrough: [MTLS.md](../MTLS.md).
+- **Revocation** (#155, #162; agent-mesh 0.8.2/0.8.3). `[tls] revocation_log` feeds a
+  `RevocationGuard`; a revoked agent or out-of-generation chain is refused at
+  handshake and on every request, failing closed. The "revocation" row of the seam
+  table below is therefore built **for connections**; it is not applied to AC
+  attestations.
+- **Static peers** (`nessie-cas-peer`; #127, #143): `StaticRouter` is a real
+  `ContentRouter` that asks configured HTTP(S) peers (`HEAD`), identified by URL.
+  `announce`/`withdraw` are no-ops.
+
+**Not built:** the mesh `Bus` router, `PeerId`/`SignerId` carrying `Fingerprint`
+bytes, the production `AttestationSigner`/`SignatureVerifier` fill (the daemon still
+wires `DevSelfSigner`; `TestKeyring` is test-only), attestation GC by generation,
+the NATS and Kademlia routers, and any `agent-bridle` principal use.
+
 ## What nessie consumes — and must NOT rebuild
 
 - **Peer identity — reuse wholesale.** `AgentKey`/`CertChain`/`Fingerprint`/`MeshSigner`
@@ -62,6 +89,9 @@ nessie's contribution.
   rides `HumanPrincipal` + `PrincipalBinding` (who authorized a durable pin).
 
 ## The seam mapping (concrete)
+
+*Design; none of these rows is wired yet. mTLS (above) uses the same keys for
+connection auth only.*
 
 nessie's identity seams were deliberately built as **opaque newtypes** so a foreign
 identity drops in with no core change:
@@ -158,6 +188,7 @@ either project builds its own; captured as a cross-ref memo for newt-agent/agent
    opaque today, which is enough to start; a typed `Fingerprint` newtype is a later
    tightening).
 
-None of this is built here — this note is the coordination the "agent-mesh first" decision
-called for. Implementation waits on a running mesh and on the shared-log conversation with
-agent-mesh landing.
+Items 1–4 are not built; the transport half in
+[What is built](#what-is-built-as-of-2026-11-02) is. This note is the coordination the
+"agent-mesh first" decision called for. The router waits on a running mesh and on the
+shared-log conversation with agent-mesh.
