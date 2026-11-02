@@ -206,6 +206,16 @@ little more surface than a NATS-only v0, but settles the Napster-vs-Gnutella-vs-
 axis by *refusing to pick* — the deployment picks. The `ContentRouter` seam is what
 makes that cost bounded.
 
+> **Revised 2026-07-23 (grounded against the real mesh).** Reading agent-mesh shows the
+> fleet's fabric is **iroh-QUIC + mDNS + cert-chain membership — not NATS, not libp2p**.
+> So the *primary* `ContentRouter` is a **mesh-native `Bus` router** (signed provider
+> records on a `Topic`), NATS becomes a legitimate *alternative* for NATS-running
+> environments rather than a co-default, and Kademlia/DHT stays a later, nessie-specific
+> open-swarm variant. The seam below is unchanged; only the ranking of implementations
+> moves toward the fabric that exists. Full convergence (identity, membership, the seam
+> mapping, and the shared signed-log opportunity with the `agent-mesh-store` RFC) is in
+> [**membership-and-identity.md**](./membership-and-identity.md).
+
 The data plane is already P2P from day one regardless of router — `AccessHandle`
 gains a `CasBlob { digest, providers: Vec<PeerAddr> }` variant, so a client fetches
 bytes *directly* from a holding peer (matching the repo's existing "daemon does not
@@ -348,7 +358,9 @@ These gated the first implementable slice; all four are now settled.
 1. **Content routing / swarm shape → hybrid.** Both a NATS rendezvous router *and*
    a Kademlia DHT router are first-class behind the `ContentRouter` seam; the
    deployment selects (or composes) them. The axis is settled by refusing to pick
-   one — the seam makes carrying both affordable.
+   one — the seam makes carrying both affordable. *(Revised 2026-07-23: the mesh
+   `Bus` router is primary, NATS an alternative; see
+   [membership-and-identity.md](./membership-and-identity.md).)*
 2. **AC consistency model → eventual + attestation CRDT.** AC is a grow-only set of
    signed attestations, confirmed at `k`-of-`n` agreement. No consensus, no lease.
    This is also the ungameable-completion keystone — one mechanism, two payoffs.
@@ -414,10 +426,13 @@ merge each slice on green, in dependency order).
 | Pin / unpin roots | `POST`/`DELETE /cas/v1/roots/{digest}`, peer API only; in memory until #137 | ✅ #128, #144 |
 | Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ✅ #139, #145 |
 | Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ✅ #140, #146 |
-| mTLS | agent-mesh node identity + `authorized_keys` verifier; peer API, REAPI, S3 server TLS; operator walkthrough (revocation #155 pending) | ✅ #150, #151, #152, #153 |
+| mTLS | agent-mesh node identity + `authorized_keys` verifier; peer API, REAPI, S3 server TLS; operator walkthrough; per-agent and generation revocation via `[tls] revocation_log` | ✅ #150, #151, #152, #153, #155, #162 |
 | Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
-| NATS router | `async-nats` rendezvous provider records (a real `ContentRouter`) | ⏳ (needs a live NATS to validate) |
-| Kademlia router | `libp2p` DHT (a real `ContentRouter`) | ⏳ |
+| Identity/membership convergence | ride agent-mesh keys and agent-bridle principals instead of inventing identity; seam mapping and routing correction — [membership-and-identity.md](./membership-and-identity.md) | ✅ design (2026-07-23); transport half built (mTLS row above) |
+| Mesh `Bus` router (primary) | signed provider records on `Topic(user_fp, "nessie/providers/v1")` over the agent-mesh `Bus`; the first mesh-native `ContentRouter` (`StaticRouter` is the only real one today) | ⏳ needs a running mesh |
+| NATS router (alternative) | `async-nats` rendezvous provider records, for NATS-running environments, not the default fabric | ⏳ |
+| Kademlia router (open-swarm) | `libp2p` DHT; nessie-specific, the mesh itself declined a DHT | ⏳ later |
+| AC signer/verifier production fill | agent-mesh `AgentKey` fills `AttestationSigner`/`SignatureVerifier` (retires `DevSelfSigner`/`TestKeyring`, still wired in `faces.rs`); GC by `issued_generation` freshness + `verify_with` against the revocation state | ⏳ |
 
 The single-node substrate is complete, machine-checked, runnable, **and now speaks a
 real protocol**: the CAS spine, the ActionCache attestation-CRDT (the ungameable-completion
@@ -433,15 +448,24 @@ to be; a blob written over one is readable over the other because both name it b
 digest and the daemon hands them one backend. The S3 face serves the content-addressed
 prefix only, and *refuses* a write whose bytes do not hash to the key naming it — so a
 client configured to send framed or name-addressed objects gets an error that names the
-setting, not silent corruption. What remains is *distribution*: the two real network routers
-(NATS rendezvous + Kademlia DHT) that turn the single node into a swarm.
+setting, not silent corruption. Static peers (`nessie-cas-peer`) and mTLS from agent-mesh keys are built. What remains is
+*distribution*: a real network `ContentRouter`. Grounding against the fleet's actual fabric
+(2026-07-23) settled that nessie **rides agent-mesh** (iroh-QUIC, cert-chain membership) and
+agent-bridle (`HumanPrincipal`), inventing no roster or identity of its own, so the first
+network router is the **mesh-native `Bus` router**, not a NATS one. See
+[membership-and-identity.md](./membership-and-identity.md).
 
 ## Open questions (deferred, tracked)
 
 - **`k` for the AC confirmation gate** — fixed, per-instance-configurable, or
   policy-scoped via agent-mesh caveats? Starts at a config knob.
 - **Attestation garbage collection** — grow-only sets grow; when is an AC entry's
-  attestation set compacted, and under whose authority?
+  attestation set compacted, and under whose authority? *(Direction settled 2026-07-23:
+  prune by `issued_generation` freshness, and drop attestations whose signer fails
+  `CertChain::verify_with` against the user's current revocation state (a revoked agent
+  or ancestor, or a chain not valid at the current generation; `verify_at` alone does not
+  read revocations). See membership-and-identity.md.
+  Not built: no attestation GC exists yet.)*
 - **REAPI dual-digest indexing** — index blobs under both multihash and SHA-256, or
   compute the SHA-256 view lazily on REAPI reads? Settle when the face is built.
 - **NFS read-through vs CAS** — the 2026-05-17 read-through surface is a third face;
