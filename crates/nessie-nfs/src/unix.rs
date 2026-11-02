@@ -106,6 +106,16 @@ fn fileid_from(dev: u64, ino: u64) -> fileid3 {
     splitmix64(dev ^ splitmix64(ino))
 }
 
+/// The readdir cookie of a directory entry: the first 8 bytes of SHA-256 of its
+/// name, masked to 63 bits, with 0 (the "start" cookie) mapped to 1. Stable
+/// across restarts and Rust versions, unlike `DefaultHasher`.
+fn name_cookie(name: &OsStr) -> u64 {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(name.as_bytes());
+    let c = u64::from_be_bytes(h[..8].try_into().expect("8 bytes")) & (u64::MAX >> 1);
+    c.max(1)
+}
+
 /// An NFSv3 filesystem that passes operations through to a real directory tree.
 pub struct PassthroughFs {
     root: PathBuf,
@@ -484,24 +494,26 @@ impl NFSFileSystem for PassthroughFs {
         if !dmeta.is_dir() {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
-        // Sort by name; an entry's cookie is its 1-based position, so resuming
-        // at `start_after` skips exactly that many entries. Cookies are unique
-        // and monotonic whatever the fileids are (hard links repeat them), and 0
-        // stays the "start" cookie. Stable while the directory is unchanged.
-        let mut found: Vec<(fileid3, PathBuf)> = Vec::new();
+        // An entry's cookie is a stable hash of its name (the ext4 htree idea):
+        // it stays valid when the directory changes between pages, which matters
+        // because nfsserve never answers BAD_COOKIE. Entries are ordered by
+        // (cookie, name) and a resume lists those with a larger cookie.
+        // ponytail: entries sharing a 63-bit hash at a page boundary can be
+        // skipped; upgrade path = a tie-break counter in the low bits.
+        let mut found: Vec<(u64, fileid3, PathBuf)> = Vec::new();
         let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| io_to_nfs(&e))?;
         while let Some(ent) = rd.next_entry().await.map_err(|e| io_to_nfs(&e))? {
             let meta = match ent.metadata().await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            found.push((fileid_of(&meta), ent.path()));
+            found.push((name_cookie(&ent.file_name()), fileid_of(&meta), ent.path()));
         }
-        found.sort_by(|a, b| a.1.cmp(&b.1));
-        let skip = usize::try_from(start_after).map_or(found.len(), |n| n.min(found.len()));
+        found.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
+        let skip = found.partition_point(|e| e.0 <= start_after);
         let total_after = found.len() - skip;
         let mut entries = Vec::new();
-        for (i, (id, path)) in found.iter().enumerate().skip(skip) {
+        for (cookie, id, path) in found.iter().skip(skip) {
             if entries.len() >= max_entries {
                 break;
             }
@@ -513,7 +525,7 @@ impl NFSFileSystem for PassthroughFs {
                 .unwrap_or_else(|| filename3::from(&b""[..]));
             entries.push(DirEntry {
                 fileid: *id,
-                cookie: i as u64 + 1,
+                cookie: *cookie,
                 name,
                 attr: metadata_to_fattr3(*id, &meta),
             });

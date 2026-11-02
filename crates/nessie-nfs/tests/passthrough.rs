@@ -524,10 +524,9 @@ async fn renaming_between_two_names_of_one_inode_keeps_the_handle() {
 }
 
 #[tokio::test]
-async fn readdir_cookies_are_one_based_name_order_positions() {
-    // Regression: cookies were derived from fileids (fileid + n for extra hard
-    // links), which can overlap another inode's cookie and drop its entry when
-    // paging. Cookies are now the 1-based position in the name-sorted listing.
+async fn readdir_cookies_are_stable_unique_and_resumable() {
+    // Cookies are a hash of the name: unique per name here, nonzero, ordered, and
+    // identical across two listings; resuming at the largest ends cleanly.
     let dir = scratch();
     let fs = PassthroughFs::new(&dir).unwrap();
     let root = fs.root_dir();
@@ -542,32 +541,96 @@ async fn readdir_cookies_are_one_based_name_order_positions() {
         .await
         .unwrap();
 
-    let all = fs.readdir(root, 0, 100).await.unwrap();
-    let got: Vec<_> = all
-        .entries
-        .iter()
-        .map(|e| {
-            (
-                e.cookie,
-                String::from_utf8_lossy(e.name.as_ref()).to_string(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        got,
-        [
-            (1, "a".into()),
-            (2, "w".into()),
-            (3, "x".into()),
-            (4, "y".into()),
-            (5, "z".into())
-        ]
-    );
-    // Resuming past the end, even at the largest cookie, ends cleanly.
-    let tail = fs.readdir(root, u64::MAX, 2).await.unwrap();
+    let cookies = |r: &nessie_nfsserve::vfs::ReadDirResult| -> Vec<u64> {
+        r.entries.iter().map(|e| e.cookie).collect()
+    };
+    let one = cookies(&fs.readdir(root, 0, 100).await.unwrap());
+    let two = cookies(&fs.readdir(root, 0, 100).await.unwrap());
+    assert_eq!(one, two);
+    assert!(one.windows(2).all(|w| w[0] < w[1]) && one[0] > 0);
+    let tail = fs.readdir(root, *one.last().unwrap(), 2).await.unwrap();
     assert!(tail.entries.is_empty() && tail.end);
     for page in [1, 2, 3] {
         assert_eq!(list_names(&fs, root, page).await, ["a", "w", "x", "y", "z"]);
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Round 4 (PR #114 review): cookies survive directory changes ------------
+
+/// Page through `root` one entry at a time; after the first page run `mutate`.
+/// Returns every name listed, in order.
+async fn page_with_change(
+    fs: &PassthroughFs,
+    root: u64,
+    mutate: impl AsyncFnOnce(&str),
+) -> Vec<String> {
+    let first = fs.readdir(root, 0, 1).await.unwrap();
+    let e = &first.entries[0];
+    let first_name = String::from_utf8_lossy(e.name.as_ref()).to_string();
+    mutate(&first_name).await;
+    let mut seen = vec![first_name];
+    let mut cookie = e.cookie;
+    loop {
+        let r = fs.readdir(root, cookie, 1).await.unwrap();
+        for e in &r.entries {
+            seen.push(String::from_utf8_lossy(e.name.as_ref()).to_string());
+            cookie = e.cookie;
+        }
+        if r.end || r.entries.is_empty() {
+            return seen;
+        }
+    }
+}
+
+async fn five_files() -> (PathBuf, PassthroughFs, u64) {
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    for n in ["a", "b", "c", "d", "e"] {
+        fs.create(root, &name(n), sattr3::default()).await.unwrap();
+    }
+    (dir, fs, root)
+}
+
+#[tokio::test]
+async fn removing_an_already_listed_entry_between_pages_skips_nothing() {
+    // Regression: positional cookies shifted when an earlier entry was removed,
+    // so the next page skipped an entry the client never saw. nfsserve never
+    // sends BAD_COOKIE, so the cookie itself must stay valid.
+    let (dir, fs, root) = five_files().await;
+    let seen = page_with_change(&fs, root, async |first| {
+        fs.remove(root, &name(first)).await.unwrap();
+    })
+    .await;
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["a", "b", "c", "d", "e"], "listed: {seen:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn inserting_between_pages_repeats_nothing_and_skips_nothing() {
+    // Regression: a name inserted before the boundary shifted positions and
+    // repeated an already-listed entry on the next page.
+    let (dir, fs, root) = five_files().await;
+    let seen = page_with_change(&fs, root, async |_| {
+        for n in ["0ins", "zins"] {
+            fs.create(root, &name(n), sattr3::default()).await.unwrap();
+        }
+    })
+    .await;
+    for n in ["a", "b", "c", "d", "e"] {
+        assert_eq!(
+            seen.iter().filter(|s| *s == n).count(),
+            1,
+            "{n} in {seen:?}"
+        );
+    }
+    let mut dedup = seen.clone();
+    dedup.dedup();
+    dedup.sort();
+    dedup.dedup();
+    assert_eq!(dedup.len(), seen.len(), "repeats in {seen:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
