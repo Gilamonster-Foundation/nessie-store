@@ -33,11 +33,13 @@ mesh-key) already stacks these. nessie slots in as the storage/verification subs
 |-------|--------------------|-------|-----------------------|
 | **L1 — Operator** | *which human authorized this?* | agent-bridle | `HumanPrincipal { issuer, subject, email, groups }`, keyed `(issuer, subject)`, `is_member_of(group)` |
 | **L1↔L2 edge** | *this human controls that agent* | agent-bridle | `PrincipalBinding { human, mesh_agent_fingerprint: Fingerprint, issued_generation, sig }`, signed with the mesh `AgentKey` |
-| **L2 — Peer** | *which node, and is it in my swarm?* | agent-mesh-protocol | `AgentKey` (ed25519, cert-chained to a `UserKey` root, GitHub-rooted) · `Fingerprint([u8;32]) = BLAKE3(pubkey)` · `CertChain::verify_at(generation)` · `MeshSigner` |
-| **L3 — Content location** | *which peer holds digest `H`?* | **nessie** | `ContentRouter` — **net-new** |
+| **L2 — Peer** | *which node, and is it in my swarm?* | agent-mesh-protocol | `AgentKey` (ed25519, cert-chained to a `UserKey` root, GitHub-rooted) · `Fingerprint([u8;32]) = BLAKE3(pubkey)` · `CertChain::verify_with(&RevocationState)` / `RevocationGuard::check` · `MeshSigner` |
+| **L3 — Content location** | *which peer holds digest `H`?* | **nessie** | `ContentRouter` trait and `StaticRouter` (static HTTP peers) built; the dynamic, mesh-native router is **net-new** |
 
-L1/L2 are complete and published. L3 does not exist anywhere (confirmed below), and is
-nessie's contribution.
+L1/L2 are complete and published. No *dynamic* content-location layer exists in the
+fleet (confirmed below); the seam and a static-peer implementation are built (see
+[What is built](#what-is-built-as-of-2026-11-02)), and a mesh-native router is nessie's
+contribution.
 
 ## What is built (as of 2026-11-02)
 
@@ -101,11 +103,21 @@ identity drops in with no core change:
 | `PeerId(String)` | `Fingerprint::hex()` (32-byte BLAKE3 of the agent pubkey) |
 | `SignerId(Vec<u8>)` | the `Fingerprint` bytes |
 | `Signature(Vec<u8>)` | an ed25519 signature by the `AgentKey` |
-| `trait SignatureVerifier::verify(&SignerId, &[u8], &Signature)` | ed25519 verify **after** `CertChain::verify_at(gen)` to the `user_fp` root — **retires `TestKeyring`** |
+| `trait SignatureVerifier::verify(&SignerId, &[u8], &Signature)` | ed25519 verify **after** the signer's chain passes `CertChain::verify_with(&state)` (or `RevocationGuard::check`) against the user's current, rollback-protected revocation state, rooted at the `user_fp` — **retires `TestKeyring`** |
 | `trait AttestationSigner::sign_statement(action, result)` | `AgentKey::sign` via `MeshSigner` — **retires `DevSelfSigner`** |
 | AC `k`-of-`n` distinct signers | `k` distinct `Fingerprint`s under one `user_fp` (the auto-team) |
-| AC attestation freshness / GC | `issued_generation` (causal generation, **not** wall-clock) |
-| AC attestation revocation | `CertChain::verify_at(generation)` — a revoked-at-`G` signer's attestations drop |
+| AC attestation freshness / GC | `issued_generation` (causal generation, **not** wall-clock): a proposed policy, separate from revocation |
+| AC attestation revocation | `CertChain::verify_with(&RevocationState)` / `RevocationGuard::check`: refuses a revoked agent or any revoked ancestor, and a chain not valid at the log's current generation |
+
+Revocation vs. generation, as agent-mesh-protocol 0.8.3 defines them: `verify_at(g)`
+checks signatures, attenuation and that each link's `valid_for_generation` includes the
+**current** generation `g` the caller supplies; it reads no revocation log, and a
+`Scope::All` chain passes at any `g`. A certificate issued at generation 5 still verifies
+at 5 after the current generation moves to 6, so `issued_generation` alone is not
+revocation. Per-agent revocation is `verify_with` (revoked-fingerprint set over the leaf
+and every delegating parent, then `verify_at(state.generation)`); nessie's connection
+checks already use it through `RevocationGuard` (`[tls] revocation_log`). Applying it to
+stored attestations is not built.
 
 ### The content-digest vs. peer-fingerprint distinction
 
@@ -175,15 +187,18 @@ either project builds its own; captured as a cross-ref memo for newt-agent/agent
 
 ## What this changes on the nessie roadmap
 
-1. **The first real `ContentRouter` is the mesh `Bus` router, not a NATS router.** It
+1. **The first mesh-native (dynamic) `ContentRouter` is the `Bus` router, not a NATS
+   router.** (`StaticRouter` already implements the trait for configured peers.) It
    needs a *running mesh* to validate (nuc1/nuc2/gnuc as mesh peers), not a running NATS —
    a different, and more aligned, unblock than the earlier plan assumed.
 2. **`SignatureVerifier` / `AttestationSigner` get their production fill from agent-mesh
    `AgentKey`**, retiring `DevSelfSigner` (REAPI) and `TestKeyring` (conformance) from any
    non-test path.
-3. **Attestation GC gets an answer** — prune by `issued_generation` + `verify_at(gen)`
-   (a revoked/expired-generation signer's attestations are dropped), closing the design
-   doc's open "attestation garbage collection" question.
+3. **Attestation GC gets a direction** — prune by `issued_generation` freshness, and drop
+   attestations whose signer fails `verify_with` against the current revocation state
+   (revoked agent or ancestor, or out-of-generation chain). Freshness and revocation are
+   separate checks. This is the proposed answer to the design doc's open "attestation
+   garbage collection" question; it is not built.
 4. **`PeerId`/`SignerId` should evolve toward carrying `Fingerprint` bytes** (they are
    opaque today, which is enough to start; a typed `Fingerprint` newtype is a later
    tightening).

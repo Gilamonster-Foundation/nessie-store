@@ -432,7 +432,7 @@ merge each slice on green, in dependency order).
 | Mesh `Bus` router (primary) | signed provider records on `Topic(user_fp, "nessie/providers/v1")` over the agent-mesh `Bus`; the first mesh-native `ContentRouter` (`StaticRouter` is the only real one today) | ⏳ needs a running mesh |
 | NATS router (alternative) | `async-nats` rendezvous provider records, for NATS-running environments, not the default fabric | ⏳ |
 | Kademlia router (open-swarm) | `libp2p` DHT; nessie-specific, the mesh itself declined a DHT | ⏳ later |
-| AC signer/verifier production fill | agent-mesh `AgentKey` fills `AttestationSigner`/`SignatureVerifier` (retires `DevSelfSigner`/`TestKeyring`, still wired in `faces.rs`); GC by `issued_generation` + `verify_at` | ⏳ |
+| AC signer/verifier production fill | agent-mesh `AgentKey` fills `AttestationSigner`/`SignatureVerifier` (retires `DevSelfSigner`/`TestKeyring`, still wired in `faces.rs`); GC by `issued_generation` freshness + `verify_with` against the revocation state | ⏳ |
 
 The single-node substrate is complete, machine-checked, runnable, **and now speaks a
 real protocol**: the CAS spine, the ActionCache attestation-CRDT (the ungameable-completion
@@ -461,8 +461,10 @@ network router is the **mesh-native `Bus` router**, not a NATS one. See
   policy-scoped via agent-mesh caveats? Starts at a config knob.
 - **Attestation garbage collection** — grow-only sets grow; when is an AC entry's
   attestation set compacted, and under whose authority? *(Direction settled 2026-07-23:
-  prune by agent-mesh `issued_generation` + `CertChain::verify_at(gen)` — a signer revoked
-  or expired at generation `G` has its attestations dropped. See membership-and-identity.md.
+  prune by `issued_generation` freshness, and drop attestations whose signer fails
+  `CertChain::verify_with` against the user's current revocation state (a revoked agent
+  or ancestor, or a chain not valid at the current generation; `verify_at` alone does not
+  read revocations). See membership-and-identity.md.
   Not built: no attestation GC exists yet.)*
 - **REAPI dual-digest indexing** — index blobs under both multihash and SHA-256, or
   compute the SHA-256 view lazily on REAPI reads? Settle when the face is built.
