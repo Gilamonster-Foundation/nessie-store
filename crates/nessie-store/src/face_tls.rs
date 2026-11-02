@@ -157,13 +157,8 @@ pub async fn serve_reapi_tls(
     // tonic 0.12 keeps `Routes` private inside `Router`; this is its only way out.
     #[allow(deprecated)]
     let app = router.into_router();
-    crate::peer_tls::serve_checked(
-        listener,
-        app,
-        tls.reapi_config()?,
-        tls.verifier.clone(),
-    )
-    .await?;
+    crate::peer_tls::serve_checked(listener, app, tls.reapi_config()?, tls.verifier.clone())
+        .await?;
     Ok(())
 }
 

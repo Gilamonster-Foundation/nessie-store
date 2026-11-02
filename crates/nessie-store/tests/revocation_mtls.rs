@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_mesh_protocol::{
-    AgentMetadata, Caveats, GitHubBinding, RevocationEntry, RevocationGuard, RevocationLog,
-    UserKey,
+    AgentMetadata, Caveats, GitHubBinding, RevocationEntry, RevocationGuard, RevocationLog, UserKey,
 };
 use nessie_mtls::{AuthorizedKeys, MeshVerifier, NodeIdentity};
 use nessie_reapi::reapi::{GetCapabilitiesRequest, capabilities_client::CapabilitiesClient};
@@ -74,7 +73,8 @@ impl Fx {
     }
 
     fn revoke(&self, n: &NodeIdentity) {
-        let mut log: RevocationLog = serde_json::from_slice(&fs::read(self.log()).unwrap()).unwrap();
+        let mut log: RevocationLog =
+            serde_json::from_slice(&fs::read(self.log()).unwrap()).unwrap();
         log.append(
             &self.user,
             RevocationEntry::Revoke {
@@ -95,7 +95,8 @@ fn listener() -> (TcpListener, std::net::SocketAddr) {
 /// Serve `GET /ping` on the peer API as `server`.
 fn start_peer(fx: &Fx, server: &NodeIdentity) -> std::net::SocketAddr {
     let (l, addr) = listener();
-    let cfg = nessie_mtls::server_config(server, Some(fx.verifier.clone()), &[b"http/1.1"]).unwrap();
+    let cfg =
+        nessie_mtls::server_config(server, Some(fx.verifier.clone()), &[b"http/1.1"]).unwrap();
     let app = axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
     let v = fx.verifier.clone();
     tokio::spawn(async move { serve_peer(l, app, Arc::new(cfg), v).await });
@@ -116,7 +117,8 @@ async fn dial(
 
 /// `GET /ping` on an open keep-alive connection; the status line's code.
 async fn ping<S: AsyncReadExt + AsyncWriteExt + Unpin>(s: &mut S) -> std::io::Result<u16> {
-    s.write_all(b"GET /ping HTTP/1.1\r\nHost: x\r\n\r\n").await?;
+    s.write_all(b"GET /ping HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -167,7 +169,11 @@ async fn an_open_peer_connection_is_refused_on_its_next_request_after_a_revocati
     let mut s = dial(&fx, &client, addr).await.unwrap();
     assert_eq!(ping(&mut s).await.unwrap(), 200);
     fx.revoke(&client);
-    assert_eq!(ping(&mut s).await.unwrap(), 403, "same connection, no reconnect");
+    assert_eq!(
+        ping(&mut s).await.unwrap(),
+        403,
+        "same connection, no reconnect"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -241,7 +247,10 @@ async fn a_revoked_client_is_refused_on_reapi_and_an_open_channel_dies_on_revoca
     let ch = reapi_channel(&fx, &live, addr).await.unwrap();
     caps(&ch).await.expect("admitted before revocation");
     fx.revoke(&live);
-    assert!(caps(&ch).await.is_err(), "same channel, next request refused");
+    assert!(
+        caps(&ch).await.is_err(),
+        "same channel, next request refused"
+    );
 }
 
 #[test]

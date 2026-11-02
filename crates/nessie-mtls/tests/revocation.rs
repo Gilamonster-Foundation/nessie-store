@@ -65,7 +65,10 @@ impl Fx {
             chain: agent.cert().clone(),
             binding: binding(&self.peer.user, &self.peer.ssh),
         };
-        proof.certificate(&agent.signing_key_bytes()).unwrap().to_vec()
+        proof
+            .certificate(&agent.signing_key_bytes())
+            .unwrap()
+            .to_vec()
     }
 }
 

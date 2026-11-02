@@ -231,7 +231,8 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
                 .with_context(|| format!("binding [tls] peer_listen {peer_listen}"))?;
             tracing::info!(%peer_listen, "cas peer API listening (mTLS)");
             tokio::spawn(async move {
-                if let Err(e) = nessie_store::peer_tls::serve_peer(listener, peer_app, server, verifier).await
+                if let Err(e) =
+                    nessie_store::peer_tls::serve_peer(listener, peer_app, server, verifier).await
                 {
                     tracing::error!(%e, "cas peer API exited");
                 }

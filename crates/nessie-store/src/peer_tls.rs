@@ -38,9 +38,8 @@ pub fn mesh_verifier(cfg: &Config, id: &NodeIdentity) -> anyhow::Result<Arc<Mesh
     let authorized = AuthorizedKeys::load(&cfg.authorized_keys_path());
     Ok(Arc::new(match cfg.revocation_log() {
         Some(log) => {
-            let guard = RevocationGuard::open(&log, id.user_fingerprint()).with_context(|| {
-                format!("[tls] revocation_log {} is not usable", log.display())
-            })?;
+            let guard = RevocationGuard::open(&log, id.user_fingerprint())
+                .with_context(|| format!("[tls] revocation_log {} is not usable", log.display()))?;
             MeshVerifier::with_revocation(authorized, guard)
         }
         None => MeshVerifier::new(authorized),
@@ -164,9 +163,9 @@ pub async fn serve_checked(
     listener.set_nonblocking(true)?;
     let app = app.layer(axum::middleware::from_fn_with_state(verifier, recheck));
     axum_server::from_tcp(listener)
-        .acceptor(ChainAcceptor(RustlsAcceptor::new(RustlsConfig::from_config(
-            server,
-        ))))
+        .acceptor(ChainAcceptor(RustlsAcceptor::new(
+            RustlsConfig::from_config(server),
+        )))
         .serve(app.into_make_service())
         .await
 }

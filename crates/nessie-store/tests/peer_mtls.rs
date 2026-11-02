@@ -84,7 +84,8 @@ impl Daemon {
     ) -> Self {
         let v = verifier(trusts);
         let client = Arc::new(nessie_mtls::client_config(id, v.clone()).unwrap());
-        let server = Arc::new(nessie_mtls::server_config(id, Some(v.clone()), &[b"http/1.1"]).unwrap());
+        let server =
+            Arc::new(nessie_mtls::server_config(id, Some(v.clone()), &[b"http/1.1"]).unwrap());
         let node =
             Arc::new(CasNode::from_config_tls(cfg, PeerId::new(name), Some(client)).unwrap());
         let app = peer_routes(node.clone());
