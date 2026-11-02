@@ -220,12 +220,12 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
         let peer_app = nessie_store::cas_routes::peer_routes(node);
         if let Some((peer_listen, mesh)) = mtls {
             // Its own listener: rustls demands client certs per connection, not per path.
-            let (server, _) = mesh?;
+            let (server, _, verifier) = mesh?;
             let listener = std::net::TcpListener::bind(peer_listen)
                 .with_context(|| format!("binding [tls] peer_listen {peer_listen}"))?;
             tracing::info!(%peer_listen, "cas peer API listening (mTLS)");
             tokio::spawn(async move {
-                if let Err(e) = nessie_store::peer_tls::serve_peer(listener, peer_app, server).await
+                if let Err(e) = nessie_store::peer_tls::serve_peer(listener, peer_app, server, verifier).await
                 {
                     tracing::error!(%e, "cas peer API exited");
                 }

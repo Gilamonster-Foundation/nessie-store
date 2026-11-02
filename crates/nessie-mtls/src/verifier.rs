@@ -54,6 +54,20 @@ impl MeshVerifier {
         self.admit(&proof.chain, &proof.binding)
     }
 
+    /// Re-judge an already admitted `chain` against the revocation state as it
+    /// stands now. Cheap enough to run per request, so a revocation reaches
+    /// connections that are already open. Always `Ok` without a guard.
+    pub fn recheck(&self, chain: &CertChain) -> Result<(), MtlsError> {
+        match &self.revocation {
+            Some(g) => g.check(chain).map_err(|e| match e {
+                GuardError::Revoked(a) => MtlsError::Revoked(a),
+                GuardError::BadCertChain(m) => MtlsError::BadChain(m),
+                GuardError::Unavailable(m) => MtlsError::Revocation(m),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// The one acceptance point: the chain verifies (against the current
     /// revocation state when a guard is configured, else plainly), the binding
     /// is for the chain's root user and is signed by a listed key.
@@ -62,15 +76,12 @@ impl MeshVerifier {
         chain: &CertChain,
         binding: &GitHubBinding,
     ) -> Result<Fingerprint, MtlsError> {
-        match &self.revocation {
-            Some(g) => g.check(chain).map_err(|e| match e {
-                GuardError::Revoked(a) => MtlsError::Revoked(a),
-                GuardError::BadCertChain(m) => MtlsError::BadChain(m),
-                GuardError::Unavailable(m) => MtlsError::Revocation(m),
-            })?,
-            None => chain
+        if self.revocation.is_some() {
+            self.recheck(chain)?;
+        } else {
+            chain
                 .verify()
-                .map_err(|e| MtlsError::BadChain(e.to_string()))?,
+                .map_err(|e| MtlsError::BadChain(e.to_string()))?;
         }
         if binding.user_pubkey != chain.root_user_pubkey() {
             return Err(MtlsError::BindingUserMismatch);
@@ -88,6 +99,19 @@ impl MeshVerifier {
 }
 
 use std::sync::Arc;
+
+/// The verified chain of the peer on one connection, stashed at accept time
+/// (as a request extension) so each request is re-judged without re-parsing
+/// the certificate.
+#[derive(Debug, Clone)]
+pub struct PeerChain(pub Arc<CertChain>);
+
+impl PeerChain {
+    /// The chain carried by a peer's end-entity certificate (DER).
+    pub fn from_certificate(end_entity: &[u8]) -> Result<Self, MtlsError> {
+        PeerProof::from_certificate(end_entity).map(|(_, p)| Self(Arc::new(p.chain)))
+    }
+}
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, ring};

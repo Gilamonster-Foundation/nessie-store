@@ -135,6 +135,11 @@ impl NodeIdentity {
         self.key.fingerprint()
     }
 
+    /// The operator's (root user's) fingerprint: whose revocation log applies.
+    pub fn user_fingerprint(&self) -> Fingerprint {
+        self.key.cert().user_fingerprint()
+    }
+
     /// The self-signed certificate, DER.
     pub fn certificate(&self) -> Result<CertificateDer<'static>, MtlsError> {
         Ok(self.cert.der().clone())

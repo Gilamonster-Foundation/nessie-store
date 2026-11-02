@@ -231,6 +231,11 @@ pub struct TlsConfig {
     pub names: Vec<String>,
     /// Where the mTLS peer API listens (only when `mtls = true`).
     pub peer_listen: SocketAddr,
+    /// The operator's agent-mesh revocation log (`amesh revocation export`).
+    /// Unset = no revocation checks (a startup warning says so). Set = every
+    /// handshake and every request is judged against it, and a log that is
+    /// missing, unreadable or older than the last one seen refuses everyone.
+    pub revocation_log: Option<PathBuf>,
 }
 
 impl Default for TlsConfig {
@@ -240,6 +245,7 @@ impl Default for TlsConfig {
             mtls: false,
             names: Vec::new(),
             peer_listen: SocketAddr::from(([0, 0, 0, 0], 8443)),
+            revocation_log: None,
         }
     }
 }
@@ -395,6 +401,12 @@ impl Config {
     #[must_use]
     pub fn peer_listen(&self) -> SocketAddr {
         self.tls.clone().unwrap_or_default().peer_listen
+    }
+
+    /// `[tls] revocation_log`, if configured.
+    #[must_use]
+    pub fn revocation_log(&self) -> Option<PathBuf> {
+        self.tls.as_ref().and_then(|t| t.revocation_log.clone())
     }
 
     /// The `authorized_keys` file mTLS trusts: `[tls] authorized_keys`, else

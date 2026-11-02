@@ -42,4 +42,4 @@ pub use error::MtlsError;
 pub use identity::NodeIdentity;
 pub use proof::PeerProof;
 pub use server::{client_config, server_config};
-pub use verifier::MeshVerifier;
+pub use verifier::{MeshVerifier, PeerChain};
