@@ -3,6 +3,27 @@
 Caveats beyond the [crate inventory](../README.md#crate-inventory), which is
 the machine-checked list of what exists.
 
+## SnapMirror moves real bytes now
+
+Relationships, peers, and transfers are tracked, and a SnapMirror transfer
+moves real bytes: the `ReplicationBackend` capability tier (`send_stream` /
+`receive_stream`) is implemented by the `zfs` backend (`zfs send [-i base]` /
+`zfs receive`) and the `mem` backend (an in-memory logical stream). See
+[REPLICATION.md](REPLICATION.md) to run two instances end to end, and
+[design/snapmirror-data-plane.md](design/snapmirror-data-plane.md) for the
+fan-out/cascade design.
+
+## Client bindings
+
+The current PyO3 wheels are per-crate bindings, not the unified `nessie-client`
+typed client — that's still planned (#72).
+
+## Designed but unbuilt
+
+Two demand-paged NFS gateways (git-LFS, Perforce) are designed but not built —
+see [design/demand-paged-nfs-gateways.md](design/demand-paged-nfs-gateways.md)
+(#71).
+
 ## Content-addressed store, REAPI and S3
 
 - **Storage.** `[cas] backend = "mem"` (default) loses blobs on restart;
