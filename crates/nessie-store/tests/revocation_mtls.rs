@@ -256,8 +256,10 @@ async fn a_revoked_client_is_refused_on_reapi_and_an_open_channel_dies_on_revoca
 #[test]
 fn identity_show_reports_the_log_head_or_that_none_is_configured() {
     let fx = Fx::new();
-    let mut cfg = nessie_store::config::Config::default();
-    cfg.data_dir = fx.dir.path().to_path_buf();
+    let mut cfg = nessie_store::config::Config {
+        data_dir: fx.dir.path().to_path_buf(),
+        ..Default::default()
+    };
     fx.node().save(&cfg.mesh_identity_dir()).unwrap();
     assert_eq!(
         nessie_store::face_tls::revocation_summary(&cfg).unwrap(),
