@@ -214,7 +214,7 @@ async fn s3_round_trips_over_https_with_a_pinned_certificate_and_refuses_plain_h
         secret_key: "not-the-default".into(),
         ..Default::default()
     };
-    let app = nessie_store::faces::s3_app(&sc, backend());
+    let app = nessie_store::faces::s3_app(&sc, backend(), None);
     let f = face.clone();
     tokio::spawn(async move { serve_s3_tls(app, l, &f).await });
 

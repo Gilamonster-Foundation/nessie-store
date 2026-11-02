@@ -24,7 +24,11 @@ fn sha256_hex(data: &[u8]) -> String {
 
 /// Serve the S3 face on a loopback port and return a client pointed at it.
 async fn client() -> impl ObjectStore {
-    let service = nessie_s3::build_service(Arc::new(MemCas::new()), "AKIDTEST", "secret-test");
+    let service = nessie_s3::build_service(
+        nessie_s3::NessieS3::new(Arc::new(MemCas::new())),
+        "AKIDTEST",
+        "secret-test",
+    );
     let app = axum::Router::new().fallback_service(
         axum::error_handling::HandleError::<_, _, ()>::new(service, |_e: s3s::HttpError| async {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR

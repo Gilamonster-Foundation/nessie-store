@@ -204,7 +204,7 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
             nessie_store::faces::spawn_reapi(rc, backend.clone(), signer, face_tls.clone())?;
         }
         if let Some(sc) = cfg.s3.clone().filter(|s| s.enabled) {
-            nessie_store::faces::spawn_s3(sc, backend, face_tls)?;
+            nessie_store::faces::spawn_s3(sc, backend, faces.node.clone(), face_tls)?;
         }
     }
 

@@ -1,9 +1,10 @@
-//! The three S3 operations a content-addressed cache face actually needs.
+//! The S3 operations a content-addressed cache face actually needs.
 //!
 //! `s3s` supplies the S3 protocol — routing, SigV4, XML, the 114-method [`S3`]
 //! trait whose every method defaults to `NotImplemented`. This implements the
-//! three that a digest-keyed client calls: `PutObject`, `GetObject`, `HeadObject`.
-//! `ListObjectsV2` lists the sha2-256 blobs. Everything else keeps the honest default decline.
+//! three that a digest-keyed client calls — `PutObject`, `GetObject`, `HeadObject` —
+//! plus `DeleteObject`, which only unpins (#137). `ListObjectsV2` lists the sha2-256
+//! blobs. Everything else keeps the honest default decline, bulk `DeleteObjects` included.
 //!
 //! The same impedance mismatch the REAPI `ByteStream` service has applies here:
 //! [`CasBackend`] is sync `std::io::Read` / `put_keyed`, `s3s` is async streams.
@@ -15,10 +16,11 @@ use crate::error::s3_error_from_backend;
 use crate::key::ObjectKey;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
-use nessie_backend_core::{CasBackend, Digest, DigestAlgo};
+use nessie_backend_core::{BackendError, CasBackend, Digest, DigestAlgo};
 use s3s::dto::{
-    ETag, GetObjectInput, GetObjectOutput, HeadObjectInput, HeadObjectOutput, ListObjectsV2Input,
-    ListObjectsV2Output, Object, PutObjectInput, PutObjectOutput, StreamingBlob, Timestamp,
+    DeleteObjectInput, DeleteObjectOutput, ETag, GetObjectInput, GetObjectOutput, HeadObjectInput,
+    HeadObjectOutput, ListObjectsV2Input, ListObjectsV2Output, Object, PutObjectInput,
+    PutObjectOutput, StreamingBlob, Timestamp,
 };
 use s3s::{S3, S3Request, S3Response, S3Result, s3_error};
 use std::io::Read;
@@ -29,6 +31,28 @@ use tokio_util::io::{StreamReader, SyncIoBridge};
 /// `ByteStream` face so both protocols pull from the CAS the same way.
 const CHUNK: usize = 64 * 1024;
 
+/// The user-metadata key (`x-amz-meta-nessie-pin`) a PutObject sends to ask for a pin.
+const PIN_META: &str = "nessie-pin";
+
+/// Where the face records "keep this": the store's pins, which `lru` never evicts
+/// (#137). The daemon's CAS node implements it.
+pub trait Pins: Send + Sync {
+    /// Write `expected`'s bytes (verified against it) and pin them, durably, as one
+    /// step: no eviction may run between the write and the pin.
+    ///
+    /// # Errors
+    ///
+    /// The write was refused, or the pin could not be recorded.
+    fn put_and_pin(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError>;
+
+    /// Unpin `digest` (idempotent).
+    ///
+    /// # Errors
+    ///
+    /// The change could not be recorded.
+    fn unpin(&self, digest: &Digest) -> Result<(), BackendError>;
+}
+
 /// The S3 face over a [`CasBackend`].
 ///
 /// Holds no state of its own: every S3 key resolves to a digest by parsing, so the
@@ -36,13 +60,42 @@ const CHUNK: usize = 64 * 1024;
 /// credentials `s3s` checks.
 pub struct NessieS3 {
     cas: Arc<dyn CasBackend>,
+    /// `None`: nothing to pin into (a private in-memory store, which evicts nothing).
+    pins: Option<Arc<dyn Pins>>,
+    /// Pin every PutObject, not only those that send [`PIN_META`].
+    pin_on_put: bool,
 }
 
 impl NessieS3 {
     /// Build the face over `cas`.
     #[must_use]
     pub fn new(cas: Arc<dyn CasBackend>) -> Self {
-        Self { cas }
+        Self {
+            cas,
+            pins: None,
+            pin_on_put: false,
+        }
+    }
+
+    /// Record pins in `pins`: every PutObject when `pin_on_put`, else only those
+    /// sending `x-amz-meta-nessie-pin: true`. DeleteObject unpins.
+    #[must_use]
+    pub fn with_pins(mut self, pins: Arc<dyn Pins>, pin_on_put: bool) -> Self {
+        self.pins = Some(pins);
+        self.pin_on_put = pin_on_put;
+        self
+    }
+
+    /// Unpin `digest`, on the blocking pool (it writes to disk).
+    async fn unpin(&self, digest: &Digest) -> S3Result<()> {
+        let Some(pins) = self.pins.clone() else {
+            return Ok(());
+        };
+        let d = digest.clone();
+        tokio::task::spawn_blocking(move || pins.unpin(&d))
+            .await
+            .map_err(|e| s3_error!(InternalError, "unpin task panicked: {e}"))?
+            .map_err(|e| s3_error_from_backend(&e))
     }
 
     /// Resolve a key to the digest it names, or the S3 error explaining why it
@@ -71,7 +124,17 @@ impl S3 for NessieS3 {
         &self,
         req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
-        let PutObjectInput { body, key, .. } = req.input;
+        let PutObjectInput {
+            body,
+            key,
+            metadata,
+            ..
+        } = req.input;
+        let pin = self.pin_on_put
+            || metadata
+                .as_ref()
+                .and_then(|m| m.get(PIN_META))
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"));
         let digest = match ObjectKey::parse(&key) {
             Some(ObjectKey::Cas(d)) => d,
             Some(ObjectKey::Compressed) => {
@@ -102,11 +165,17 @@ impl S3 for NessieS3 {
         let reader = StreamReader::new(body.map_err(std::io::Error::other));
         let mut bridge = SyncIoBridge::new(reader);
         let cas = self.cas.clone();
+        let pins = self.pins.clone().filter(|_| pin);
         let verified = digest.clone();
-        tokio::task::spawn_blocking(move || cas.put_keyed(&verified, &mut bridge))
-            .await
-            .map_err(|e| s3_error!(InternalError, "put task panicked: {e}"))?
-            .map_err(|e| s3_error_from_backend(&e))?;
+        tokio::task::spawn_blocking(move || match pins {
+            // One call, so the blob cannot be evicted between its write and its pin; a
+            // pin that was not recorded fails the request.
+            Some(pins) => pins.put_and_pin(&verified, &mut bridge),
+            None => cas.put_keyed(&verified, &mut bridge),
+        })
+        .await
+        .map_err(|e| s3_error!(InternalError, "put task panicked: {e}"))?
+        .map_err(|e| s3_error_from_backend(&e))?;
 
         Ok(S3Response::new(PutObjectOutput {
             e_tag: Some(ETag::Strong(etag_of(&digest))),
@@ -167,6 +236,18 @@ impl S3 for NessieS3 {
             e_tag: Some(ETag::Strong(etag_of(&digest))),
             ..Default::default()
         }))
+    }
+
+    /// Unpin the digest the key names: 204 whether or not it was pinned. Never deletes
+    /// bytes; an unpinned blob stays until `lru` reclaims it (`write_only` keeps it).
+    async fn delete_object(
+        &self,
+        req: S3Request<DeleteObjectInput>,
+    ) -> S3Result<S3Response<DeleteObjectOutput>> {
+        if let Some(ObjectKey::Cas(digest)) = ObjectKey::parse(&req.input.key) {
+            self.unpin(&digest).await?;
+        }
+        Ok(S3Response::new(DeleteObjectOutput::default()))
     }
 
     /// The existence probe. The client's `Contains` path, and the cheapest

@@ -122,11 +122,7 @@ impl CasNode {
     fn take_out_corrupt(&self, blob: &LocalBlob, report: &mut ScrubReport) -> bool {
         let digest = &blob.digest;
         let result = match &self.store.policy().mode {
-            StorageMode::Lru(_) => self
-                .store
-                .reclaim_corrupt(digest)
-                .map(|_| report.reclaimed += 1)
-                .map(|()| false),
+            StorageMode::Lru(_) => self.reclaim_if_still_corrupt(digest, report),
             StorageMode::WriteOnly(_) => match self.store.quarantine(digest) {
                 Ok(Quarantine::Moved(_)) => self.restore_if_room(digest).map(|()| true),
                 Ok(Quarantine::Absent) => Ok(false),
@@ -148,6 +144,29 @@ impl CasNode {
                 false
             }
         }
+    }
+
+    /// `lru`: drop `digest` if it is still corrupt. The verdict above was reached without
+    /// the pin lock (a pass must not stall pins), so re-verify and remove under it: a
+    /// pinning re-put may have repaired the blob since. A plain re-put can still land
+    /// between this check and the removal (pre-existing; the next read refetches it).
+    fn reclaim_if_still_corrupt(
+        &self,
+        digest: &Digest,
+        report: &mut ScrubReport,
+    ) -> Result<bool, BackendError> {
+        super::refs::seam(self, "scrub-corrupt")
+            .map_err(|e| BackendError::Internal(e.to_string()))?;
+        let _pins = self.lock_pins();
+        match self.store.verify_local(digest) {
+            Ok(false) => {
+                self.store.reclaim_corrupt(digest)?;
+                report.reclaimed += 1;
+            }
+            Ok(true) | Err(BackendError::BlobNotFound(_)) => {} // repaired, or gone
+            Err(e) => return Err(e),
+        }
+        Ok(false)
     }
 
     /// As [`restore`](Self::restore), but fetch nothing when no peer reports the blob

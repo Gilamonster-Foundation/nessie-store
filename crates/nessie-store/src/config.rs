@@ -184,6 +184,11 @@ pub struct S3ServerConfig {
     /// SigV4 secret key. Override via `NESSIE_S3_SECRET_KEY`; like
     /// `admin_password`, a real deployment keeps this out of the TOML.
     pub secret_key: String,
+    /// Pin every `PutObject`'s digest so `lru` never evicts it (persisted with
+    /// `[cas] backend = "disk"`). Off: a write pins only when it sends
+    /// `x-amz-meta-nessie-pin: true`. `DeleteObject` unpins either way. Without
+    /// `[cas]` the private in-memory store evicts nothing, so a pin is a no-op.
+    pub pin_on_put: bool,
 }
 
 impl Default for S3ServerConfig {
@@ -195,6 +200,7 @@ impl Default for S3ServerConfig {
                 .expect("valid default s3 listen addr"),
             access_key: "nessie".to_string(),
             secret_key: "nessie".to_string(),
+            pin_on_put: false,
         }
     }
 }

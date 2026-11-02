@@ -423,11 +423,11 @@ merge each slice on green, in dependency order).
 | Flat S3 keys | `{prefix}{sha256}` accepted beside `cas/{xx}/{hex}` | ✅ #135 |
 | Static peers | `nessie-cas-peer`: static peer list, fetch-through, durability oracle | ✅ #127, #143 |
 | Retention modes | `[cas] mode = lru\|write_only`; reachability-GC `durable` retired | ✅ #142 |
-| Pin / unpin roots | `POST`/`DELETE /cas/v1/roots/{digest}`, peer API only; in memory until #137 | ✅ #128, #144 |
+| Pin / unpin roots | `POST`/`DELETE /cas/v1/roots/{digest}`, peer API only | ✅ #128, #144 |
 | Mirror guarantee | `write_only` acknowledges a write only after R verified copies | ✅ #139, #145 |
 | Scrub / repair | verify, quarantine and re-fetch corrupt blobs; re-replicate under R | ✅ #140, #146 |
 | mTLS | agent-mesh node identity + `authorized_keys` verifier; peer API, REAPI, S3 server TLS; operator walkthrough; per-agent and generation revocation via `[tls] revocation_log` | ✅ #150, #151, #152, #153, #155, #162 |
-| Persistent roots | pins survive restart (`lru` never evicts pinned blobs) | ⏳ #137 |
+| Persistent roots | pins survive restart: a root `Tree` in the CAS, named by `<path>/refs/roots` (temp + rename) | ✅ #137 |
 | Identity/membership convergence | ride agent-mesh keys and agent-bridle principals instead of inventing identity; seam mapping and routing correction — [membership-and-identity.md](./membership-and-identity.md) | ✅ design (2026-07-23); transport half built (mTLS row above) |
 | Mesh `Bus` router (primary) | signed provider records on `Topic(user_fp, "nessie/providers/v1")` over the agent-mesh `Bus`; the first mesh-native `ContentRouter` (`StaticRouter` is the only real one today) | ⏳ needs a running mesh |
 | NATS router (alternative) | `async-nats` rendezvous provider records, for NATS-running environments, not the default fabric | ⏳ |

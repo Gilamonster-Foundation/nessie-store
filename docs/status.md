@@ -48,8 +48,7 @@ see [design/demand-paged-nfs-gateways.md](design/demand-paged-nfs-gateways.md)
   `byte_budget` at their real size, across restarts and after a restore, so
   corruption costs capacity. A restore that failed (no peer, no room) is retried
   every pass and counted as `pending_restore`; it shares the pass's byte budget,
-  and nothing is fetched when the capacity gate would refuse the blob anyway. Pins persist across restart only
-  after #137.
+  and nothing is fetched when the capacity gate would refuse the blob anyway.
 - **Auth is lab-only unless `[tls] mtls = true`.** S3 uses one static SigV4 key; the
   daemon refuses to start it on the default secret (`NESSIE_S3_SECRET_KEY`). REAPI and
   the peer API are unauthenticated without mTLS; with it they require a certificate
@@ -67,14 +66,17 @@ see [design/demand-paged-nfs-gateways.md](design/demand-paged-nfs-gateways.md)
   --tls_client_key=DIR/client.key --tls_certificate=<node certificate PEM>`.
   Bazel also needs the node certificate as its trust root. Walkthrough:
   [MTLS.md](MTLS.md); revocation is `[tls] revocation_log` (#155).
-- **S3 scope.** `PutObject`, `GetObject`, `HeadObject` on content-addressed
+- **S3 scope.** `PutObject`, `GetObject`, `HeadObject`, and `DeleteObject` (unpin only,
+  #137; bulk `DeleteObjects` is declined) on content-addressed
   keys (`cas/{xx}/{sha256}` or flat `{prefix}{sha256}`). No `ListObjectsV2`,
   no arbitrary key names; a body that doesn't hash to its key is refused.
 - **ActionCache.** Result bodies live in the shared store; attestations are
   in memory and lost on restart.
 - **Peers.** Static peers shipped (#127): see [CAS peer plane](#cas-peer-plane-static-peers)
   below. Plain HTTP and unauthenticated unless `[tls] mtls = true` (#151): then `/cas/v1` is served on its own mTLS listener (`[tls] peer_listen`) and peers are `https://`. Pin and unpin shipped (#144):
-  `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only, in memory until #137.
+  `POST`/`DELETE /cas/v1/roots/{algo}:{hex}`, peer API only. With `backend = "disk"`
+  pins survive restart (#137): `<path>/refs/roots` names a `Tree` of them in the CAS,
+  and a ref that cannot be read back refuses startup (delete it to drop the pins).
 
 See [design/cas-disk-s3-peers.md](design/cas-disk-s3-peers.md).
 

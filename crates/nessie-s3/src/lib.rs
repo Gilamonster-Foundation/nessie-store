@@ -13,11 +13,12 @@
 //! *is* the digest, so the face needs no bucket index, no name→digest table and no
 //! configuration: [`ObjectKey::parse`] is pure and the CAS is the only state.
 //!
-//! Four of `s3s`'s 114 [`S3`](s3s::S3) trait methods are implemented —
-//! `PutObject`, `GetObject`, `HeadObject`, and `ListObjectsV2` (sha2-256 blobs as
+//! Five of `s3s`'s 114 [`S3`](s3s::S3) trait methods are implemented —
+//! `PutObject`, `GetObject`, `HeadObject`, `ListObjectsV2` (sha2-256 blobs as
 //! `cas/{xx}/{hex}` keys; prefix, `max-keys`, `start-after`, continuation token;
-//! `delimiter` answers 501). The rest keep the trait's default
-//! `NotImplemented`, which is the honest decline, not a gap to fill in later.
+//! `delimiter` answers 501), and `DeleteObject`, which only drops a pin ([`Pins`]).
+//! The rest keep the trait's default `NotImplemented`, which is the honest
+//! decline, not a gap to fill in later.
 //!
 //! # What it refuses, and why that is the point
 //!
@@ -50,18 +51,16 @@ mod service;
 
 pub use error::s3_error_from_backend;
 pub use key::ObjectKey;
-pub use service::NessieS3;
+pub use service::{NessieS3, Pins};
 
 /// The transport-level error `S3Service` surfaces, re-exported so a daemon can name
 /// it in an error handler without depending on `s3s` directly.
 pub use s3s::HttpError;
 
-use nessie_backend_core::CasBackend;
 use s3s::auth::{SecretKey, SimpleAuth};
 use s3s::service::{S3Service, S3ServiceBuilder};
-use std::sync::Arc;
 
-/// Build the S3 service over `cas`, authenticating a single access key.
+/// Build the S3 service over `face`, authenticating a single access key.
 ///
 /// The returned [`S3Service`] is a `tower::Service`, so the daemon mounts it the
 /// way it mounts the REAPI tonic router — beside axum, not inside it.
@@ -69,11 +68,11 @@ use std::sync::Arc;
 /// SigV4 is `s3s`'s job; credentials are checked before any handler runs.
 #[must_use]
 pub fn build_service(
-    cas: Arc<dyn CasBackend>,
+    face: NessieS3,
     access_key: impl Into<String>,
     secret_key: impl Into<SecretKey>,
 ) -> S3Service {
-    let mut builder = S3ServiceBuilder::new(NessieS3::new(cas));
+    let mut builder = S3ServiceBuilder::new(face);
     builder.set_auth(SimpleAuth::from_single(access_key, secret_key));
     builder.build()
 }

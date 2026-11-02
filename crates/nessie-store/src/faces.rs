@@ -10,7 +10,7 @@
 
 use crate::cas_node::CasNode;
 use crate::config::{Config, ReapiServerConfig, S3ServerConfig};
-use nessie_backend_core::{CasBackend, PeerId};
+use nessie_backend_core::{BackendError, CasBackend, Digest, PeerId};
 use nessie_reapi::DevSelfSigner;
 use std::sync::Arc;
 
@@ -179,13 +179,38 @@ pub fn spawn_reapi(
 ///
 /// `S3Service` is a `tower::Service`, so it mounts as an axum fallback exactly like
 /// the ONTAP surface — no second HTTP stack. Axum's `fallback_service` requires
-/// `Error = Infallible`, hence the `HandleError` wrapper.
-pub fn s3_app(sc: &S3ServerConfig, backend: Arc<dyn CasBackend>) -> axum::Router {
-    let service = nessie_s3::build_service(backend, sc.access_key.clone(), sc.secret_key.clone());
+/// `Error = Infallible`, hence the `HandleError` wrapper. With `node`, PutObject pins
+/// into its persistent pins (always under `[s3] pin_on_put`, else on request) and
+/// DeleteObject unpins.
+pub fn s3_app(
+    sc: &S3ServerConfig,
+    backend: Arc<dyn CasBackend>,
+    node: Option<Arc<CasNode>>,
+) -> axum::Router {
+    let mut face = nessie_s3::NessieS3::new(backend);
+    if let Some(node) = node {
+        face = face.with_pins(node, sc.pin_on_put);
+    }
+    let service = nessie_s3::build_service(face, sc.access_key.clone(), sc.secret_key.clone());
     axum::Router::new().fallback_service(axum::error_handling::HandleError::<_, _, ()>::new(
         service,
         handle_s3_transport_error,
     ))
+}
+
+/// The S3 face pins into the node's persistent pins (#137).
+impl nessie_s3::Pins for CasNode {
+    fn put_and_pin(
+        &self,
+        expected: &Digest,
+        source: &mut dyn std::io::Read,
+    ) -> Result<(), BackendError> {
+        CasNode::put_and_pin(self, expected, source)
+    }
+
+    fn unpin(&self, digest: &Digest) -> Result<(), BackendError> {
+        CasNode::unpin(self, digest)
+    }
 }
 
 /// Last-resort handler for a *transport*-level S3 failure.
@@ -207,9 +232,10 @@ async fn handle_s3_transport_error(err: nessie_s3::HttpError) -> axum::http::Sta
 pub fn spawn_s3(
     sc: S3ServerConfig,
     backend: Arc<dyn CasBackend>,
+    node: Option<Arc<CasNode>>,
     tls: Option<Arc<crate::face_tls::FaceTls>>,
 ) -> anyhow::Result<()> {
-    let app = s3_app(&sc, backend);
+    let app = s3_app(&sc, backend, node);
     let addr = sc.listen;
     if let Some(tls) = tls {
         let listener = std::net::TcpListener::bind(addr)?;

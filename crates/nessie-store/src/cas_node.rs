@@ -8,6 +8,7 @@
 //! Kademlia) slots in **without touching this maintenance logic**.
 
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use nessie_cas_store::{
 
 use crate::config::{CasBackendKind, CasConfig, CasMode};
 
+mod refs;
 mod scrub;
 pub use scrub::ScrubReport;
 
@@ -139,6 +141,11 @@ pub struct CasNode {
     scrub_cursor: std::sync::Mutex<Option<String>>,
     /// As `scrub_cursor`, over the quarantined digests awaiting a restore.
     pending_cursor: std::sync::Mutex<Option<String>>,
+    /// `<[cas] path>/refs` on a disk store, where the pins persist (`None`: in memory).
+    refs: Option<PathBuf>,
+    /// Serializes pin changes and `lru` eviction passes; true while a published ref's
+    /// directory sync is unconfirmed. See `refs::lock_pins`.
+    pin_lock: std::sync::Mutex<bool>,
 }
 
 impl CasNode {
@@ -148,7 +155,8 @@ impl CasNode {
     /// # Errors
     ///
     /// [`retention_policy`] validation errors; `backend = "disk"` without `path`;
-    /// a disk root that cannot be opened; a backend that cannot be enumerated.
+    /// a disk root that cannot be opened; a backend that cannot be enumerated; a
+    /// pin ref (`<path>/refs/roots`) that cannot be read back.
     pub fn from_config(cfg: &CasConfig, me: PeerId) -> anyhow::Result<Self> {
         Self::from_config_tls(cfg, me, None)
     }
@@ -226,7 +234,12 @@ impl CasNode {
             Arc::new(SystemClock) as Arc<dyn Clock>,
             me,
         )?;
-        Ok(Self {
+        let refs = cfg
+            .path
+            .as_ref()
+            .filter(|_| cfg.backend == CasBackendKind::Disk)
+            .map(|p| p.join("refs"));
+        let node = Self {
             store,
             roots: RootRegistry::new(),
             interval: Duration::from_secs(cfg.maintenance_interval_secs),
@@ -237,7 +250,14 @@ impl CasNode {
             scrub_budget: cfg.scrub_bytes_per_pass,
             scrub_cursor: std::sync::Mutex::new(None),
             pending_cursor: std::sync::Mutex::new(None),
-        })
+            refs,
+            pin_lock: std::sync::Mutex::new(false),
+        };
+        if let Some(refs) = &node.refs {
+            let (pins, tree) = refs::load(refs, node.local())?;
+            node.roots.replace(pins, tree);
+        }
+        Ok(node)
     }
 
     /// Write `expected`'s bytes to **this node only** — through the capacity gate, with
@@ -286,11 +306,16 @@ impl CasNode {
                 scrub: self.scrub_pass()?,
             }),
             StorageMode::Lru(_) => {
-                let report = self.store.evict_to_budget(
-                    &self.roots,
-                    self.oracle.as_ref(),
-                    self.replicator.as_ref(),
-                )?;
+                let report = {
+                    // No pin change may land between the pass's root and guard snapshots.
+                    let _pins = self.lock_pins();
+                    refs::seam(self, "evicting")?;
+                    self.store.evict_to_budget(
+                        &self.roots,
+                        self.oracle.as_ref(),
+                        self.replicator.as_ref(),
+                    )?
+                };
                 Ok(MaintenanceReport::Evict {
                     evicted: report.evicted,
                     bytes: report.bytes_evicted,

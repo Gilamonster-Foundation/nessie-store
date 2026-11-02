@@ -102,6 +102,9 @@ path = "/var/lib/nessie-store/cas"
 # enabled = true
 # listen = "0.0.0.0:9000"
 # access_key = "nessie"
+# Pin every PutObject so lru never evicts it (default false: a write pins only when it
+# sends `x-amz-meta-nessie-pin: true`). DeleteObject unpins; lru then reclaims the bytes.
+# pin_on_put = false
 
 # Mutual TLS from agent-mesh keys (docs/MTLS.md). Needs `nessie-store identity issue`
 # and an authorized_keys file (default: <data_dir>/authorized_keys).
