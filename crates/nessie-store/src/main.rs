@@ -8,10 +8,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use nessie_backend_core::{PeerId, VolumeBackend};
+use nessie_backend_core::VolumeBackend;
 use nessie_backend_mem::MemBackend;
 use nessie_backend_zfs::{SystemRunner, ZfsBackend, ZfsConfig};
 use nessie_store::config::{BackendKind, Config};
@@ -46,6 +47,53 @@ enum Cmd {
         #[arg(long)]
         no_tls: bool,
     },
+    /// Manage this node's agent-mesh identity (mTLS).
+    Identity {
+        #[command(subcommand)]
+        cmd: IdentityCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCmd {
+    /// Issue this node's agent key from the operator's user key and write
+    /// `agent.seed`, `agent.chain.json` and `binding.json` under `<data_dir>/identity/`.
+    /// Never prints the seed.
+    Issue {
+        /// Path to the config file (locates `data_dir`).
+        #[arg(long, default_value = "nessie-store.toml")]
+        config: PathBuf,
+        /// The operator's agent-mesh user key (PKCS#8 PEM).
+        #[arg(long)]
+        user_key: PathBuf,
+        /// The user's GitHubBinding JSON (`amesh bind github` output).
+        #[arg(long)]
+        binding: PathBuf,
+        /// Role label recorded in the signed chain.
+        #[arg(long, default_value = "nessie")]
+        role: String,
+        /// Host label recorded in the signed chain.
+        #[arg(long, default_value = "nessie")]
+        host: String,
+    },
+    /// Print this node's agent fingerprint and the SHA-256 of the certificate the
+    /// cache faces serve (what S3 clients pin).
+    Show {
+        /// Path to the config file (locates `data_dir`).
+        #[arg(long, default_value = "nessie-store.toml")]
+        config: PathBuf,
+    },
+    /// Write `client.crt` and `client.key` for a Bazel client
+    /// (`--tls_client_certificate` / `--tls_client_key`): a delegated sub-agent of
+    /// this node, never the node's own seed.
+    ExportClientCert {
+        /// Path to the config file (locates `data_dir`).
+        #[arg(long, default_value = "nessie-store.toml")]
+        config: PathBuf,
+        /// Directory to write `client.crt` and `client.key` into.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -63,7 +111,40 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Serve { config, no_tls } => serve(&config, no_tls).await,
+        Cmd::Identity { cmd } => identity(cmd),
     }
+}
+
+fn identity(cmd: IdentityCmd) -> anyhow::Result<()> {
+    match cmd {
+        IdentityCmd::Issue {
+            config,
+            user_key,
+            binding,
+            role,
+            host,
+        } => {
+            let dir = Config::load(&config)?.mesh_identity_dir();
+            let fp = nessie_store::identity_cmd::issue(&user_key, &binding, &role, &host, &dir)?;
+            println!("issued agent {} into {}", fp.hex(), dir.display());
+        }
+        IdentityCmd::Show { config } => {
+            let cfg = Config::load(&config)?;
+            let (agent, sha256) = nessie_store::face_tls::served_cert_sha256(&cfg)?;
+            let revocation = nessie_store::face_tls::revocation_summary(&cfg)?;
+            println!("agent {agent}\ncertificate sha256 {sha256}\n{revocation}");
+        }
+        IdentityCmd::ExportClientCert { config, out } => {
+            let dir = Config::load(&config)?.mesh_identity_dir();
+            let fp = nessie_store::identity_cmd::export_client_cert(&dir, &out)?;
+            println!(
+                "wrote client.crt and client.key for delegated agent {} into {}",
+                fp.hex(),
+                out.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()> {
@@ -103,29 +184,66 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
         });
     }
 
-    // Optional content-addressed store node: run retention maintenance (durable GC
-    // or cache eviction) on a schedule. In-memory for now; a persistent backend and
-    // a real network router slot in behind the same seams.
-    if let Some(cas_cfg) = &cfg.cas {
-        // The node's swarm routing identity. `data_lif` is a reasonable placeholder
-        // until a dedicated peer-address config lands.
-        let me = PeerId::new(cfg.data_lif.clone());
-        let node = std::sync::Arc::new(nessie_store::cas_node::CasNode::from_config(cas_cfg, me)?);
-        tracing::info!(mode = ?cas_cfg.mode, "cas node enabled; scheduling retention maintenance");
-        nessie_store::cas_node::spawn_maintenance(node);
+    // Optional `[cas]` node plus the REAPI / S3 cache faces, wired by one entry point
+    // so they share ONE content-addressed store (disk-backed if `[cas]` says so):
+    // a blob written over REAPI gRPC is the blob an S3 client reads, and the store
+    // retention maintenance sweeps. Building a store per consumer would break that.
+    let faces = nessie_store::faces::build_faces(&cfg)?;
+    if cfg.mtls_enabled() && cfg.revocation_log().is_none() {
+        tracing::warn!(
+            "[tls] mtls = true without [tls] revocation_log: revoking an agent or a generation has no effect"
+        );
     }
-
-    // Optional REAPI (Bazel remote cache) gRPC face, beside the ONTAP control plane —
-    // a Bazel remote cache with no BuildBarn to stand up. SHA-256-native, self-attesting
-    // (k=1 write-through). A persistent backend and real ed25519 signers slot in behind
-    // the same seams later.
-    if let Some(rc) = cfg.reapi.clone().filter(|r| r.enabled) {
-        spawn_reapi(rc)?;
+    let face_tls = nessie_store::face_tls::FaceTls::from_config(&cfg)?;
+    if let (Some(node), Some(cas_cfg)) = (&faces.node, &cfg.cas) {
+        tracing::info!(mode = ?cas_cfg.mode, backend = ?cas_cfg.backend, "cas node enabled; scheduling retention maintenance");
+        nessie_store::cas_node::spawn_maintenance(node.clone());
+    }
+    if let Some((backend, signer)) = faces.backend {
+        if let Some(rc) = cfg.reapi.clone().filter(|r| r.enabled) {
+            nessie_store::faces::spawn_reapi(rc, backend.clone(), signer, face_tls.clone())?;
+        }
+        if let Some(sc) = cfg.s3.clone().filter(|s| s.enabled) {
+            nessie_store::faces::spawn_s3(sc, backend, face_tls)?;
+        }
     }
 
     let listen = cfg.listen;
     let tls_dir = cfg.tls_dir();
-    let router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
+    let peer_api = cfg.cas.as_ref().is_some_and(|c| c.peer_api);
+    let mtls = cfg.mtls_enabled().then(|| {
+        (
+            cfg.peer_listen(),
+            nessie_store::peer_tls::mesh_configs(&cfg),
+        )
+    });
+    let mut router = app(AppState::new(backend, Arc::new(cfg), Arc::new(identity)));
+    if peer_api {
+        let node = faces
+            .node
+            .clone()
+            .context("[cas] peer_api = true requires a [cas] node")?;
+        let peer_app = nessie_store::cas_routes::peer_routes(node);
+        if let Some((peer_listen, mesh)) = mtls {
+            // Its own listener: rustls demands client certs per connection, not per path.
+            let (server, _, verifier) = mesh?;
+            let listener = std::net::TcpListener::bind(peer_listen)
+                .with_context(|| format!("binding [tls] peer_listen {peer_listen}"))?;
+            tracing::info!(%peer_listen, "cas peer API listening (mTLS)");
+            tokio::spawn(async move {
+                if let Err(e) =
+                    nessie_store::peer_tls::serve_peer(listener, peer_app, server, verifier).await
+                {
+                    tracing::error!(%e, "cas peer API exited");
+                }
+            });
+        } else {
+            tracing::warn!(
+                "cas peer API mounted UNAUTHENTICATED (lab only; set [tls] mtls = true)"
+            );
+            router = router.merge(peer_app);
+        }
+    }
 
     if no_tls {
         let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -143,54 +261,5 @@ async fn serve(config_path: &std::path::Path, no_tls: bool) -> anyhow::Result<()
             .serve(router.into_make_service())
             .await?;
     }
-    Ok(())
-}
-
-/// Verify the wired REAPI backend honors `put_keyed` (the SHA-256-native write seam)
-/// at startup, so a misconfigured backend fails loudly here instead of per-request.
-fn probe_put_keyed(cas: &dyn nessie_backend_core::CasBackend) -> anyhow::Result<()> {
-    use nessie_backend_core::{Digest, DigestAlgo};
-    let probe = b"nessie-reapi put_keyed startup probe";
-    let digest = Digest::compute_with(DigestAlgo::Sha256, probe);
-    cas.put_keyed(&digest, &mut probe.as_slice())
-        .map_err(|e| anyhow::anyhow!("REAPI backend does not support put_keyed: {e}"))?;
-    Ok(())
-}
-
-/// Build the in-memory, self-attesting REAPI cache backend and spawn the tonic server.
-fn spawn_reapi(rc: nessie_store::config::ReapiServerConfig) -> anyhow::Result<()> {
-    use nessie_backend_core::CasBackend;
-    use nessie_backend_mem::{MemActionCache, MemCas};
-    use std::num::NonZeroUsize;
-
-    // The signer and the AC backend's verifier are one matched dev keypair (k=1
-    // write-through); a real ed25519 signer from agent-mesh replaces DevSelfSigner in
-    // a swarm.
-    let signer = nessie_reapi::DevSelfSigner::new("nessie-reapi-self");
-    let verifier = signer.verifier();
-    let k1 = NonZeroUsize::new(1).expect("1 is nonzero");
-    let backend: Arc<dyn CasBackend> = Arc::new(MemActionCache::new(MemCas::new(), verifier, k1));
-    probe_put_keyed(backend.as_ref())?;
-
-    let reapi_cfg = nessie_reapi::ReapiConfig {
-        instance_name: rc.instance_name.clone(),
-        ac_update_enabled: rc.ac_update_enabled,
-        ..Default::default()
-    };
-    let signer: Arc<dyn nessie_reapi::AttestationSigner> = Arc::new(signer);
-    let router = nessie_reapi::build_router(backend, Some(signer), reapi_cfg);
-
-    let addr = rc.listen;
-    tracing::info!(
-        %addr,
-        instance = %rc.instance_name,
-        ac_update = rc.ac_update_enabled,
-        "REAPI cache face enabled (SHA-256-native, self-attesting)"
-    );
-    tokio::spawn(async move {
-        if let Err(e) = router.serve(addr).await {
-            tracing::error!(%e, "REAPI gRPC server exited");
-        }
-    });
     Ok(())
 }

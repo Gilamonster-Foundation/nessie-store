@@ -6,3 +6,6 @@ NESSIE_ADMIN_PASSWORD=change-me
 
 # Tracing verbosity (error|warn|info|debug|trace).
 RUST_LOG=info
+
+# Required to enable the [s3] face (the daemon refuses the default secret).
+# NESSIE_S3_SECRET_KEY=change-me

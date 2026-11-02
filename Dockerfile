@@ -5,7 +5,7 @@
 # so a hobbyist gets a working ONTAP endpoint with one `docker run`.
 
 # ---- builder ----------------------------------------------------------------
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.96-bookworm AS builder
 WORKDIR /src
 # Cache deps: copy manifests first, then sources.
 COPY Cargo.toml Cargo.lock ./

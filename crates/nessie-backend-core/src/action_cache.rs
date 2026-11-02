@@ -21,7 +21,7 @@ use std::num::NonZeroUsize;
 ///
 /// Reached from a `CasBackend` via [`CasBackend::as_action_cache`]. Supertrait
 /// upcasting (`&dyn ActionCacheBackend` → `&dyn CasBackend`) is relied upon
-/// (stable on MSRV 1.88, as the volume stack already relies on it).
+/// (stable since 1.86, below the repo MSRV, as the volume stack already relies on it).
 pub trait ActionCacheBackend: CasBackend {
     /// The k-of-n confirmation threshold this node enforces (refines the formal
     /// `K`). `NonZeroUsize` makes the catastrophic `k = 0` — which would "confirm"

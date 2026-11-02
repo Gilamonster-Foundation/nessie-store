@@ -84,7 +84,7 @@ pub trait CloneBackend: SnapshotBackend {
 }
 ```
 
-`as_snapshot()` and `as_clone()` return `None` by default so any `VolumeBackend` impl that can't honor higher tiers gets a correct default. Substrates that can implement those tiers override the accessors to return `Some(self)`. The REST router downcasts at dispatch and returns the documented ONTAP "feature not supported" response when the backend lacks the capability. This is Rust 1.86+ trait-upcasting territory; the repo MSRV is 1.88.
+`as_snapshot()` and `as_clone()` return `None` by default so any `VolumeBackend` impl that can't honor higher tiers gets a correct default. Substrates that can implement those tiers override the accessors to return `Some(self)`. The REST router downcasts at dispatch and returns the documented ONTAP "feature not supported" response when the backend lacks the capability. This is Rust 1.86+ trait-upcasting territory; the repo MSRV is 1.96.
 
 ## Data plane discipline
 
