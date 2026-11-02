@@ -137,7 +137,10 @@ async fn svm_lists_its_assigned_aggregates() {
     let aggregates = body["records"][0]["aggregates"]
         .as_array()
         .expect("svm record must include an aggregates array");
-    assert!(!aggregates.is_empty(), "svm must list at least one aggregate");
+    assert!(
+        !aggregates.is_empty(),
+        "svm must list at least one aggregate"
+    );
     assert_eq!(aggregates[0]["uuid"], s.identity.aggregate_uuid);
 }
 

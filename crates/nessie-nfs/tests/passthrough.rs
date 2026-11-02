@@ -368,10 +368,7 @@ async fn link_creates_a_second_name_for_the_same_inode() {
 
     // Writing through the original is visible through the link (one inode).
     fs.write(fid, 0, b"changed-bytes").await.unwrap();
-    assert_eq!(
-        std::fs::read(dir.join("linked")).unwrap(),
-        b"changed-bytes"
-    );
+    assert_eq!(std::fs::read(dir.join("linked")).unwrap(), b"changed-bytes");
 
     std::fs::remove_dir_all(&dir).ok();
 }
