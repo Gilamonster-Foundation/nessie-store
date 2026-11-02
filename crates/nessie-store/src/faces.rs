@@ -200,8 +200,12 @@ pub fn s3_app(
 
 /// The S3 face pins into the node's persistent pins (#137).
 impl nessie_s3::Pins for CasNode {
-    fn pin(&self, digest: &Digest) -> Result<(), BackendError> {
-        CasNode::pin(self, digest.clone())
+    fn put_and_pin(
+        &self,
+        expected: &Digest,
+        source: &mut dyn std::io::Read,
+    ) -> Result<(), BackendError> {
+        CasNode::put_and_pin(self, expected, source)
     }
 
     fn unpin(&self, digest: &Digest) -> Result<(), BackendError> {

@@ -37,12 +37,13 @@ const PIN_META: &str = "nessie-pin";
 /// Where the face records "keep this": the store's pins, which `lru` never evicts
 /// (#137). The daemon's CAS node implements it.
 pub trait Pins: Send + Sync {
-    /// Pin `digest` (idempotent), durably before returning.
+    /// Write `expected`'s bytes (verified against it) and pin them, durably, as one
+    /// step: no eviction may run between the write and the pin.
     ///
     /// # Errors
     ///
-    /// The pin could not be recorded.
-    fn pin(&self, digest: &Digest) -> Result<(), BackendError>;
+    /// The write was refused, or the pin could not be recorded.
+    fn put_and_pin(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError>;
 
     /// Unpin `digest` (idempotent).
     ///
@@ -85,15 +86,15 @@ impl NessieS3 {
         self
     }
 
-    /// Pin (`on`) or unpin `digest`, on the blocking pool (it writes to disk).
-    async fn set_pin(&self, digest: &Digest, on: bool) -> S3Result<()> {
+    /// Unpin `digest`, on the blocking pool (it writes to disk).
+    async fn unpin(&self, digest: &Digest) -> S3Result<()> {
         let Some(pins) = self.pins.clone() else {
             return Ok(());
         };
         let d = digest.clone();
-        tokio::task::spawn_blocking(move || if on { pins.pin(&d) } else { pins.unpin(&d) })
+        tokio::task::spawn_blocking(move || pins.unpin(&d))
             .await
-            .map_err(|e| s3_error!(InternalError, "pin task panicked: {e}"))?
+            .map_err(|e| s3_error!(InternalError, "unpin task panicked: {e}"))?
             .map_err(|e| s3_error_from_backend(&e))
     }
 
@@ -164,15 +165,17 @@ impl S3 for NessieS3 {
         let reader = StreamReader::new(body.map_err(std::io::Error::other));
         let mut bridge = SyncIoBridge::new(reader);
         let cas = self.cas.clone();
+        let pins = self.pins.clone().filter(|_| pin);
         let verified = digest.clone();
-        tokio::task::spawn_blocking(move || cas.put_keyed(&verified, &mut bridge))
-            .await
-            .map_err(|e| s3_error!(InternalError, "put task panicked: {e}"))?
-            .map_err(|e| s3_error_from_backend(&e))?;
-        // After the verified write; a pin that was not recorded fails the request.
-        if pin {
-            self.set_pin(&digest, true).await?;
-        }
+        tokio::task::spawn_blocking(move || match pins {
+            // One call, so the blob cannot be evicted between its write and its pin; a
+            // pin that was not recorded fails the request.
+            Some(pins) => pins.put_and_pin(&verified, &mut bridge),
+            None => cas.put_keyed(&verified, &mut bridge),
+        })
+        .await
+        .map_err(|e| s3_error!(InternalError, "put task panicked: {e}"))?
+        .map_err(|e| s3_error_from_backend(&e))?;
 
         Ok(S3Response::new(PutObjectOutput {
             e_tag: Some(ETag::Strong(etag_of(&digest))),
@@ -242,7 +245,7 @@ impl S3 for NessieS3 {
         req: S3Request<DeleteObjectInput>,
     ) -> S3Result<S3Response<DeleteObjectOutput>> {
         if let Some(ObjectKey::Cas(digest)) = ObjectKey::parse(&req.input.key) {
-            self.set_pin(&digest, false).await?;
+            self.unpin(&digest).await?;
         }
         Ok(S3Response::new(DeleteObjectOutput::default()))
     }

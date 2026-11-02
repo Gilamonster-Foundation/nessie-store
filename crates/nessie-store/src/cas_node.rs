@@ -143,8 +143,9 @@ pub struct CasNode {
     pending_cursor: std::sync::Mutex<Option<String>>,
     /// `<[cas] path>/refs` on a disk store, where the pins persist (`None`: in memory).
     refs: Option<PathBuf>,
-    /// Serializes pin changes, so two never race to replace the ref.
-    pin_lock: std::sync::Mutex<()>,
+    /// Serializes pin changes and `lru` eviction passes; true while a published ref's
+    /// directory sync is unconfirmed. See `refs::lock_pins`.
+    pin_lock: std::sync::Mutex<bool>,
 }
 
 impl CasNode {
@@ -250,7 +251,7 @@ impl CasNode {
             scrub_cursor: std::sync::Mutex::new(None),
             pending_cursor: std::sync::Mutex::new(None),
             refs,
-            pin_lock: std::sync::Mutex::new(()),
+            pin_lock: std::sync::Mutex::new(false),
         };
         if let Some(refs) = &node.refs {
             let (pins, tree) = refs::load(refs, node.local())?;
@@ -305,11 +306,16 @@ impl CasNode {
                 scrub: self.scrub_pass()?,
             }),
             StorageMode::Lru(_) => {
-                let report = self.store.evict_to_budget(
-                    &self.roots,
-                    self.oracle.as_ref(),
-                    self.replicator.as_ref(),
-                )?;
+                let report = {
+                    // No pin change may land between the pass's root and guard snapshots.
+                    let _pins = self.lock_pins();
+                    refs::seam(self, "evicting")?;
+                    self.store.evict_to_budget(
+                        &self.roots,
+                        self.oracle.as_ref(),
+                        self.replicator.as_ref(),
+                    )?
+                };
                 Ok(MaintenanceReport::Evict {
                     evicted: report.evicted,
                     bytes: report.bytes_evicted,
