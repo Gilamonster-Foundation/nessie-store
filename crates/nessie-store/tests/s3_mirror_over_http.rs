@@ -31,7 +31,7 @@ async fn a_503_with_the_peer_down_and_the_blob_reaches_the_peer_after_a_repair_p
     let node = faces.node.clone().unwrap();
     let (backend, _signer) = faces.backend.unwrap();
 
-    let app = nessie_store::faces::s3_app(&s3_cfg, backend);
+    let app = nessie_store::faces::s3_app(&s3_cfg, backend, Some(node.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, app).await });

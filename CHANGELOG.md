@@ -11,10 +11,15 @@ All notable changes to nessie-store are documented here. The format follows
   /cas/v1/roots/{digest}` persist before replying: the pin set is a `Tree` stored in the
   CAS, and `<path>/refs/roots` names it (written temp + rename). Startup reloads it and
   **refuses to start** if the ref cannot be read back (unparseable, tree missing or
-  corrupt); delete `refs/roots` to start with no pins. Face uploads (REAPI, S3) are not
-  pins.
+  corrupt); delete `refs/roots` to start with no pins. REAPI uploads are not pins.
+- **S3 writes can become pins (#137).** `[s3] pin_on_put = true` pins every PutObject;
+  by default a PutObject pins only when it sends `x-amz-meta-nessie-pin: true`. The pin
+  follows the verified write, and one that cannot be recorded fails the PutObject.
+  `DeleteObject` unpins (`204` whether or not it was pinned) and never deletes bytes:
+  `lru` reclaims them later. Bulk `DeleteObjects` stays declined.
 
 ### Changed
+- `nessie_s3::build_service` takes a built `NessieS3` (so the daemon can attach pins).
 - The peer API answers `CapacityExceeded` with `507`: a pin the store cannot record
   (full `write_only` node) was a `201`, a blob `PUT` past capacity was a `500`.
 

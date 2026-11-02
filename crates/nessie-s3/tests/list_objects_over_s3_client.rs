@@ -28,7 +28,8 @@ fn canonical(data: &[u8]) -> String {
 
 /// Serve the S3 face over `cas` on a loopback port; return a client pointed at it.
 async fn client(cas: Arc<MemCas>) -> impl ObjectStore {
-    let service = nessie_s3::build_service(cas, "AKIDTEST", "secret-test");
+    let service =
+        nessie_s3::build_service(nessie_s3::NessieS3::new(cas), "AKIDTEST", "secret-test");
     let app = axum::Router::new().fallback_service(
         axum::error_handling::HandleError::<_, _, ()>::new(service, |_e: s3s::HttpError| async {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR

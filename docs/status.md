@@ -66,7 +66,8 @@ see [design/demand-paged-nfs-gateways.md](design/demand-paged-nfs-gateways.md)
   --tls_client_key=DIR/client.key --tls_certificate=<node certificate PEM>`.
   Bazel also needs the node certificate as its trust root. Walkthrough:
   [MTLS.md](MTLS.md); revocation is `[tls] revocation_log` (#155).
-- **S3 scope.** `PutObject`, `GetObject`, `HeadObject` on content-addressed
+- **S3 scope.** `PutObject`, `GetObject`, `HeadObject`, and `DeleteObject` (unpin only,
+  #137; bulk `DeleteObjects` is declined) on content-addressed
   keys (`cas/{xx}/{sha256}` or flat `{prefix}{sha256}`). No `ListObjectsV2`,
   no arbitrary key names; a body that doesn't hash to its key is refused.
 - **ActionCache.** Result bodies live in the shared store; attestations are

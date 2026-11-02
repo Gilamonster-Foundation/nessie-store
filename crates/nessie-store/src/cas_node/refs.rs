@@ -43,8 +43,9 @@ impl CasNode {
         &self,
         change: impl FnOnce(&mut BTreeSet<Digest>) -> bool,
     ) -> Result<(), BackendError> {
-        // ponytail: one writer at a time, and each change rewrites the whole tree
-        // (O(pins) bytes); fan the tree out by digest prefix if pins reach ~10^5.
+        // ponytail: one writer at a time, and each pin rewrites the whole set (O(pins)
+        // bytes; per object under `[s3] pin_on_put`). Upgrade: a fan-out Tree
+        // (`TreeKind::Dir` by digest prefix) once pins reach ~10^5.
         let _one_writer = self.pin_lock.lock().expect("pin lock poisoned");
         let mut pins = self.roots.pins();
         if !change(&mut pins) {
