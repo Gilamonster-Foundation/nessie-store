@@ -2080,6 +2080,7 @@ version = "0.4.3"
 dependencies = [
  "async-trait",
  "nessie-nfsserve",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
 ]

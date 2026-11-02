@@ -10,6 +10,8 @@ use crate::rpc::UnixCred;
 #[derive(Default, Debug)]
 pub struct DirEntrySimple {
     pub fileid: fileid3,
+    /// See [`DirEntry::cookie`].
+    pub cookie: u64,
     pub name: filename3,
 }
 #[derive(Default, Debug)]
@@ -21,6 +23,10 @@ pub struct ReadDirSimpleResult {
 #[derive(Default, Debug)]
 pub struct DirEntry {
     pub fileid: fileid3,
+    /// Position of this entry in the listing; the client hands it back as
+    /// `start_after` to resume. Distinct from `fileid` because hard links give
+    /// several names in one directory the same fileid.
+    pub cookie: u64,
     pub name: filename3,
     pub attr: fattr3,
 }
@@ -37,6 +43,7 @@ impl ReadDirSimpleResult {
             .iter()
             .map(|e| DirEntrySimple {
                 fileid: e.fileid,
+                cookie: e.cookie,
                 name: e.name.clone(),
             })
             .collect();
@@ -293,6 +300,17 @@ pub trait NFSFileSystem: Sync {
     /// Reads a symlink
     async fn readlink(&self, id: fileid3) -> Result<nfspath3, nfsstat3>;
 
+    /// Creates a hard link: `linkname` in `dirid` pointing at the existing
+    /// object `id`. If not supported due to a read-only file system this
+    /// should return Err(nfsstat3::NFS3ERR_ROFS); if the backend cannot
+    /// represent hard links at all, Err(nfsstat3::NFS3ERR_NOTSUPP).
+    async fn link(
+        &self,
+        id: fileid3,
+        dirid: fileid3,
+        linkname: &filename3,
+    ) -> Result<fattr3, nfsstat3>;
+
     /// Get static file system Information
     async fn fsinfo(&self, root_fileid: fileid3) -> Result<fsinfo3, nfsstat3> {
         let dir_attr: nfs::post_op_attr = match self.getattr(root_fileid).await {
@@ -314,7 +332,10 @@ pub trait NFSFileSystem: Sync {
                 seconds: 0,
                 nseconds: 1000000,
             },
-            properties: nfs::FSF_SYMLINK | nfs::FSF_HOMOGENEOUS | nfs::FSF_CANSETTIME,
+            properties: nfs::FSF_LINK
+                | nfs::FSF_SYMLINK
+                | nfs::FSF_HOMOGENEOUS
+                | nfs::FSF_CANSETTIME,
         };
         Ok(res)
     }

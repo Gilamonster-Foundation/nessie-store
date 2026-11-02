@@ -75,7 +75,7 @@ async fn mkdir_readdir_and_remove() {
         let r = fs.readdir(root, cookie, 1).await.unwrap();
         for e in &r.entries {
             seen.push(String::from_utf8_lossy(e.name.as_ref()).to_string());
-            cookie = e.fileid;
+            cookie = e.cookie;
         }
         if r.end || r.entries.is_empty() {
             break;
@@ -335,5 +335,302 @@ async fn stable_handle_resolves_same_inode() {
     assert_eq!(fs.fh_to_id(&fh).unwrap(), fid);
     assert_eq!(fs.getattr(fid).await.unwrap().fileid, fid);
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- LINK (NFSPROC3_LINK) --------------------------------------------------
+
+#[tokio::test]
+async fn link_creates_a_second_name_for_the_same_inode() {
+    // Regression: NFSPROC3_LINK was entirely unimplemented (fell into the
+    // dispatch table's catch-all), so any client relying on hard links —
+    // e.g. git's object-store dedup between forked repos — failed every
+    // link() with NFS3ERR_NOTSUPP / "Operation not supported".
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+
+    let (fid, _) = fs
+        .create(root, &name("original"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(fid, 0, b"shared-bytes").await.unwrap();
+
+    let attr = fs.link(fid, root, &name("linked")).await.unwrap();
+    assert_eq!(attr.size, 12);
+
+    // Same underlying inode: nlink is now 2, and both paths read identical bytes.
+    let orig_meta = std::fs::metadata(dir.join("original")).unwrap();
+    let link_meta = std::fs::metadata(dir.join("linked")).unwrap();
+    assert_eq!(orig_meta.ino(), link_meta.ino());
+    assert_eq!(link_meta.nlink(), 2);
+    assert_eq!(std::fs::read(dir.join("linked")).unwrap(), b"shared-bytes");
+
+    // Writing through the original is visible through the link (one inode).
+    fs.write(fid, 0, b"changed-bytes").await.unwrap();
+    assert_eq!(std::fs::read(dir.join("linked")).unwrap(), b"changed-bytes");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn link_into_missing_directory_is_an_error() {
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (fid, _) = fs
+        .create(root, &name("f"), sattr3::default())
+        .await
+        .unwrap();
+
+    // 999_999_999 is never a real fileid in a fresh scratch dir.
+    assert!(fs.link(fid, 999_999_999, &name("f2")).await.is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Hard links vs directory enumeration and handles (PR #114 review) --------
+
+/// Names listed by paging `readdir` with a window of `page` entries.
+async fn list_names(fs: &PassthroughFs, dir: u64, page: usize) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut cookie = 0u64;
+    loop {
+        let r = fs.readdir(dir, cookie, page).await.unwrap();
+        for e in &r.entries {
+            seen.push(String::from_utf8_lossy(e.name.as_ref()).to_string());
+            cookie = e.cookie;
+        }
+        if r.end || r.entries.is_empty() {
+            break;
+        }
+    }
+    seen.sort();
+    seen
+}
+
+#[tokio::test]
+async fn readdir_lists_every_hard_link_name_even_when_paged() {
+    // Regression (PR #114 review, P1): hard links share a fileid, and readdir
+    // keyed its entries by fileid, so only one of the names was listed; the
+    // fileid was also the resume cookie, so a page boundary between two names
+    // of one inode dropped the second.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (fid, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    fs.link(fid, root, &name("b")).await.unwrap();
+    fs.link(fid, root, &name("c")).await.unwrap();
+
+    for page in [1, 2, 100] {
+        assert_eq!(
+            list_names(&fs, root, page).await,
+            ["a", "b", "c"],
+            "page={page}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn removing_one_link_keeps_the_handle_valid_for_the_other() {
+    // Regression (PR #114 review, P1): `remove` dropped the shared fileid's
+    // table entry even though another name survived, so the client's handle went
+    // NFS3ERR_STALE while the file still existed.
+    for remove_first in ["orig", "linked"] {
+        let dir = scratch();
+        let fs = PassthroughFs::new(&dir).unwrap();
+        let root = fs.root_dir();
+        let (fid, _) = fs
+            .create(root, &name("orig"), sattr3::default())
+            .await
+            .unwrap();
+        fs.write(fid, 0, b"bytes").await.unwrap();
+        fs.link(fid, root, &name("linked")).await.unwrap();
+
+        fs.remove(root, &name(remove_first)).await.unwrap();
+        let (data, _) = fs.read(fid, 0, 16).await.expect("handle must stay valid");
+        assert_eq!(data, b"bytes", "removed {remove_first}");
+        assert_eq!(fs.getattr(fid).await.unwrap().nlink, 1);
+
+        // Removing the last name does retire the handle.
+        let last = if remove_first == "orig" {
+            "linked"
+        } else {
+            "orig"
+        };
+        fs.remove(root, &name(last)).await.unwrap();
+        assert!(fs.getattr(fid).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+// --- Round 3 (PR #114 review): alias safety and positional cookies ----------
+
+#[tokio::test]
+async fn handle_never_resolves_to_a_file_that_replaced_its_name() {
+    // Regression: create a (handle A), link a2, rename another file b over a,
+    // remove a2. A's stored names were [a, a2] -> [a], but `a` now belongs to b;
+    // read(A) served b's bytes instead of NFS3ERR_STALE.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (a, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(a, 0, b"A-bytes").await.unwrap();
+    fs.link(a, root, &name("a2")).await.unwrap();
+    let (b, _) = fs
+        .create(root, &name("b"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(b, 0, b"B-bytes").await.unwrap();
+
+    fs.rename(root, &name("b"), root, &name("a")).await.unwrap();
+    fs.remove(root, &name("a2")).await.unwrap();
+
+    assert!(fs.read(a, 0, 16).await.is_err(), "A's last name is gone");
+    assert!(fs.getattr(a).await.is_err());
+    assert_eq!(fs.read(b, 0, 16).await.unwrap().0, b"B-bytes");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn renaming_between_two_names_of_one_inode_keeps_the_handle() {
+    // Regression: rename(a, a2) with both names linked to one inode is a no-op
+    // at the OS, but the source name was forgotten anyway; removing a2 then
+    // staled a handle whose name `a` survives.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (a, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(a, 0, b"bytes").await.unwrap();
+    fs.link(a, root, &name("a2")).await.unwrap();
+
+    fs.rename(root, &name("a"), root, &name("a2"))
+        .await
+        .unwrap();
+    fs.remove(root, &name("a2")).await.unwrap();
+
+    assert_eq!(fs.read(a, 0, 16).await.unwrap().0, b"bytes");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn readdir_cookies_are_stable_unique_and_resumable() {
+    // Cookies are a hash of the name: unique per name here, nonzero, ordered, and
+    // identical across two listings; resuming at the largest ends cleanly.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (x, _) = fs
+        .create(root, &name("x"), sattr3::default())
+        .await
+        .unwrap();
+    for n in ["w", "y", "z"] {
+        fs.link(x, root, &name(n)).await.unwrap();
+    }
+    fs.create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+
+    let cookies = |r: &nessie_nfsserve::vfs::ReadDirResult| -> Vec<u64> {
+        r.entries.iter().map(|e| e.cookie).collect()
+    };
+    let one = cookies(&fs.readdir(root, 0, 100).await.unwrap());
+    let two = cookies(&fs.readdir(root, 0, 100).await.unwrap());
+    assert_eq!(one, two);
+    assert!(one.windows(2).all(|w| w[0] < w[1]) && one[0] > 0);
+    let tail = fs.readdir(root, *one.last().unwrap(), 2).await.unwrap();
+    assert!(tail.entries.is_empty() && tail.end);
+    for page in [1, 2, 3] {
+        assert_eq!(list_names(&fs, root, page).await, ["a", "w", "x", "y", "z"]);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Round 4 (PR #114 review): cookies survive directory changes ------------
+
+/// Page through `root` one entry at a time; after the first page run `mutate`.
+/// Returns every name listed, in order.
+async fn page_with_change(
+    fs: &PassthroughFs,
+    root: u64,
+    mutate: impl AsyncFnOnce(&str),
+) -> Vec<String> {
+    let first = fs.readdir(root, 0, 1).await.unwrap();
+    let e = &first.entries[0];
+    let first_name = String::from_utf8_lossy(e.name.as_ref()).to_string();
+    mutate(&first_name).await;
+    let mut seen = vec![first_name];
+    let mut cookie = e.cookie;
+    loop {
+        let r = fs.readdir(root, cookie, 1).await.unwrap();
+        for e in &r.entries {
+            seen.push(String::from_utf8_lossy(e.name.as_ref()).to_string());
+            cookie = e.cookie;
+        }
+        if r.end || r.entries.is_empty() {
+            return seen;
+        }
+    }
+}
+
+async fn five_files() -> (PathBuf, PassthroughFs, u64) {
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    for n in ["a", "b", "c", "d", "e"] {
+        fs.create(root, &name(n), sattr3::default()).await.unwrap();
+    }
+    (dir, fs, root)
+}
+
+#[tokio::test]
+async fn removing_an_already_listed_entry_between_pages_skips_nothing() {
+    // Regression: positional cookies shifted when an earlier entry was removed,
+    // so the next page skipped an entry the client never saw. nfsserve never
+    // sends BAD_COOKIE, so the cookie itself must stay valid.
+    let (dir, fs, root) = five_files().await;
+    let seen = page_with_change(&fs, root, async |first| {
+        fs.remove(root, &name(first)).await.unwrap();
+    })
+    .await;
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["a", "b", "c", "d", "e"], "listed: {seen:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn inserting_between_pages_repeats_nothing_and_skips_nothing() {
+    // Regression: a name inserted before the boundary shifted positions and
+    // repeated an already-listed entry on the next page.
+    let (dir, fs, root) = five_files().await;
+    let seen = page_with_change(&fs, root, async |_| {
+        for n in ["0ins", "zins"] {
+            fs.create(root, &name(n), sattr3::default()).await.unwrap();
+        }
+    })
+    .await;
+    for n in ["a", "b", "c", "d", "e"] {
+        assert_eq!(
+            seen.iter().filter(|s| *s == n).count(),
+            1,
+            "{n} in {seen:?}"
+        );
+    }
+    let mut dedup = seen.clone();
+    dedup.dedup();
+    dedup.sort();
+    dedup.dedup();
+    assert_eq!(dedup.len(), seen.len(), "repeats in {seen:?}");
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -41,7 +41,7 @@
 //! non-Unix `serve` stub. (Crate-level `forbid(unsafe_code)` / `deny(missing_docs)`
 //! live in `lib.rs` and cover this module.)
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::SeekFrom;
 use std::os::unix::ffi::OsStrExt;
@@ -106,12 +106,48 @@ fn fileid_from(dev: u64, ino: u64) -> fileid3 {
     splitmix64(dev ^ splitmix64(ino))
 }
 
+/// The readdir cookie of a directory entry: the first 8 bytes of SHA-256 of its
+/// name, masked to 63 bits, with 0 (the "start" cookie) mapped to 1. Stable
+/// across restarts and Rust versions, unlike `DefaultHasher`.
+fn name_cookie(name: &OsStr) -> u64 {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(name.as_bytes());
+    let c = u64::from_be_bytes(h[..8].try_into().expect("8 bytes")) & (u64::MAX >> 1);
+    c.max(1)
+}
+
+/// Give each `(name hash, path)` its final cookie, returned sorted by cookie.
+///
+/// The cookie keeps the hash's high 55 bits and puts a tie-break in the low 8:
+/// the entry's 0-based rank, by path, among those sharing the high bits (so
+/// colliding names get distinct, ordered, resumable cookies). 0 is the "start"
+/// cookie, so a zero-high group ranks from 1.
+// ponytail: more than 255 names sharing 55 hash bits, or one of a colliding
+// group being added/removed between pages, can still skip an entry; both are
+// astronomically unlikely. Upgrade path = per-directory cookie table.
+fn assign_cookies(mut v: Vec<(u64, PathBuf)>) -> Vec<(u64, PathBuf)> {
+    const HIGH: u64 = 0x7fff_ffff_ffff_ff00;
+    v.sort_by(|a, b| (a.0 & HIGH, &a.1).cmp(&(b.0 & HIGH, &b.1)));
+    let mut rank = 0u64;
+    let mut prev = None;
+    for e in &mut v {
+        let high = e.0 & HIGH;
+        rank = if prev == Some(high) { rank + 1 } else { 0 };
+        prev = Some(high);
+        let r = if high == 0 { rank + 1 } else { rank };
+        e.0 = high | r.min(255);
+    }
+    v
+}
+
 /// An NFSv3 filesystem that passes operations through to a real directory tree.
 pub struct PassthroughFs {
     root: PathBuf,
-    /// fileid (= inode number) -> on-disk path. Populated lazily as the tree is
-    /// traversed; a miss yields `NFS3ERR_STALE` so the client re-resolves.
-    map: Mutex<HashMap<fileid3, PathBuf>>,
+    /// fileid (= inode number) -> every known on-disk name of it (hard links give
+    /// several). Populated lazily as the tree is traversed; a miss yields
+    /// `NFS3ERR_STALE` so the client re-resolves. An entry goes only when its
+    /// last known name is removed.
+    map: Mutex<HashMap<fileid3, Vec<PathBuf>>>,
     root_id: fileid3,
 }
 
@@ -121,7 +157,7 @@ impl PassthroughFs {
         let root = root.into().canonicalize()?;
         let root_id = fileid_of(&std::fs::symlink_metadata(&root)?);
         let mut map = HashMap::new();
-        map.insert(root_id, root.clone());
+        map.insert(root_id, vec![root.clone()]);
         Ok(Self {
             root,
             map: Mutex::new(map),
@@ -129,23 +165,52 @@ impl PassthroughFs {
         })
     }
 
+    /// The path for handle `id`. The single guard: a stored name is returned
+    /// only if it still has this inode's `(dev, ino)`; names that no longer do
+    /// (removed, renamed away, replaced by another file) are dropped here, so
+    /// correctness never depends on the other bookkeeping keeping up.
     fn path_of(&self, id: fileid3) -> Result<PathBuf, nfsstat3> {
-        self.map
-            .lock()
-            .expect("map lock")
-            .get(&id)
-            .cloned()
-            .ok_or(nfsstat3::NFS3ERR_STALE)
+        let mut map = self.map.lock().expect("map lock");
+        let paths = map.get_mut(&id).ok_or(nfsstat3::NFS3ERR_STALE)?;
+        paths.retain(|p| {
+            std::fs::symlink_metadata(p)
+                .map(|m| fileid_of(&m) == id)
+                .unwrap_or(false)
+        });
+        match paths.first().cloned() {
+            Some(p) => Ok(p),
+            None => {
+                map.remove(&id);
+                Err(nfsstat3::NFS3ERR_STALE)
+            }
+        }
+    }
+
+    /// Record `path` as a name of `id` (idempotent).
+    fn note_path(&self, id: fileid3, path: &Path) {
+        let mut map = self.map.lock().expect("map lock");
+        let paths = map.entry(id).or_default();
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_path_buf());
+        }
+    }
+
+    /// Forget `path` as a name of `id`; drop the entry with its last name.
+    fn forget_path(&self, id: fileid3, path: &Path) {
+        let mut map = self.map.lock().expect("map lock");
+        if let Some(paths) = map.get_mut(&id) {
+            paths.retain(|p| p != path);
+            if paths.is_empty() {
+                map.remove(&id);
+            }
+        }
     }
 
     /// Register `path` and return its (stable, `(dev,ino)`-derived) fileid.
     fn register(&self, path: &Path) -> Result<(fileid3, std::fs::Metadata), nfsstat3> {
         let meta = std::fs::symlink_metadata(path).map_err(|e| io_to_nfs(&e))?;
         let id = fileid_of(&meta);
-        self.map
-            .lock()
-            .expect("map lock")
-            .insert(id, path.to_path_buf());
+        self.note_path(id, path);
         Ok((id, meta))
     }
 
@@ -419,7 +484,7 @@ impl NFSFileSystem for PassthroughFs {
                 .await
                 .map_err(|e| io_to_nfs(&e))?;
         }
-        self.map.lock().expect("map lock").remove(&fileid_of(&meta));
+        self.forget_path(fileid_of(&meta), &path);
         Ok(())
     }
 
@@ -437,6 +502,7 @@ impl NFSFileSystem for PassthroughFs {
         tokio::fs::rename(&from, &to)
             .await
             .map_err(|e| io_to_nfs(&e))?;
+        // The old name is pruned by `path_of` once it stops naming its inode.
         let _ = self.register(&to);
         Ok(())
     }
@@ -452,32 +518,46 @@ impl NFSFileSystem for PassthroughFs {
         if !dmeta.is_dir() {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
-        // Order entries by stable fileid (a (dev,ino) hash) so the NFS cookie
-        // (start_after) is meaningful and pagination never duplicates or drops
-        // entries.
-        let mut by_id: BTreeMap<fileid3, PathBuf> = BTreeMap::new();
+        // An entry's cookie is a stable hash of its name (the ext4 htree idea):
+        // it stays valid when the directory changes between pages, which matters
+        // because nfsserve never answers BAD_COOKIE. Entries are ordered by
+        // (cookie, name) and a resume lists those with a larger cookie.
+        // Colliding hashes are separated by `assign_cookies`.
+        let mut found: Vec<(fileid3, PathBuf)> = Vec::new();
         let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| io_to_nfs(&e))?;
         while let Some(ent) = rd.next_entry().await.map_err(|e| io_to_nfs(&e))? {
             let meta = match ent.metadata().await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            by_id.insert(fileid_of(&meta), ent.path());
+            found.push((fileid_of(&meta), ent.path()));
         }
-        let total_after = by_id.range((start_after + 1)..).count();
+        let ids: HashMap<PathBuf, fileid3> = found.iter().map(|(i, p)| (p.clone(), *i)).collect();
+        let found: Vec<(u64, fileid3, PathBuf)> = assign_cookies(
+            found
+                .into_iter()
+                .map(|(_, p)| (name_cookie(p.file_name().unwrap_or_default()), p))
+                .collect(),
+        )
+        .into_iter()
+        .map(|(c, p)| (c, ids[&p], p))
+        .collect();
+        let skip = found.partition_point(|e| e.0 <= start_after);
+        let total_after = found.len() - skip;
         let mut entries = Vec::new();
-        for (id, path) in by_id.range((start_after + 1)..) {
+        for (cookie, id, path) in found.iter().skip(skip) {
             if entries.len() >= max_entries {
                 break;
             }
             let meta = std::fs::symlink_metadata(path).map_err(|e| io_to_nfs(&e))?;
-            self.map.lock().expect("map lock").insert(*id, path.clone());
+            self.note_path(*id, path);
             let name = path
                 .file_name()
                 .map(|n| filename3::from(n.as_bytes()))
                 .unwrap_or_else(|| filename3::from(&b""[..]));
             entries.push(DirEntry {
                 fileid: *id,
+                cookie: *cookie,
                 name,
                 attr: metadata_to_fattr3(*id, &meta),
             });
@@ -509,6 +589,22 @@ impl NFSFileSystem for PassthroughFs {
             .await
             .map_err(|e| io_to_nfs(&e))?;
         Ok(nfspath3::from(target.as_os_str().as_bytes()))
+    }
+
+    async fn link(
+        &self,
+        id: fileid3,
+        dirid: fileid3,
+        linkname: &filename3,
+    ) -> Result<fattr3, nfsstat3> {
+        let existing = self.path_of(id)?;
+        let dir = self.path_of(dirid)?;
+        let new_path = self.child_path(&dir, linkname.as_ref())?;
+        tokio::fs::hard_link(&existing, &new_path)
+            .await
+            .map_err(|e| io_to_nfs(&e))?;
+        let (new_id, meta) = self.register(&new_path)?;
+        Ok(metadata_to_fattr3(new_id, &meta))
     }
 
     // --- Stable file handles: encode the fileid with no generation number, and
@@ -551,6 +647,29 @@ pub async fn serve(root: impl Into<PathBuf>, bind: &str, export_name: &str) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_with_equal_hashes_get_distinct_resumable_cookies() {
+        // Regression (PR #114 review): two names sharing a name hash had one
+        // cookie, so resuming after the first skipped the second.
+        let same = 0x1234_5678_9abc_de00u64;
+        let all = assign_cookies(vec![
+            (same, PathBuf::from("/d/y")),
+            (same, PathBuf::from("/d/x")),
+            (7 << 8, PathBuf::from("/d/z")),
+        ]);
+        let cookies: Vec<u64> = all.iter().map(|e| e.0).collect();
+        assert!(cookies.windows(2).all(|w| w[0] < w[1]), "{cookies:?}");
+        assert!(cookies.iter().all(|c| *c != 0));
+        // Page size 1: every name comes back exactly once.
+        let mut seen = Vec::new();
+        let mut cur = 0;
+        while let Some(e) = all.iter().find(|e| e.0 > cur) {
+            seen.push(e.1.clone());
+            cur = e.0;
+        }
+        assert_eq!(seen.len(), 3, "{seen:?}");
+    }
 
     #[test]
     fn file_handle_roundtrips_without_generation() {
