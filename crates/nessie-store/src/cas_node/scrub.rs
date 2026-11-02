@@ -78,7 +78,8 @@ impl CasNode {
         });
         let mut next = start;
         while let Some(blob) = blobs.get(next) {
-            if next > start && spent >= self.scrub_budget {
+            // Always one blob for progress, unless pending restores already spent the budget.
+            if spent >= self.scrub_budget && (next > start || spent > 0) {
                 break;
             }
             spent = spent.saturating_add(blob.size_bytes);
@@ -86,7 +87,11 @@ impl CasNode {
             next += 1;
         }
         // Past the last blob: wrap. Otherwise resume after the last one visited.
-        *cursor = (next > start && next < blobs.len()).then(|| blobs[next - 1].digest.to_string());
+        // Nothing scanned because retries spent the budget: keep the cursor for next pass.
+        if next > start || start >= blobs.len() {
+            *cursor =
+                (next > start && next < blobs.len()).then(|| blobs[next - 1].digest.to_string());
+        }
         self.count_quarantine(&mut report)?;
         Ok(report)
     }
