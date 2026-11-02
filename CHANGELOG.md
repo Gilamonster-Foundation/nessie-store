@@ -6,6 +6,10 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-11-02
+
+mTLS honours agent-mesh revocation; macOS wheels return (`macos-latest`).
+
 ### Added
 - **mTLS honours agent-mesh revocation (#155).** `[tls] revocation_log` points at the
   operator's revocation log. A revoked agent, or a chain outside the current generation,
