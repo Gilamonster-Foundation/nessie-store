@@ -197,10 +197,20 @@ impl bs::byte_stream_server::ByteStream for ByteStreamSvc {
         };
         let native = native_for(&self.boundary, sha256, size)?;
         let cas = self.cas.clone();
-        let present = tokio::task::spawn_blocking(move || cas.has(&native))
+        let probe = native.clone();
+        let present = tokio::task::spawn_blocking(move || cas.has(&probe))
             .await
             .map_err(|e| Status::internal(format!("query task panicked: {e}")))?
             .map_err(|e| status_from_backend(&e))?;
+        // A present blob is complete only once it is as replicated as a write
+        // acknowledgement requires; this also re-pushes, so a retry recovers.
+        if present {
+            let cas = self.cas.clone();
+            tokio::task::spawn_blocking(move || cas.ensure_replicated(&native))
+                .await
+                .map_err(|e| Status::internal(format!("query task panicked: {e}")))?
+                .map_err(|e| status_from_backend(&e))?;
+        }
         Ok(Response::new(bs::QueryWriteStatusResponse {
             committed_size: if present { size as i64 } else { 0 },
             complete: present,
@@ -373,5 +383,88 @@ mod tests {
             .into_inner();
         assert!(after.complete);
         assert_eq!(after.committed_size, blob.len() as i64);
+    }
+    /// A store whose mirror is down until `up` is set: writes land locally but are
+    /// not acknowledged, and `ensure_replicated` is the re-push.
+    struct Mirrored {
+        inner: MemCas,
+        up: std::sync::atomic::AtomicBool,
+    }
+
+    impl Mirrored {
+        fn shortfall(&self) -> Result<(), nessie_backend_core::BackendError> {
+            if self.up.load(std::sync::atomic::Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(nessie_backend_core::BackendError::Underreplicated {
+                    confirmed: 0,
+                    required: 1,
+                })
+            }
+        }
+    }
+
+    impl CasBackend for Mirrored {
+        fn has(&self, d: &Digest) -> Result<bool, nessie_backend_core::BackendError> {
+            self.inner.has(d)
+        }
+        fn get(
+            &self,
+            d: &Digest,
+        ) -> Result<Box<dyn Read + Send>, nessie_backend_core::BackendError> {
+            self.inner.get(d)
+        }
+        fn put(&self, s: &mut dyn Read) -> Result<Digest, nessie_backend_core::BackendError> {
+            self.inner.put(s)
+        }
+        fn put_keyed(
+            &self,
+            d: &Digest,
+            s: &mut dyn Read,
+        ) -> Result<(), nessie_backend_core::BackendError> {
+            self.inner.put_keyed(d, s)?;
+            self.shortfall()
+        }
+        fn ensure_replicated(&self, _: &Digest) -> Result<(), nessie_backend_core::BackendError> {
+            self.shortfall()
+        }
+    }
+
+    /// An under-replicated upload must not be reported complete by a retry's
+    /// `QueryWriteStatus` (#139): it is UNAVAILABLE until the mirror recovers.
+    #[tokio::test]
+    async fn query_write_status_is_not_complete_until_replicated() {
+        use bs::byte_stream_server::ByteStream;
+        let cas = Arc::new(Mirrored {
+            inner: MemCas::new(),
+            up: false.into(),
+        });
+        let svc = ByteStreamSvc::new(cas.clone());
+        let blob = b"mirror me".to_vec();
+        let wr = write_resource(&blob);
+        let w = write_stream(
+            svc.cas.clone(),
+            svc.boundary,
+            tokio_stream::iter(vec![Ok(bs::WriteRequest {
+                resource_name: wr.clone(),
+                write_offset: 0,
+                finish_write: true,
+                data: blob.clone(),
+            })]),
+        )
+        .await;
+        assert_eq!(w.unwrap_err().code(), tonic::Code::Unavailable);
+
+        let q = || {
+            svc.query_write_status(Request::new(bs::QueryWriteStatusRequest {
+                resource_name: wr.clone(),
+            }))
+        };
+        assert_eq!(q().await.unwrap_err().code(), tonic::Code::Unavailable);
+
+        cas.up.store(true, std::sync::atomic::Ordering::SeqCst);
+        let done = q().await.unwrap().into_inner();
+        assert!(done.complete);
+        assert_eq!(done.committed_size, blob.len() as i64);
     }
 }

@@ -87,6 +87,21 @@ pub trait CasBackend: Send + Sync {
         })
     }
 
+    /// Confirm the blob is as replicated as this backend promises to acknowledge.
+    ///
+    /// A no-op by default. A mirroring backend (`write_only` with more than one
+    /// replica) re-pushes to its peers here, so a protocol that reports an earlier
+    /// write complete after a failed acknowledgement can revalidate first.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Underreplicated`] if too few verified copies exist;
+    /// [`BackendError::BlobNotFound`] if the blob is not held locally.
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        let _ = digest;
+        Ok(())
+    }
+
     /// The stored byte length of the blob for `digest`, or `None` if absent.
     ///
     /// The default reads and counts the blob (correct for any backend); backends
@@ -138,6 +153,18 @@ pub struct LocalBlob {
     pub size_bytes: u64,
 }
 
+/// A blob moved aside by [`ReclaimableCas::quarantine`]: retained on disk, never
+/// served, never part of [`ReclaimableCas::iter_local`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedBlob {
+    /// Unique among quarantined copies, including several of one digest.
+    pub id: String,
+    /// The digest the copy was stored under (its bytes may no longer hash to it).
+    pub digest: Digest,
+    /// The copy's actual length on disk.
+    pub size_bytes: u64,
+}
+
 /// A [`CasBackend`] whose **local replicas** can be enumerated and reclaimed — the
 /// extra capability durable GC and cache eviction both need.
 ///
@@ -165,4 +192,99 @@ pub trait ReclaimableCas: CasBackend {
     ///
     /// [`BackendError`] if the removal fails for a reason other than absence.
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError>;
+
+    /// Does the locally held copy of `digest` still hash to it? `Ok(false)` is
+    /// corruption (bit rot, a torn write, tampering); I/O trouble is an `Err`, not a
+    /// verdict. The default reads the blob through [`get`](CasBackend::get), which a
+    /// backend that verifies on read already fails closed on.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::BlobNotFound`] if the blob is not held; otherwise
+    /// [`BackendError`] if it cannot be read.
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        self.get(digest).map(|_| true)
+    }
+
+    /// Move the local copy of `digest` aside, to be neither served nor listed by
+    /// [`iter_local`](Self::iter_local), but **not deleted** — the evidence stays,
+    /// and an earlier quarantined copy of the same digest is never replaced.
+    /// `Ok(None)` if it was not held. The default holds nothing aside and reports
+    /// `None`: a backend with no way to keep a bad copy never has one to move.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the move fails for a reason other than absence.
+    fn quarantine(&self, _digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
+        Ok(None)
+    }
+
+    /// Every quarantined copy, with its real on-disk size. A point-in-time snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] if the quarantine cannot be enumerated.
+    fn iter_quarantine(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Forwarding impl so a boxed backend (`Box<dyn ReclaimableCas>`) is itself a
+/// backend. Every method is forwarded — including the defaulted ones — so boxing
+/// never turns a capable backend into a `FeatureNotSupported` one.
+impl<T: CasBackend + ?Sized> CasBackend for Box<T> {
+    fn has(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).has(digest)
+    }
+
+    fn get(&self, digest: &Digest) -> Result<Box<dyn Read + Send>, BackendError> {
+        (**self).get(digest)
+    }
+
+    fn put(&self, source: &mut dyn Read) -> Result<Digest, BackendError> {
+        (**self).put(source)
+    }
+
+    fn put_keyed(&self, expected: &Digest, source: &mut dyn Read) -> Result<(), BackendError> {
+        (**self).put_keyed(expected, source)
+    }
+
+    fn ensure_replicated(&self, digest: &Digest) -> Result<(), BackendError> {
+        (**self).ensure_replicated(digest)
+    }
+
+    fn size(&self, digest: &Digest) -> Result<Option<u64>, BackendError> {
+        (**self).size(digest)
+    }
+
+    fn as_action_cache(&self) -> Option<&dyn ActionCacheBackend> {
+        (**self).as_action_cache()
+    }
+
+    fn as_reclaimable(&self) -> Option<&dyn ReclaimableCas> {
+        (**self).as_reclaimable()
+    }
+}
+
+/// Forwarding impl; see the [`CasBackend`] impl for `Box<T>`.
+impl<T: ReclaimableCas + ?Sized> ReclaimableCas for Box<T> {
+    fn iter_local(&self) -> Result<Vec<LocalBlob>, BackendError> {
+        (**self).iter_local()
+    }
+
+    fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).reclaim(digest)
+    }
+
+    fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).verify(digest)
+    }
+
+    fn quarantine(&self, digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {
+        (**self).quarantine(digest)
+    }
+
+    fn iter_quarantine(&self) -> Result<Vec<QuarantinedBlob>, BackendError> {
+        (**self).iter_quarantine()
+    }
 }

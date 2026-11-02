@@ -12,7 +12,7 @@ Sister project to [monty-tui](https://github.com/hartsock/monty-tui) and [scrybe
 
 ## Status
 
-**v0.3.1 — early development, public.** The ONTAP REST control plane and one real
+**v0.4.3 — early development, public.** The ONTAP REST control plane and one real
 substrate (ZFS) work end to end, alongside an embedded userspace NFSv3 data plane.
 The [crate inventory](#crate-inventory) is the source of truth for what is
 implemented today versus planned. Pre-1.0, the protocol surface may still shift.
@@ -83,9 +83,13 @@ cannot silently drift out of sync.
 | `nessie-backend-conformance` | capability-driven test harness |
 | `nessie-cas-conformance` | conformance suite for the `CasBackend` contract |
 | `nessie-ac-conformance` | conformance suite for the `ActionCacheBackend` contract |
-| `nessie-cas-store` | retention engine: reachability GC + replica-gated cache eviction |
+| `nessie-cas-store` | retention engine: `lru` eviction and `write_only` capacity |
 | `nessie-reapi` | Bazel REAPI v2 (cache subset) gRPC face over the CAS/AC backends |
+| `nessie-s3` | S3 object-API face over the CAS, for digest-keyed cache clients |
+| `nessie-mtls` | mutual TLS from agent-mesh keys: node identity, mesh-proof certificate, `authorized_keys` verifier |
 | `nessie-backend-mem` | HashMap reference backend |
+| `nessie-cas-disk` | persistent on-disk CAS: write-then-rename commit, verified reads |
+| `nessie-cas-peer` | static-peer swarm: HTTP fetch-through (`SwarmCas`), durability oracle, replicator |
 | `nessie-backend-zfs` | ZFS substrate — native snapshot + clone |
 | `nessie-ontap-protocol` | HAL / ONTAP REST wire shapes |
 | `nessie-store` | axum daemon: REST, config, auth, TLS, identity |

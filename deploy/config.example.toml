@@ -50,3 +50,66 @@ nfs_export_name = ""
 # listen = "0.0.0.0:8980"        # gRPC bind (distinct from the HTTPS `listen` above)
 # instance_name = ""             # "" = the default instance
 # ac_update_enabled = true       # allow UpdateActionResult (also needs an AC backend + signer)
+
+# Content-addressed store node. When present, the REAPI / S3 faces below share THIS
+# store (one set of blobs) and it runs retention maintenance. backend = "mem" (the
+# default) loses blobs on restart; "disk" keeps them under `path`.
+#
+# mode = "lru" (default): over `byte_budget`, evict coldest first - blobs another
+#   holder also has, then sole copies (this is a cache). Pinned roots and in-flight
+#   writes are never evicted.
+# mode = "write_only": never deletes. `byte_budget` is the capacity; a write past it
+#   is refused (S3 507 / REAPI RESOURCE_EXHAUSTED), never made room for.
+#   replication_factor = R (write_only only; default 2; an error under lru): a write
+#   is acknowledged only after R verified copies exist, this node included - i.e.
+#   R-1 peers marked `durable = true` that report write_only. Short of that the write
+#   fails (S3 503 / REAPI UNAVAILABLE) and the local copy stays for repair. R = 1 is a
+#   single-node archive with no redundancy. Startup refuses R-1 > durable peers.
+#   replication_factor = 2
+# scrub_bytes_per_pass (both modes; default 1073741824 = 1 GiB, 0 = scrub off): bytes
+#   a maintenance pass re-reads to check blobs against their digests, resuming where
+#   the last pass stopped (the position is in memory: a restart rescans from the
+#   start). Set it very high to verify everything every pass. A corrupt blob is
+#   reclaimed under lru (a later read refetches it). Under write_only it is moved to
+#   <path>/quarantine/ and restored from a peer; the quarantined file is kept and
+#   stays charged against byte_budget, so corruption costs capacity. A failed restore
+#   is retried every pass, within the same budget, and skipped without a fetch while
+#   there is no room. A mirrored write_only node also pushes each scanned blob
+#   back up to R copies.
+#   scrub_bytes_per_pass = 1073741824
+# `byte_budget` is required in both modes. The old mode = "durable" is gone: it is
+# now a config parse error.
+[cas]
+mode = "lru"
+byte_budget = 107374182400   # 100 GiB
+backend = "disk"
+path = "/var/lib/nessie-store/cas"
+#
+# Static peers (plain http and unauthenticated unless [tls] mtls = true, which needs https:// URLs;
+# see docs/MTLS.md for the identity / authorized_keys setup).
+# A miss is fetched from peers and verified against its digest; `durable = true` is
+# a hint of whom to probe and replicate to, believed only if that peer reports
+# x-nessie-mode: write_only. List each URL once; advertise_url is this node's own
+# URL (that entry is ignored, so one list can be shared). peer_api serves
+# GET|HEAD|PUT /cas/v1/blobs/{algo}:{hex} so other nodes can reach this one.
+# peers = [{ url = "http://nessie-2:8443", durable = true }, { url = "http://nessie-3:8443" }]
+# peer_api = true
+# advertise_url = "http://nessie-1:8443"
+
+# Optional S3 object face over the same store. The daemon REFUSES to start it while
+# secret_key is still the default: set NESSIE_S3_SECRET_KEY (see environment.example).
+# [s3]
+# enabled = true
+# listen = "0.0.0.0:9000"
+# access_key = "nessie"
+
+# Mutual TLS from agent-mesh keys (docs/MTLS.md). Needs `nessie-store identity issue`
+# and an authorized_keys file (default: <data_dir>/authorized_keys).
+# [tls]
+# mtls = true
+# peer_listen = "0.0.0.0:8443"
+# names = ["nessie-1.example.net"]
+# authorized_keys = "/etc/nessie-store/authorized_keys"
+# Honour agent-mesh revocation (`amesh revocation export`). Unset = nothing is checked.
+# A configured log that is missing or older than the last seen refuses everyone.
+# revocation_log = "/etc/nessie-store/revocation.json"

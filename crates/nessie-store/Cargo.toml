@@ -26,10 +26,15 @@ daemon = [
     "dep:nessie-backend-core",
     "dep:nessie-backend-mem",
     "dep:nessie-cas-store",
+    "dep:nessie-cas-disk",
+    "dep:nessie-cas-peer",
     "dep:nessie-backend-zfs",
     "dep:nessie-ontap-protocol",
     "dep:nessie-nfs",
     "dep:nessie-reapi",
+    "dep:nessie-s3",
+    "dep:nessie-mtls",
+    "dep:agent-mesh-protocol",
     "dep:tokio",
     "dep:axum",
     "dep:axum-server",
@@ -46,6 +51,8 @@ daemon = [
     "dep:reqwest",
     "dep:tokio-util",
     "dep:tokio-stream",
+    "dep:tokio-rustls",
+    "dep:tonic",
 ]
 # PyO3 bindings (the pip wheel) — only `config` + `identity`. Built with
 # `--no-default-features --features python` so the wheel is light (serde/toml/uuid,
@@ -55,15 +62,21 @@ python = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
 # Daemon-only (optional; pulled in by the `daemon` feature).
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1", optional = true }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1", optional = true }
-nessie-cas-store = { path = "../nessie-cas-store", version = "0.3.1", optional = true }
-nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.3.1", optional = true }
-nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.3.1", optional = true }
-nessie-nfs = { path = "../nessie-nfs", version = "0.3.1", optional = true }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.3", optional = true }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.3", optional = true }
+nessie-cas-store = { path = "../nessie-cas-store", version = "0.4.3", optional = true }
+nessie-cas-disk = { path = "../nessie-cas-disk", version = "0.4.3", optional = true }
+nessie-cas-peer = { path = "../nessie-cas-peer", version = "0.4.3", optional = true }
+nessie-backend-zfs = { path = "../nessie-backend-zfs", version = "0.4.3", optional = true }
+nessie-ontap-protocol = { path = "../nessie-ontap-protocol", version = "0.4.3", optional = true }
+nessie-nfs = { path = "../nessie-nfs", version = "0.4.3", optional = true }
 # REAPI (Bazel remote cache) gRPC face — pulled in by the `daemon` feature, wired
 # beside axum in `serve()` when `[reapi]` is enabled. Excluded from the light wheel.
-nessie-reapi = { path = "../nessie-reapi", version = "0.3.1", optional = true }
+nessie-reapi = { path = "../nessie-reapi", version = "0.4.3", optional = true }
+nessie-s3 = { path = "../nessie-s3", version = "0.4.3", optional = true }
+# Mesh-key mTLS: `nessie-store identity issue` is a thin CLI over it.
+nessie-mtls = { path = "../nessie-mtls", version = "0.4.3", optional = true }
+agent-mesh-protocol = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 axum-server = { workspace = true, optional = true }
@@ -83,6 +96,9 @@ reqwest = { workspace = true, optional = true, features = ["blocking"] }
 # SnapMirror receive: bridge the async request body into a sync reader (no buffering).
 tokio-util = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }
+# REAPI TLS: accept TLS ourselves (tonic cannot take a custom client verifier).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
+tonic = { workspace = true, optional = true }
 
 # PyO3 wheel.
 pyo3 = { workspace = true, optional = true, features = ["extension-module", "macros", "abi3-py310"] }
@@ -96,12 +112,27 @@ anyhow = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+hyper-util = "0.1"
+rustls = { workspace = true }
+http = { workspace = true }
+nessie-mtls = { path = "../nessie-mtls", version = "0.4.3" }
+agent-mesh-protocol = { workspace = true }
+ssh-key = { workspace = true }
+rand = "0.8"
+tempfile = "3"
+s3s = { workspace = true }
+nessie-s3 = { path = "../nessie-s3", version = "0.4.3" }
+nessie-reapi = { path = "../nessie-reapi", version = "0.4.3" }
+bytes = { workspace = true }
+object_store = { workspace = true }
+futures = { workspace = true }
+tonic = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 uuid = { workspace = true }
-nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.3.1" }
-nessie-backend-core = { path = "../nessie-backend-core", version = "0.3.1" }
+nessie-backend-mem = { path = "../nessie-backend-mem", version = "0.4.3" }
+nessie-backend-core = { path = "../nessie-backend-core", version = "0.4.3" }
 
 # --- Linux packaging -------------------------------------------------------
 # `.deb` via cargo-deb; `.rpm` via cargo-generate-rpm. Asset source paths are
