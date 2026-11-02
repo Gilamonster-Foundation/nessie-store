@@ -3,7 +3,7 @@
 //! `s3s` supplies the S3 protocol — routing, SigV4, XML, the 114-method [`S3`]
 //! trait whose every method defaults to `NotImplemented`. This implements the
 //! three that a digest-keyed client calls: `PutObject`, `GetObject`, `HeadObject`.
-//! Everything else keeps the honest default decline.
+//! `ListObjectsV2` lists the sha2-256 blobs. Everything else keeps the honest default decline.
 //!
 //! The same impedance mismatch the REAPI `ByteStream` service has applies here:
 //! [`CasBackend`] is sync `std::io::Read` / `put_keyed`, `s3s` is async streams.
@@ -15,10 +15,10 @@ use crate::error::s3_error_from_backend;
 use crate::key::ObjectKey;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
-use nessie_backend_core::{CasBackend, Digest};
+use nessie_backend_core::{CasBackend, Digest, DigestAlgo};
 use s3s::dto::{
-    ETag, GetObjectInput, GetObjectOutput, HeadObjectInput, HeadObjectOutput, PutObjectInput,
-    PutObjectOutput, StreamingBlob,
+    ETag, GetObjectInput, GetObjectOutput, HeadObjectInput, HeadObjectOutput, ListObjectsV2Input,
+    ListObjectsV2Output, Object, PutObjectInput, PutObjectOutput, StreamingBlob, Timestamp,
 };
 use s3s::{S3, S3Request, S3Response, S3Result, s3_error};
 use std::io::Read;
@@ -183,6 +183,104 @@ impl S3 for NessieS3 {
             ..Default::default()
         }))
     }
+
+    /// List the sha2-256 blobs held locally, as `cas/{xx}/{hex}` keys.
+    ///
+    /// Sharded rather than flat because that is what bazel-remote's S3 backend
+    /// writes and reads, and a flat key has no shard to prefix-filter on; the flat
+    /// form is still accepted on every other call (see [`ObjectKey`]). Blake3 blobs
+    /// are not listed — they have no S3 name. `delimiter` is declined (501), not
+    /// ignored: ignoring it would hand `list_with_delimiter` clients slash-bearing
+    /// keys where they expect `CommonPrefixes`.
+    async fn list_objects_v2(
+        &self,
+        req: S3Request<ListObjectsV2Input>,
+    ) -> S3Result<S3Response<ListObjectsV2Output>> {
+        let i = req.input;
+        if i.delimiter.as_deref().is_some_and(|d| !d.is_empty()) {
+            return Err(s3_error!(
+                NotImplemented,
+                "ListObjectsV2 delimiter is not supported"
+            ));
+        }
+        let cas = self.cas.clone();
+        let local = tokio::task::spawn_blocking(move || {
+            cas.as_reclaimable()
+                .ok_or_else(|| s3_error!(NotImplemented, "this store cannot enumerate its blobs"))?
+                .iter_local()
+                .map_err(|e| s3_error_from_backend(&e))
+        })
+        .await
+        .map_err(|e| s3_error!(InternalError, "list task panicked: {e}"))??;
+
+        let blobs = local
+            .into_iter()
+            .filter(|b| b.digest.algo() == DigestAlgo::Sha256)
+            .map(|b| (canonical_key(&b.digest), b.size_bytes, b.digest))
+            .collect();
+        // The continuation token is the last key returned; it wins over start-after,
+        // which S3 only honours on the first request.
+        let after = i.continuation_token.as_deref().or(i.start_after.as_deref());
+        let max = i.max_keys.map_or(MAX_KEYS, |m| m.clamp(0, MAX_KEYS));
+        let (page, next) = list_page(
+            blobs,
+            i.prefix.as_deref().unwrap_or(""),
+            after,
+            max as usize,
+        );
+        let contents: Vec<Object> = page
+            .into_iter()
+            .map(|(key, size, digest)| Object {
+                key: Some(key),
+                size: Some(size as i64),
+                e_tag: Some(ETag::Strong(etag_of(&digest))),
+                // ponytail: a CAS keeps no mtime, so report the epoch, not a lie that
+                // looks real. Upgrade = record write time in the store.
+                last_modified: Some(Timestamp::from(std::time::UNIX_EPOCH)),
+                ..Default::default()
+            })
+            .collect();
+        Ok(S3Response::new(ListObjectsV2Output {
+            name: Some(i.bucket),
+            prefix: i.prefix,
+            max_keys: Some(max),
+            key_count: Some(contents.len() as i32),
+            is_truncated: Some(next.is_some()),
+            continuation_token: i.continuation_token,
+            next_continuation_token: next,
+            contents: Some(contents),
+            ..Default::default()
+        }))
+    }
+}
+
+/// S3's page ceiling, and the default when `max-keys` is absent.
+const MAX_KEYS: i32 = 1000;
+
+/// The face's canonical key for a sha2-256 digest: `cas/{xx}/{hex}`.
+fn canonical_key(digest: &Digest) -> String {
+    let hex = etag_of(digest);
+    format!("cas/{}/{hex}", &hex[..2])
+}
+
+/// One page of a lexicographic listing: keys with `prefix`, strictly after `after`,
+/// at most `max`; plus the token (the last key) when more remain.
+// ponytail: collects and sorts every blob per page, O(n log n) per request; upgrade
+// = an ordered index in the store so a page seeks instead of scanning.
+fn list_page<T>(
+    mut blobs: Vec<(String, u64, T)>,
+    prefix: &str,
+    after: Option<&str>,
+    max: usize,
+) -> (Vec<(String, u64, T)>, Option<String>) {
+    blobs.retain(|(k, ..)| k.starts_with(prefix) && after.is_none_or(|a| k.as_str() > a));
+    blobs.sort_by(|a, b| a.0.cmp(&b.0));
+    let truncated = blobs.len() > max && max > 0;
+    blobs.truncate(max);
+    let next = truncated
+        .then(|| blobs.last().map(|b| b.0.clone()))
+        .flatten();
+    (blobs, next)
 }
 
 /// The blob's stored length, or `NoSuchKey` if we do not hold it.
@@ -207,4 +305,37 @@ fn etag_of(digest: &Digest) -> String {
         .to_string()
         .rsplit_once(':')
         .map_or_else(|| digest.to_string(), |(_, hex)| hex.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_page;
+
+    fn blobs(keys: &[&str]) -> Vec<(String, u64, ())> {
+        keys.iter().map(|k| ((*k).to_owned(), 1, ())).collect()
+    }
+    fn keys(p: &[(String, u64, ())]) -> Vec<&str> {
+        p.iter().map(|b| b.0.as_str()).collect()
+    }
+
+    #[test]
+    fn pages_chain_through_the_token_without_gaps_or_repeats() {
+        let all = ["cas/a", "cas/c", "cas/b", "cas/e", "cas/d"];
+        let (p1, t1) = list_page(blobs(&all), "", None, 2);
+        assert_eq!(keys(&p1), ["cas/a", "cas/b"]);
+        let (p2, t2) = list_page(blobs(&all), "", t1.as_deref(), 2);
+        assert_eq!(keys(&p2), ["cas/c", "cas/d"]);
+        let (p3, t3) = list_page(blobs(&all), "", t2.as_deref(), 2);
+        assert_eq!(keys(&p3), ["cas/e"]);
+        assert_eq!(t3, None, "the exact-fit last page is not truncated");
+    }
+
+    #[test]
+    fn prefix_start_after_and_zero_max() {
+        let all = ["cas/a/1", "cas/a/2", "cas/b/1"];
+        let (p, t) = list_page(blobs(&all), "cas/a/", Some("cas/a/1"), 10);
+        assert_eq!((keys(&p), t), (vec!["cas/a/2"], None));
+        let (p, t) = list_page(blobs(&all), "", None, 0);
+        assert_eq!((p.len(), t), (0, None));
+    }
 }

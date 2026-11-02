@@ -13,8 +13,10 @@
 //! *is* the digest, so the face needs no bucket index, no name→digest table and no
 //! configuration: [`ObjectKey::parse`] is pure and the CAS is the only state.
 //!
-//! Three of `s3s`'s 114 [`S3`](s3s::S3) trait methods are implemented —
-//! `PutObject`, `GetObject`, `HeadObject`. The rest keep the trait's default
+//! Four of `s3s`'s 114 [`S3`](s3s::S3) trait methods are implemented —
+//! `PutObject`, `GetObject`, `HeadObject`, and `ListObjectsV2` (sha2-256 blobs as
+//! `cas/{xx}/{hex}` keys; prefix, `max-keys`, `start-after`, continuation token;
+//! `delimiter` answers 501). The rest keep the trait's default
 //! `NotImplemented`, which is the honest decline, not a gap to fill in later.
 //!
 //! # What it refuses, and why that is the point
@@ -34,8 +36,8 @@
 //!
 //! # Not yet here
 //!
-//! Object *listing* and mutable names. A general-purpose S3 client
-//! (`aws s3 cp`, boto3) needs `ListObjectsV2` and arbitrary keys, which needs a
+//! Mutable names. A general-purpose S3 client
+//! (`aws s3 cp`, boto3) needs arbitrary keys, which needs a
 //! mutable name→digest layer over the CAS — the Merkle `Tree` type is the piece
 //! that layer is built from. Digest-keyed cache clients need none of it, so it is
 //! not in this slice.
