@@ -67,7 +67,11 @@ impl PeerSet {
                 .timeout(Duration::from_secs(30));
             if let Some(tls) = tls {
                 // A redirect (or an `http://` peer) must not leave the mTLS channel.
+                // ponytail: one handshake per peer request, so every request re-runs the
+                // server verifier (revocation); bind the verified server chain to the
+                // connection if peer throughput needs pooling.
                 b = b
+                    .pool_max_idle_per_host(0)
                     .use_preconfigured_tls((*tls).clone())
                     .https_only(true)
                     .redirect(reqwest::redirect::Policy::none());

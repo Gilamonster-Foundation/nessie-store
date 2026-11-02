@@ -9,12 +9,17 @@ All notable changes to nessie-store are documented here. The format follows
 ### Added
 - **mTLS honours agent-mesh revocation (#155).** `[tls] revocation_log` points at the
   operator's revocation log. A revoked agent, or a chain outside the current generation,
-  fails the handshake on the peer API, REAPI and the peer client, and an open connection
-  is refused on its next request. A configured log that is missing, unreadable or rolled
-  back refuses everyone. `identity show` prints the log's counter and generation.
-  Needs `agent-mesh-protocol` 0.8.3.
+  fails the handshake on the peer API, REAPI and the peer client, and every request is
+  re-judged: an open inbound connection is refused on its next request, and the peer
+  client makes a fresh, fully verified handshake per request, so a server revoked in
+  *your* log is refused on the next fetch or push. A configured log that is missing,
+  unreadable or rolled back refuses everyone. `identity show` prints the log's counter
+  and generation. Needs `agent-mesh-protocol` 0.8.3.
 
 ### Changed
+- **TLS session resumption is off for mTLS, both directions, and the peer client no longer
+  pools connections.** A resumed handshake skips certificate verification, so it would
+  have bypassed revocation. Cost: one handshake per peer request.
 - REAPI over mTLS now serves through the same acceptor as the peer API (axum-server)
   instead of a hand-rolled accept loop.
 

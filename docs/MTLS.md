@@ -131,6 +131,10 @@ revocation_log = "/etc/nessie-store/revocation.json"   # `amesh revocation expor
   generation, is refused.
 - **Open connections are rechecked on every request** (peer API and REAPI): the next
   request after the log gains a revocation gets `403`, with no reconnect.
+- **The peer client does not reuse connections** and TLS session resumption is off, so
+  every outgoing request re-judges the server against your log: revoking a server there
+  stops the next fetch or push, without any change on that server. The price is one
+  handshake per peer request.
 - **Fail closed.** With `revocation_log` set, a log that is missing, unreadable,
   invalid, another operator's, or older than the head last seen refuses every
   handshake and request until fixed. At startup that stops the daemon. The last head

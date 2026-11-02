@@ -32,12 +32,20 @@ pub fn server_config(
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13])
             .map_err(|e| MtlsError::Generate(e.to_string()))?;
+    let mtls = clients.is_some();
     let builder = match clients {
         Some(v) => builder.with_client_cert_verifier(v),
         None => builder.with_no_client_auth(),
     };
     let mut cfg = builder.with_cert_resolver(Arc::new(Fixed(node.node_certified_key()?)));
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    if mtls {
+        // A resumed handshake restores the old client certificate and skips the
+        // verifier, so revocation would not be seen: every connection is a full,
+        // freshly admitted handshake.
+        cfg.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        cfg.send_tls13_tickets = 0;
+    }
     Ok(cfg)
 }
 
@@ -56,12 +64,14 @@ pub fn client_config(
     node: &NodeIdentity,
     servers: Arc<MeshVerifier>,
 ) -> Result<ClientConfig, MtlsError> {
-    Ok(
+    let mut cfg =
         ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13])
             .map_err(|e| MtlsError::Generate(e.to_string()))?
             .dangerous()
             .with_custom_certificate_verifier(servers)
-            .with_client_cert_resolver(Arc::new(Fixed(node.node_certified_key()?))),
-    )
+            .with_client_cert_resolver(Arc::new(Fixed(node.node_certified_key()?)));
+    // Never resume: a resumed handshake skips the server verifier (see `server_config`).
+    cfg.resumption = rustls::client::Resumption::disabled();
+    Ok(cfg)
 }
