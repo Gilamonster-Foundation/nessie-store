@@ -157,3 +157,23 @@ fn with_room_a_pass_restores_one_budgets_worth_and_the_next_resumes() {
     assert_eq!(a.node.store().local_blobs().unwrap().len(), 3);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// #147: once pending restores have spent the whole budget, the live scan verifies
+/// nothing (it used to run one blob past the budget).
+#[test]
+fn a_budget_spent_by_pending_restores_leaves_the_live_scan_nothing() {
+    let root = fresh_root();
+    let peer = dead_url();
+    let stub = three_pending(&root, &peer, 6 * N);
+    serve_stub(&peer, stub.clone());
+
+    // Budget smaller than one pending restore: the first restore spends it all.
+    let a = Daemon::start(&cfg(&root, &peer, 6 * N, N as u64 - 1));
+    let s = a.node.maintain_once().unwrap().scrub().clone();
+    assert_eq!(s.restored, 1, "one pending restore spends the budget");
+    assert_eq!(
+        s.scanned, 0,
+        "the live scan must not verify past the budget"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
