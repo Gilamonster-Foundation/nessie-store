@@ -87,18 +87,18 @@ fn a_revoked_agent_is_refused_but_its_sibling_is_not() {
     });
     let err = fx.verifier.verify_peer(&cert(&fx.peer)).unwrap_err();
     assert!(matches!(err, MtlsError::Revoked(_)), "{err:?}");
-    fx.verifier.verify_peer(&&sibling).unwrap();
+    fx.verifier.verify_peer(&sibling).unwrap();
 }
 
 #[test]
 fn a_generation_bump_refuses_the_old_chain_and_admits_a_reissued_one() {
     let fx = Fx::new();
     let old = fx.agent_cert(Some(0));
-    fx.verifier.verify_peer(&&old).unwrap();
+    fx.verifier.verify_peer(&old).unwrap();
     fx.append(RevocationEntry::Generation { current: 1 });
-    assert!(fx.verifier.verify_peer(&&old).is_err());
+    assert!(fx.verifier.verify_peer(&old).is_err());
     let reissued = fx.agent_cert(Some(1));
-    fx.verifier.verify_peer(&&reissued).unwrap();
+    fx.verifier.verify_peer(&reissued).unwrap();
 }
 
 #[test]
@@ -124,9 +124,9 @@ fn a_log_rolled_back_to_an_older_one_refuses_everyone() {
     let fx = Fx::new();
     let old = fx.read();
     fx.append(RevocationEntry::Generation { current: 1 });
-    fx.verifier.verify_peer(&&fx.agent_cert(Some(1))).unwrap();
+    fx.verifier.verify_peer(&fx.agent_cert(Some(1))).unwrap();
     fx.write(&old);
-    assert!(fx.verifier.verify_peer(&&fx.agent_cert(Some(1))).is_err());
+    assert!(fx.verifier.verify_peer(&fx.agent_cert(Some(1))).is_err());
 }
 
 #[test]
