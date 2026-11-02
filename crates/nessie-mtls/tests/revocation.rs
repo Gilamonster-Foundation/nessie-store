@@ -120,13 +120,17 @@ fn a_deleted_log_refuses_everyone() {
 }
 
 #[test]
-fn a_log_rolled_back_to_an_older_one_refuses_everyone() {
+fn a_log_rolled_back_to_an_older_one_refuses_everyone_for_that_reason() {
     let fx = Fx::new();
     let old = fx.read();
     fx.append(RevocationEntry::Generation { current: 1 });
-    fx.verifier.verify_peer(&fx.agent_cert(Some(1))).unwrap();
+    // An unbounded sibling is valid against the older log too, so only rollback
+    // detection can be what refuses it.
+    let sibling = fx.agent_cert(None);
+    fx.verifier.verify_peer(&sibling).unwrap();
     fx.write(&old);
-    assert!(fx.verifier.verify_peer(&fx.agent_cert(Some(1))).is_err());
+    let err = fx.verifier.verify_peer(&sibling).unwrap_err();
+    assert!(matches!(err, MtlsError::Revocation(_)), "{err:?}");
 }
 
 #[test]

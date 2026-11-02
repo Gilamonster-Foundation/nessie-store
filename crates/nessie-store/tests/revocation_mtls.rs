@@ -73,8 +73,26 @@ impl Fx {
     }
 
     fn revoke(&self, n: &NodeIdentity) {
-        let mut log: RevocationLog =
-            serde_json::from_slice(&fs::read(self.log()).unwrap()).unwrap();
+        self.revoke_in(&self.log(), n);
+    }
+
+    /// A second, independent view of the operator's log (its own file, guard
+    /// and `Seen`), as another node would hold it. Returns its path and verifier.
+    fn other_named(&self, name: &str) -> (PathBuf, Arc<MeshVerifier>) {
+        let path = self.dir.path().join(name);
+        fs::copy(self.log(), &path).unwrap();
+        let line = self.ssh.public_key().to_openssh().unwrap();
+        let guard = RevocationGuard::open(&path, self.user.fingerprint()).unwrap();
+        let v = MeshVerifier::with_revocation(AuthorizedKeys::parse(&line), guard);
+        (path, Arc::new(v))
+    }
+
+    fn other(&self) -> (PathBuf, Arc<MeshVerifier>) {
+        self.other_named("other.json")
+    }
+
+    fn revoke_in(&self, path: &std::path::Path, n: &NodeIdentity) {
+        let mut log: RevocationLog = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         log.append(
             &self.user,
             RevocationEntry::Revoke {
@@ -82,7 +100,7 @@ impl Fx {
             },
         )
         .unwrap();
-        fs::write(self.log(), serde_json::to_vec(&log).unwrap()).unwrap();
+        fs::write(path, serde_json::to_vec(&log).unwrap()).unwrap();
     }
 }
 
@@ -273,4 +291,146 @@ fn identity_show_reports_the_log_head_or_that_none_is_configured() {
         nessie_store::face_tls::revocation_summary(&cfg).unwrap(),
         "revocation log counter 1 generation 0"
     );
+}
+
+// ---- resumption: a resumed handshake must not skip admit() -------------------
+
+fn shared_client(fx: &Fx, node: &NodeIdentity) -> Arc<rustls::ClientConfig> {
+    Arc::new(nessie_mtls::client_config(node, fx.verifier.clone()).unwrap())
+}
+
+/// One request on a fresh connection from `cfg`; reading the reply also consumes
+/// any session ticket the server sent, so a later connection can try to resume.
+async fn fresh_ping(
+    cfg: &Arc<rustls::ClientConfig>,
+    addr: std::net::SocketAddr,
+) -> std::io::Result<u16> {
+    let tcp = tokio::net::TcpStream::connect(addr).await?;
+    let mut s = TlsConnector::from(cfg.clone())
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await?;
+    ping(&mut s).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_client_cannot_resume_a_session() {
+    let fx = Fx::new();
+    let addr = start_peer(&fx, &fx.node());
+    let client = fx.node();
+    let cfg = shared_client(&fx, &client);
+    assert_eq!(fresh_ping(&cfg, addr).await.unwrap(), 200);
+    fx.revoke(&client);
+    assert!(
+        fresh_ping(&cfg, addr).await.is_err(),
+        "handshake itself refused"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_server_cannot_be_resumed_into() {
+    let fx = Fx::new();
+    let server = fx.node();
+    let addr = start_peer(&fx, &server);
+    let cfg = shared_client(&fx, &fx.node());
+    assert_eq!(fresh_ping(&cfg, addr).await.unwrap(), 200);
+    fx.revoke(&server);
+    assert!(
+        fresh_ping(&cfg, addr).await.is_err(),
+        "client re-judges the server"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unusable_log_stops_resumption() {
+    let fx = Fx::new();
+    let addr = start_peer(&fx, &fx.node());
+    let cfg = shared_client(&fx, &fx.node());
+    assert_eq!(fresh_ping(&cfg, addr).await.unwrap(), 200);
+    fs::remove_file(fx.log()).unwrap();
+    assert!(fresh_ping(&cfg, addr).await.is_err());
+}
+
+// ---- outgoing: the peer client re-judges the server on every request ---------
+
+/// B (durable, holds `blobs`) served over mTLS with its own log view; A, a cache
+/// node with its own log view, fetching from B over a pooled client.
+struct Pair {
+    a: nessie_store::cas_node::CasNode,
+    a_log: PathBuf,
+    b_node: NodeIdentity,
+    blobs: Vec<nessie_backend_core::Digest>,
+    _rt: tokio::runtime::Runtime,
+}
+
+fn pair(fx: &Fx) -> Pair {
+    use nessie_backend_core::{CasBackend as _, PeerId};
+    use nessie_store::cas_node::CasNode;
+    use nessie_store::config::{CasConfig, CasMode, CasPeer};
+    let (a_log, va) = fx.other();
+    let (_, vb) = fx.other_named("b.json");
+    let (b_node, a_node) = (fx.node(), fx.node());
+    let b_cfg = CasConfig {
+        mode: CasMode::WriteOnly,
+        replication_factor: Some(1),
+        byte_budget: Some(1 << 30),
+        peer_api: true,
+        gc_grace_secs: 0,
+        ..CasConfig::default()
+    };
+    let b = Arc::new(CasNode::from_config_tls(&b_cfg, PeerId::new("b"), None).unwrap());
+    let blobs = (0..3u8)
+        .map(|i| b.put(&mut &[i; 64][..]).unwrap())
+        .collect();
+    let (l, addr) = listener();
+    let server = nessie_mtls::server_config(&b_node, Some(vb.clone()), &[b"http/1.1"]).unwrap();
+    let app = nessie_store::cas_routes::peer_routes(b);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.spawn(serve_peer(l, app, Arc::new(server), vb));
+    let a_cfg = CasConfig {
+        mode: CasMode::Lru,
+        byte_budget: Some(1),
+        gc_grace_secs: 0,
+        peer_api: true,
+        peers: vec![CasPeer {
+            url: format!("https://{addr}"),
+            durable: true,
+        }],
+        ..CasConfig::default()
+    };
+    let client = Arc::new(nessie_mtls::client_config(&a_node, va).unwrap());
+    let a = CasNode::from_config_tls(&a_cfg, PeerId::new("a"), Some(client)).unwrap();
+    Pair {
+        a,
+        a_log,
+        b_node,
+        blobs,
+        _rt: rt,
+    }
+}
+
+#[test]
+fn a_server_revoked_in_my_log_is_refused_on_the_pooled_connections_next_request() {
+    use nessie_backend_core::CasBackend as _;
+    let fx = Fx::new();
+    let p = pair(&fx);
+    assert!(p.a.get(&p.blobs[0]).is_ok(), "fetched over the pool");
+    fx.revoke_in(&p.a_log, &p.b_node); // only A's log; B is untouched
+    assert!(
+        p.a.get(&p.blobs[1]).is_err(),
+        "next request refused, no reconnect needed"
+    );
+}
+
+#[test]
+fn an_unusable_log_stops_the_pooled_connection_too() {
+    use nessie_backend_core::CasBackend as _;
+    let fx = Fx::new();
+    let p = pair(&fx);
+    assert!(p.a.get(&p.blobs[0]).is_ok());
+    fs::remove_file(&p.a_log).unwrap();
+    assert!(p.a.get(&p.blobs[2]).is_err());
 }
