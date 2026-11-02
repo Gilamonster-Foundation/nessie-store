@@ -116,6 +116,30 @@ fn name_cookie(name: &OsStr) -> u64 {
     c.max(1)
 }
 
+/// Give each `(name hash, path)` its final cookie, returned sorted by cookie.
+///
+/// The cookie keeps the hash's high 55 bits and puts a tie-break in the low 8:
+/// the entry's 0-based rank, by path, among those sharing the high bits (so
+/// colliding names get distinct, ordered, resumable cookies). 0 is the "start"
+/// cookie, so a zero-high group ranks from 1.
+// ponytail: more than 255 names sharing 55 hash bits, or one of a colliding
+// group being added/removed between pages, can still skip an entry; both are
+// astronomically unlikely. Upgrade path = per-directory cookie table.
+fn assign_cookies(mut v: Vec<(u64, PathBuf)>) -> Vec<(u64, PathBuf)> {
+    const HIGH: u64 = 0x7fff_ffff_ffff_ff00;
+    v.sort_by(|a, b| (a.0 & HIGH, &a.1).cmp(&(b.0 & HIGH, &b.1)));
+    let mut rank = 0u64;
+    let mut prev = None;
+    for e in &mut v {
+        let high = e.0 & HIGH;
+        rank = if prev == Some(high) { rank + 1 } else { 0 };
+        prev = Some(high);
+        let r = if high == 0 { rank + 1 } else { rank };
+        e.0 = high | r.min(255);
+    }
+    v
+}
+
 /// An NFSv3 filesystem that passes operations through to a real directory tree.
 pub struct PassthroughFs {
     root: PathBuf,
@@ -498,18 +522,26 @@ impl NFSFileSystem for PassthroughFs {
         // it stays valid when the directory changes between pages, which matters
         // because nfsserve never answers BAD_COOKIE. Entries are ordered by
         // (cookie, name) and a resume lists those with a larger cookie.
-        // ponytail: entries sharing a 63-bit hash at a page boundary can be
-        // skipped; upgrade path = a tie-break counter in the low bits.
-        let mut found: Vec<(u64, fileid3, PathBuf)> = Vec::new();
+        // Colliding hashes are separated by `assign_cookies`.
+        let mut found: Vec<(fileid3, PathBuf)> = Vec::new();
         let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| io_to_nfs(&e))?;
         while let Some(ent) = rd.next_entry().await.map_err(|e| io_to_nfs(&e))? {
             let meta = match ent.metadata().await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            found.push((name_cookie(&ent.file_name()), fileid_of(&meta), ent.path()));
+            found.push((fileid_of(&meta), ent.path()));
         }
-        found.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
+        let ids: HashMap<PathBuf, fileid3> = found.iter().map(|(i, p)| (p.clone(), *i)).collect();
+        let found: Vec<(u64, fileid3, PathBuf)> = assign_cookies(
+            found
+                .into_iter()
+                .map(|(_, p)| (name_cookie(p.file_name().unwrap_or_default()), p))
+                .collect(),
+        )
+        .into_iter()
+        .map(|(c, p)| (c, ids[&p], p))
+        .collect();
         let skip = found.partition_point(|e| e.0 <= start_after);
         let total_after = found.len() - skip;
         let mut entries = Vec::new();
@@ -615,6 +647,29 @@ pub async fn serve(root: impl Into<PathBuf>, bind: &str, export_name: &str) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_with_equal_hashes_get_distinct_resumable_cookies() {
+        // Regression (PR #114 review): two names sharing a name hash had one
+        // cookie, so resuming after the first skipped the second.
+        let same = 0x1234_5678_9abc_de00u64;
+        let all = assign_cookies(vec![
+            (same, PathBuf::from("/d/y")),
+            (same, PathBuf::from("/d/x")),
+            (7 << 8, PathBuf::from("/d/z")),
+        ]);
+        let cookies: Vec<u64> = all.iter().map(|e| e.0).collect();
+        assert!(cookies.windows(2).all(|w| w[0] < w[1]), "{cookies:?}");
+        assert!(cookies.iter().all(|c| *c != 0));
+        // Page size 1: every name comes back exactly once.
+        let mut seen = Vec::new();
+        let mut cur = 0;
+        while let Some(e) = all.iter().find(|e| e.0 > cur) {
+            seen.push(e.1.clone());
+            cur = e.0;
+        }
+        assert_eq!(seen.len(), 3, "{seen:?}");
+    }
 
     #[test]
     fn file_handle_roundtrips_without_generation() {
