@@ -131,23 +131,25 @@ impl PassthroughFs {
         })
     }
 
+    /// The path for handle `id`. The single guard: a stored name is returned
+    /// only if it still has this inode's `(dev, ino)`; names that no longer do
+    /// (removed, renamed away, replaced by another file) are dropped here, so
+    /// correctness never depends on the other bookkeeping keeping up.
     fn path_of(&self, id: fileid3) -> Result<PathBuf, nfsstat3> {
-        let map = self.map.lock().expect("map lock");
-        let paths = map.get(&id).ok_or(nfsstat3::NFS3ERR_STALE)?;
-        if let [only] = paths.as_slice() {
-            return Ok(only.clone());
+        let mut map = self.map.lock().expect("map lock");
+        let paths = map.get_mut(&id).ok_or(nfsstat3::NFS3ERR_STALE)?;
+        paths.retain(|p| {
+            std::fs::symlink_metadata(p)
+                .map(|m| fileid_of(&m) == id)
+                .unwrap_or(false)
+        });
+        match paths.first().cloned() {
+            Some(p) => Ok(p),
+            None => {
+                map.remove(&id);
+                Err(nfsstat3::NFS3ERR_STALE)
+            }
         }
-        // Several names: use one that still names this inode (another may have
-        // been renamed away or replaced since it was recorded).
-        paths
-            .iter()
-            .find(|p| {
-                std::fs::symlink_metadata(p)
-                    .map(|m| fileid_of(&m) == id)
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .ok_or(nfsstat3::NFS3ERR_STALE)
     }
 
     /// Record `path` as a name of `id` (idempotent).
@@ -463,13 +465,10 @@ impl NFSFileSystem for PassthroughFs {
         let to_dir = self.path_of(to_dirid)?;
         let from = self.child_path(&from_dir, from_filename.as_ref())?;
         let to = self.child_path(&to_dir, to_filename.as_ref())?;
-        let from_id = std::fs::symlink_metadata(&from).ok().map(|m| fileid_of(&m));
         tokio::fs::rename(&from, &to)
             .await
             .map_err(|e| io_to_nfs(&e))?;
-        if let Some(id) = from_id {
-            self.forget_path(id, &from);
-        }
+        // The old name is pruned by `path_of` once it stops naming its inode.
         let _ = self.register(&to);
         Ok(())
     }
@@ -485,11 +484,10 @@ impl NFSFileSystem for PassthroughFs {
         if !dmeta.is_dir() {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
-        // Order entries by (fileid, name) and give each a cookie: the fileid for
-        // the first name of an inode, fileid+1, +2, ... for its further hard-link
-        // names (a 64-bit hash, so collisions with another fileid are not a
-        // practical concern). The cookie is stable across pages and never
-        // duplicates or drops an entry; `start_after` is a cookie.
+        // Sort by name; an entry's cookie is its 1-based position, so resuming
+        // at `start_after` skips exactly that many entries. Cookies are unique
+        // and monotonic whatever the fileids are (hard links repeat them), and 0
+        // stays the "start" cookie. Stable while the directory is unchanged.
         let mut found: Vec<(fileid3, PathBuf)> = Vec::new();
         let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| io_to_nfs(&e))?;
         while let Some(ent) = rd.next_entry().await.map_err(|e| io_to_nfs(&e))? {
@@ -499,21 +497,11 @@ impl NFSFileSystem for PassthroughFs {
             };
             found.push((fileid_of(&meta), ent.path()));
         }
-        found.sort();
-        let mut listing: Vec<(u64, fileid3, PathBuf)> = Vec::with_capacity(found.len());
-        let mut dup = 0u64;
-        for (i, (id, path)) in found.into_iter().enumerate() {
-            dup = if i > 0 && listing[i - 1].1 == id {
-                dup + 1
-            } else {
-                0
-            };
-            listing.push((id.wrapping_add(dup), id, path));
-        }
-        let after: Vec<_> = listing.iter().filter(|(c, ..)| *c > start_after).collect();
-        let total_after = after.len();
+        found.sort_by(|a, b| a.1.cmp(&b.1));
+        let skip = usize::try_from(start_after).map_or(found.len(), |n| n.min(found.len()));
+        let total_after = found.len() - skip;
         let mut entries = Vec::new();
-        for (cookie, id, path) in after {
+        for (i, (id, path)) in found.iter().enumerate().skip(skip) {
             if entries.len() >= max_entries {
                 break;
             }
@@ -525,7 +513,7 @@ impl NFSFileSystem for PassthroughFs {
                 .unwrap_or_else(|| filename3::from(&b""[..]));
             entries.push(DirEntry {
                 fileid: *id,
-                cookie: *cookie,
+                cookie: i as u64 + 1,
                 name,
                 attr: metadata_to_fattr3(*id, &meta),
             });

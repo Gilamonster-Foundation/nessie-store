@@ -467,3 +467,107 @@ async fn removing_one_link_keeps_the_handle_valid_for_the_other() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+// --- Round 3 (PR #114 review): alias safety and positional cookies ----------
+
+#[tokio::test]
+async fn handle_never_resolves_to_a_file_that_replaced_its_name() {
+    // Regression: create a (handle A), link a2, rename another file b over a,
+    // remove a2. A's stored names were [a, a2] -> [a], but `a` now belongs to b;
+    // read(A) served b's bytes instead of NFS3ERR_STALE.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (a, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(a, 0, b"A-bytes").await.unwrap();
+    fs.link(a, root, &name("a2")).await.unwrap();
+    let (b, _) = fs
+        .create(root, &name("b"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(b, 0, b"B-bytes").await.unwrap();
+
+    fs.rename(root, &name("b"), root, &name("a")).await.unwrap();
+    fs.remove(root, &name("a2")).await.unwrap();
+
+    assert!(fs.read(a, 0, 16).await.is_err(), "A's last name is gone");
+    assert!(fs.getattr(a).await.is_err());
+    assert_eq!(fs.read(b, 0, 16).await.unwrap().0, b"B-bytes");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn renaming_between_two_names_of_one_inode_keeps_the_handle() {
+    // Regression: rename(a, a2) with both names linked to one inode is a no-op
+    // at the OS, but the source name was forgotten anyway; removing a2 then
+    // staled a handle whose name `a` survives.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (a, _) = fs
+        .create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+    fs.write(a, 0, b"bytes").await.unwrap();
+    fs.link(a, root, &name("a2")).await.unwrap();
+
+    fs.rename(root, &name("a"), root, &name("a2"))
+        .await
+        .unwrap();
+    fs.remove(root, &name("a2")).await.unwrap();
+
+    assert_eq!(fs.read(a, 0, 16).await.unwrap().0, b"bytes");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn readdir_cookies_are_one_based_name_order_positions() {
+    // Regression: cookies were derived from fileids (fileid + n for extra hard
+    // links), which can overlap another inode's cookie and drop its entry when
+    // paging. Cookies are now the 1-based position in the name-sorted listing.
+    let dir = scratch();
+    let fs = PassthroughFs::new(&dir).unwrap();
+    let root = fs.root_dir();
+    let (x, _) = fs
+        .create(root, &name("x"), sattr3::default())
+        .await
+        .unwrap();
+    for n in ["w", "y", "z"] {
+        fs.link(x, root, &name(n)).await.unwrap();
+    }
+    fs.create(root, &name("a"), sattr3::default())
+        .await
+        .unwrap();
+
+    let all = fs.readdir(root, 0, 100).await.unwrap();
+    let got: Vec<_> = all
+        .entries
+        .iter()
+        .map(|e| {
+            (
+                e.cookie,
+                String::from_utf8_lossy(e.name.as_ref()).to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (1, "a".into()),
+            (2, "w".into()),
+            (3, "x".into()),
+            (4, "y".into()),
+            (5, "z".into())
+        ]
+    );
+    // Resuming past the end, even at the largest cookie, ends cleanly.
+    let tail = fs.readdir(root, u64::MAX, 2).await.unwrap();
+    assert!(tail.entries.is_empty() && tail.end);
+    for page in [1, 2, 3] {
+        assert_eq!(list_names(&fs, root, page).await, ["a", "w", "x", "y", "z"]);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
