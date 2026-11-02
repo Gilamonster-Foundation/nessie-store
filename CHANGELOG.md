@@ -6,6 +6,10 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-11-02
+
+Pins survive a restart and S3 writes can pin; S3 `ListObjectsV2`; NFS hard links; Trident discovery fixes.
+
 ### Added
 - **Pins survive a restart (#137).** With `[cas] backend = "disk"`, `POST|DELETE
   /cas/v1/roots/{digest}` persist before replying: the pin set is a `Tree` stored in the
@@ -22,11 +26,24 @@ All notable changes to nessie-store are documented here. The format follows
   fails the PutObject.
   `DeleteObject` unpins (`204` whether or not it was pinned) and never deletes bytes:
   `lru` reclaims them later. Bulk `DeleteObjects` stays declined.
+- **S3 `ListObjectsV2` (#129).** Lists sha2-256 blobs as `cas/{xx}/{hex}` keys in
+  lexicographic order with `prefix`, `max-keys` (cap 1000), `start-after` and continuation
+  tokens. `delimiter` answers `501`. `LastModified` is the epoch: a CAS keeps no mtime.
+- **NFSv3 `LINK` (#114).** Hard links work on the embedded NFS server, and `PATHCONF`/`FSINFO`
+  advertise them. READDIRPLUS cookies now come from the entry name, so a listing stays
+  correct when the directory changes between pages.
 
 ### Changed
 - `nessie_s3::build_service` takes a built `NessieS3` (so the daemon can attach pins).
 - The peer API answers `CapacityExceeded` with `507`: a pin the store cannot record
   (full `write_only` node) was a `201`, a blob `PUT` past capacity was a `500`.
+
+### Fixed
+- **Trident `ontap-nas` discovery (#114).** SVM records list their `aggregates`, and the
+  data NFS interface carries `state` and `enabled`; without them Trident refused the
+  backend or dropped the LIF.
+- **Scrub stays within `scrub_bytes_per_pass` (#147).** After pending restores spend the
+  budget, the live scan verifies nothing more that pass.
 
 ## [0.4.3] — 2026-11-02
 
