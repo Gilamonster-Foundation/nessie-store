@@ -520,6 +520,16 @@ impl ReclaimableCas for MemCas {
     fn reclaim(&self, digest: &Digest) -> Result<bool, BackendError> {
         Ok(self.lock().remove(digest).is_some())
     }
+
+    /// Verify and remove under one lock hold, so nothing can replace the entry between.
+    fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
+        let mut blobs = self.lock();
+        if blobs.get(digest).is_some_and(|b| !digest.verify(b)) {
+            blobs.remove(digest);
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }
 
 /// An [`ActionCacheBackend`] over any [`CasBackend`] for blob bodies, plus a

@@ -208,19 +208,18 @@ pub trait ReclaimableCas: CasBackend {
 
     /// Drop the local copy of `digest` only if the copy removed is corrupt: `Ok(true)`
     /// if a corrupt copy was removed, `Ok(false)` if it was absent or healthy. A
-    /// healthy copy is never lost, even to a writer that replaces the file mid-call.
-    /// The default is verify-then-[`reclaim`](Self::reclaim), which is racy against such
-    /// a writer; a backend that can take the file atomically should override it.
+    /// healthy copy must never be lost, even to a writer that replaces it mid-call,
+    /// so a backend must implement this atomically. The default never deletes and
+    /// declines with [`BackendError::FeatureNotSupported`].
     ///
     /// # Errors
     ///
-    /// As [`verify`](Self::verify) and [`reclaim`](Self::reclaim).
-    fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
-        match self.verify(digest) {
-            Ok(false) => self.reclaim(digest),
-            Ok(true) | Err(BackendError::BlobNotFound(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
+    /// [`BackendError::FeatureNotSupported`] by default; otherwise as
+    /// [`verify`](Self::verify) and [`reclaim`](Self::reclaim).
+    fn reclaim_if_corrupt(&self, _digest: &Digest) -> Result<bool, BackendError> {
+        Err(BackendError::FeatureNotSupported {
+            capability: "reclaim_if_corrupt",
+        })
     }
 
     /// Move the local copy of `digest` aside, to be neither served nor listed by

@@ -28,6 +28,12 @@ const ALGOS: [DigestAlgo; 2] = [DigestAlgo::Blake3, DigestAlgo::Sha256];
 #[derive(Debug)]
 pub struct DiskCas {
     root: PathBuf,
+    /// Held across every put's rename into the canonical path and across
+    /// [`reclaim_if_corrupt`](ReclaimableCas::reclaim_if_corrupt)'s verify-and-unlink,
+    /// so a repair cannot land between them. Readers never take it.
+    // ponytail: one lock, so a put can wait out one blob's verify; stripe per digest
+    // if that stall matters.
+    commit_lock: std::sync::Mutex<()>,
 }
 
 /// Process-wide, so two stores in one process never mint the same tmp name.
@@ -39,11 +45,13 @@ fn io_err(what: &str, e: std::io::Error) -> BackendError {
 
 impl DiskCas {
     /// Open (creating if needed) a store at `root`, discarding any uncommitted
-    /// `tmp/` writes left by a previous run.
+    /// `tmp/` writes left by a previous run and settling any `<hex>.reclaimN`
+    /// sibling an earlier release left behind (see [`settle_legacy_siblings`](Self::settle_legacy_siblings)).
     ///
     /// # Errors
     ///
-    /// [`BackendError::Internal`] if the directories cannot be prepared.
+    /// [`BackendError::Internal`] if the directories cannot be prepared or a legacy
+    /// sibling cannot be settled (including an unreadable canonical copy).
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, BackendError> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| io_err("create root", e))?;
@@ -54,7 +62,67 @@ impl DiskCas {
             Err(e) => return Err(io_err("sweep tmp", e)),
         }
         fs::create_dir_all(&tmp).map_err(|e| io_err("create tmp", e))?;
-        Ok(Self { root })
+        let cas = Self {
+            root,
+            commit_lock: std::sync::Mutex::new(()),
+        };
+        cas.settle_legacy_siblings()?;
+        Ok(cas)
+    }
+
+    /// One-time sweep of `<shard>/<rest>.reclaimN` files that an earlier build took
+    /// aside. A healthy sibling replaces the canonical file when that is absent or
+    /// fails verification; otherwise it is dropped. A corrupt sibling is deleted.
+    fn settle_legacy_siblings(&self) -> Result<(), BackendError> {
+        let not_found = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+        for algo in ALGOS {
+            let shards = match fs::read_dir(self.root.join(algo.name())) {
+                Ok(r) => r,
+                Err(e) if not_found(&e) => continue,
+                Err(e) => return Err(io_err("list algo dir", e)),
+            };
+            for shard in shards {
+                let shard = shard.map_err(|e| io_err("list algo dir", e))?;
+                if !shard
+                    .file_type()
+                    .map_err(|e| io_err("stat shard", e))?
+                    .is_dir()
+                {
+                    continue;
+                }
+                for file in fs::read_dir(shard.path()).map_err(|e| io_err("list shard", e))? {
+                    let file = file.map_err(|e| io_err("list shard", e))?;
+                    let name = file.file_name().to_string_lossy().into_owned();
+                    let Some((rest, n)) = name.rsplit_once(".reclaim") else {
+                        continue;
+                    };
+                    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                        continue;
+                    }
+                    let hex = format!("{}{rest}", shard.file_name().to_string_lossy());
+                    let Ok(digest) = format!("{}:{hex}", algo.name()).parse::<Digest>() else {
+                        continue;
+                    };
+                    self.settle_sibling(&digest, &file.path())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn settle_sibling(&self, digest: &Digest, sibling: &Path) -> Result<(), BackendError> {
+        let healthy = digest.verify(&fs::read(sibling).map_err(|e| io_err("read sibling", e))?);
+        let replace = healthy
+            && match self.verify(digest) {
+                Ok(true) => false,
+                Ok(false) | Err(BackendError::BlobNotFound(_)) => true,
+                Err(e) => return Err(e), // inconclusive: keep the sibling, fail open
+            };
+        if replace {
+            fs::rename(sibling, self.path(digest)).map_err(|e| io_err("restore sibling", e))
+        } else {
+            fs::remove_file(sibling).map_err(|e| io_err("drop sibling", e))
+        }
     }
 
     fn path(&self, d: &Digest) -> PathBuf {
@@ -105,6 +173,7 @@ impl DiskCas {
     /// Concurrent puts of one digest race harmlessly — identical bytes either way.
     fn commit(&self, tmp: &Path, digest: &Digest) -> Result<(), BackendError> {
         let dest = self.path(digest);
+        let _commit = self.commit_lock.lock().expect("commit lock poisoned");
         // ponytail: no directory fsync, so a power loss right after rename can
         // drop the blob (never corrupt it); add parent-dir sync_all if durability
         // across power loss is required.
@@ -233,36 +302,18 @@ impl ReclaimableCas for DiskCas {
         }
     }
 
-    /// Rename the file out of the store first, then verify *that* file: a writer that
-    /// replaced the path after the caller's verdict is never deleted, because what is
-    /// removed is exactly what was checked. A healthy copy is linked back unless a
-    /// newer one has already landed (`hard_link` never overwrites).
+    /// Verify the canonical file in place and unlink it only on a corrupt verdict, all
+    /// under the commit lock: a put cannot replace the file between the two, and
+    /// readers never lose a healthy blob. A read or unlink error keeps the file.
     fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let path = self.path(digest);
-        let taken = path.with_extension(format!("reclaim{}", N.fetch_add(1, Ordering::Relaxed)));
-        match fs::rename(&path, &taken) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(io_err("reclaim", e)),
+        let _commit = self.commit_lock.lock().expect("commit lock poisoned");
+        match self.verify(digest) {
+            Ok(false) => fs::remove_file(self.path(digest))
+                .map(|()| true)
+                .map_err(|e| io_err("remove corrupt blob", e)),
+            Ok(true) | Err(BackendError::BlobNotFound(_)) => Ok(false),
+            Err(e) => Err(e),
         }
-        let healthy = fs::read(&taken).map(|b| digest.verify(&b));
-        let restored = match healthy {
-            Ok(true) => fs::hard_link(&taken, &path).or_else(|e| {
-                // A newer copy at `path` is fine; anything else must not lose the blob.
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            }),
-            _ => Ok(()),
-        };
-        if restored.is_ok() {
-            let _ = fs::remove_file(&taken);
-        }
-        restored.map_err(|e| io_err("restore healthy blob", e))?;
-        Ok(!healthy.map_err(|e| io_err("read blob", e))?)
     }
 
     fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
@@ -458,6 +509,156 @@ mod tests {
         // A restore is a normal put_keyed and lands the blob again.
         cas.put_keyed(&d, &mut &b"suspect"[..]).unwrap();
         assert!(cas.has(&d).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A sibling as main 6a99eba left it: `<shard>/<rest-of-hex>.reclaim0`.
+    fn legacy_sibling(root: &std::path::Path, d: &Digest, bytes: &[u8]) -> PathBuf {
+        let canon = blob_path(root, d);
+        let sib = canon.with_file_name(format!(
+            "{}.reclaim0",
+            canon.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&sib, bytes).unwrap();
+        sib
+    }
+
+    fn read_blob(cas: &DiskCas, d: &Digest) -> Vec<u8> {
+        let mut back = Vec::new();
+        cas.get(d).unwrap().read_to_end(&mut back).unwrap();
+        back
+    }
+
+    #[test]
+    fn open_restores_a_healthy_legacy_sibling_when_the_canonical_is_absent() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        std::fs::remove_file(blob_path(&root, &d)).unwrap();
+        let sib = legacy_sibling(&root, &d, b"acked");
+        let cas = DiskCas::open(&root).unwrap();
+        assert_eq!(read_blob(&cas, &d), b"acked");
+        assert!(!sib.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_prefers_a_healthy_legacy_sibling_over_a_corrupt_canonical() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        std::fs::write(blob_path(&root, &d), b"rot").unwrap();
+        let sib = legacy_sibling(&root, &d, b"acked");
+        let cas = DiskCas::open(&root).unwrap();
+        assert_eq!(read_blob(&cas, &d), b"acked");
+        assert!(!sib.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_drops_a_corrupt_legacy_sibling_and_keeps_a_healthy_canonical() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        let sib = legacy_sibling(&root, &d, b"rot");
+        let cas = DiskCas::open(&root).unwrap();
+        assert_eq!(read_blob(&cas, &d), b"acked");
+        assert!(!sib.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Runners are not root; as root permissions do not bind and this returns early.
+    #[test]
+    fn open_keeps_a_healthy_sibling_and_fails_when_the_canonical_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        let canon = blob_path(&root, &d);
+        let sib = legacy_sibling(&root, &d, b"acked");
+        std::fs::set_permissions(&canon, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&canon).is_ok() {
+            return;
+        }
+        let result = DiskCas::open(&root);
+        std::fs::set_permissions(&canon, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(result.is_err(), "an unreadable canonical fails open");
+        assert!(sib.exists(), "the good sibling is kept");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_fails_when_a_legacy_sibling_cannot_be_settled() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        let sib = legacy_sibling(&root, &d, b"rot");
+        let dir = sib.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Runners are not root; as root permissions do not bind and this is skipped.
+        let bound = std::fs::write(dir.join("probe"), b"x").is_err();
+        let result = DiskCas::open(&root);
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if bound {
+            assert!(
+                result.is_err(),
+                "a sibling that cannot be deleted fails open"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reclaim_if_corrupt_removes_only_corrupt_copies_in_place() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"healthy"[..]).unwrap();
+        assert!(!cas.reclaim_if_corrupt(&d).unwrap());
+        assert_eq!(read_blob(&cas, &d), b"healthy");
+        std::fs::write(blob_path(&root, &d), b"rot").unwrap();
+        assert!(cas.reclaim_if_corrupt(&d).unwrap());
+        assert!(!cas.has(&d).unwrap());
+        assert!(!cas.reclaim_if_corrupt(&d).unwrap(), "absent");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Runners are not root; as root permissions do not bind and these return early.
+    #[test]
+    fn reclaim_if_corrupt_keeps_the_file_on_a_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"unreadable"[..]).unwrap();
+        let path = blob_path(&root, &d);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            return;
+        }
+        assert!(cas.reclaim_if_corrupt(&d).is_err());
+        assert!(path.exists(), "not deleted on a read error");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Runners are not root; as root permissions do not bind and this returns early.
+    #[test]
+    fn reclaim_if_corrupt_errors_when_the_corrupt_file_cannot_be_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"rotting"[..]).unwrap();
+        let path = blob_path(&root, &d);
+        std::fs::write(&path, b"rot").unwrap();
+        let dir = path.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let bound = std::fs::write(dir.join("probe"), b"x").is_err();
+        let result = cas.reclaim_if_corrupt(&d);
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if bound {
+            assert!(result.is_err(), "a failed delete is not a reclaim");
+            assert!(path.exists());
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
