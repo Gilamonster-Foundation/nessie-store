@@ -50,7 +50,8 @@ impl DiskCas {
     ///
     /// # Errors
     ///
-    /// [`BackendError::Internal`] if the directories cannot be prepared.
+    /// [`BackendError::Internal`] if the directories cannot be prepared or a legacy
+    /// sibling cannot be settled (including an unreadable canonical copy).
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, BackendError> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| io_err("create root", e))?;
@@ -111,8 +112,13 @@ impl DiskCas {
 
     fn settle_sibling(&self, digest: &Digest, sibling: &Path) -> Result<(), BackendError> {
         let healthy = digest.verify(&fs::read(sibling).map_err(|e| io_err("read sibling", e))?);
-        let canonical_ok = healthy && matches!(self.verify(digest), Ok(true));
-        if healthy && !canonical_ok {
+        let replace = healthy
+            && match self.verify(digest) {
+                Ok(true) => false,
+                Ok(false) | Err(BackendError::BlobNotFound(_)) => true,
+                Err(e) => return Err(e), // inconclusive: keep the sibling, fail open
+            };
+        if replace {
             fs::rename(sibling, self.path(digest)).map_err(|e| io_err("restore sibling", e))
         } else {
             fs::remove_file(sibling).map_err(|e| io_err("drop sibling", e))
@@ -558,6 +564,26 @@ mod tests {
         let cas = DiskCas::open(&root).unwrap();
         assert_eq!(read_blob(&cas, &d), b"acked");
         assert!(!sib.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Runners are not root; as root permissions do not bind and this returns early.
+    #[test]
+    fn open_keeps_a_healthy_sibling_and_fails_when_the_canonical_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        let canon = blob_path(&root, &d);
+        let sib = legacy_sibling(&root, &d, b"acked");
+        std::fs::set_permissions(&canon, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&canon).is_ok() {
+            return;
+        }
+        let result = DiskCas::open(&root);
+        std::fs::set_permissions(&canon, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(result.is_err(), "an unreadable canonical fails open");
+        assert!(sib.exists(), "the good sibling is kept");
         let _ = std::fs::remove_dir_all(root);
     }
 
