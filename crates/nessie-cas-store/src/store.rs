@@ -689,6 +689,32 @@ mod tests {
         }
     }
 
+    /// #168 round 2: a backend with no atomic `reclaim_if_corrupt` declines rather than
+    /// falling back to a racy verify-then-delete.
+    #[test]
+    fn reclaim_corrupt_declines_on_a_backend_without_an_atomic_impl() {
+        let store = CasStore::new(
+            Pausing {
+                inner: MemCas::new(),
+                first: std::sync::atomic::AtomicBool::new(false),
+                arrived: Arc::new(std::sync::Barrier::new(1)),
+                release: Arc::new(std::sync::Barrier::new(1)),
+                size_fails: std::sync::atomic::AtomicBool::new(false),
+            },
+            RetentionPolicy::lru(1 << 20, Duration::ZERO),
+            Arc::new(MemRouter::new(PeerId::new("me"))),
+            Arc::new(MockClock::new()),
+            PeerId::new("me"),
+        )
+        .expect("store");
+        let d = store.put(&mut Cursor::new(b"kept".to_vec())).unwrap();
+        assert!(matches!(
+            store.reclaim_corrupt(&d),
+            Err(BackendError::FeatureNotSupported { .. })
+        ));
+        assert!(store.has(&d).unwrap(), "nothing was deleted");
+    }
+
     /// Regression (PR #142 round 3 P1): writer A commits a new blob and pauses before
     /// returning; writer B re-puts the same digest through the already-held fast path
     /// and finishes first. A's bytes must stay counted.

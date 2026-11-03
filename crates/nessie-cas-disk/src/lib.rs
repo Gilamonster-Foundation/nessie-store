@@ -39,7 +39,8 @@ fn io_err(what: &str, e: std::io::Error) -> BackendError {
 
 impl DiskCas {
     /// Open (creating if needed) a store at `root`, discarding any uncommitted
-    /// `tmp/` writes left by a previous run.
+    /// `tmp/` writes left by a previous run and settling any copy a crash left
+    /// mid-[`reclaim_if_corrupt`](ReclaimableCas::reclaim_if_corrupt).
     ///
     /// # Errors
     ///
@@ -54,7 +55,57 @@ impl DiskCas {
             Err(e) => return Err(io_err("sweep tmp", e)),
         }
         fs::create_dir_all(&tmp).map_err(|e| io_err("create tmp", e))?;
-        Ok(Self { root })
+        let cas = Self { root };
+        cas.recover_reclaim();
+        Ok(cas)
+    }
+
+    /// Decide a file taken into `reclaim/`: `Ok(true)` if it was corrupt and is now
+    /// deleted; `Ok(false)` if healthy (linked back unless a copy is already there).
+    /// A read error or failed delete keeps the file and returns the error.
+    fn settle(&self, digest: &Digest, taken: &Path) -> Result<bool, BackendError> {
+        let corrupt = match fs::read(taken) {
+            Ok(bytes) => !digest.verify(&bytes),
+            Err(e) => {
+                self.relink(digest, taken)?;
+                return Err(io_err("read taken blob", e));
+            }
+        };
+        if corrupt {
+            fs::remove_file(taken).map_err(|e| io_err("remove corrupt blob", e))?;
+        } else {
+            self.relink(digest, taken)?;
+        }
+        Ok(corrupt)
+    }
+
+    /// Put a taken copy back at its canonical name, unless one is already there.
+    fn relink(&self, digest: &Digest, taken: &Path) -> Result<(), BackendError> {
+        match fs::hard_link(taken, self.path(digest)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io_err("restore taken blob", e)),
+        }
+        fs::remove_file(taken).map_err(|e| io_err("drop taken copy", e))
+    }
+
+    /// Settle what a crash left in `reclaim/`. A file that cannot be settled now
+    /// stays for the next open.
+    fn recover_reclaim(&self) {
+        for algo in ALGOS {
+            let Ok(files) = fs::read_dir(self.root.join("reclaim").join(algo.name())) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let name = file.file_name().to_string_lossy().into_owned();
+                let Some((hex, _)) = name.rsplit_once('.') else {
+                    continue;
+                };
+                if let Ok(digest) = format!("{}:{hex}", algo.name()).parse::<Digest>() {
+                    let _ = self.settle(&digest, &file.path());
+                }
+            }
+        }
     }
 
     fn path(&self, d: &Digest) -> PathBuf {
@@ -233,36 +284,25 @@ impl ReclaimableCas for DiskCas {
         }
     }
 
-    /// Rename the file out of the store first, then verify *that* file: a writer that
+    /// Rename the file into `reclaim/` first, then verify *that* file: a writer that
     /// replaced the path after the caller's verdict is never deleted, because what is
-    /// removed is exactly what was checked. A healthy copy is linked back unless a
-    /// newer one has already landed (`hard_link` never overwrites).
+    /// removed is exactly what was checked. Only a verified-corrupt copy is deleted;
+    /// anything else is linked back (never over a newer copy), and a crash mid-way
+    /// leaves the file in `reclaim/` for [`DiskCas::open`] to settle. A reader that
+    /// arrives while the file is out misses; it refetches.
     fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
         static N: AtomicU64 = AtomicU64::new(0);
-        let path = self.path(digest);
-        let taken = path.with_extension(format!("reclaim{}", N.fetch_add(1, Ordering::Relaxed)));
-        match fs::rename(&path, &taken) {
+        let hex = digest.to_string();
+        let hex = hex.split_once(':').map_or("", |(_, h)| h);
+        let dir = self.root.join("reclaim").join(digest.algo().name());
+        fs::create_dir_all(&dir).map_err(|e| io_err("create reclaim", e))?;
+        let taken = dir.join(format!("{hex}.{}", N.fetch_add(1, Ordering::Relaxed)));
+        match fs::rename(self.path(digest), &taken) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(io_err("reclaim", e)),
         }
-        let healthy = fs::read(&taken).map(|b| digest.verify(&b));
-        let restored = match healthy {
-            Ok(true) => fs::hard_link(&taken, &path).or_else(|e| {
-                // A newer copy at `path` is fine; anything else must not lose the blob.
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            }),
-            _ => Ok(()),
-        };
-        if restored.is_ok() {
-            let _ = fs::remove_file(&taken);
-        }
-        restored.map_err(|e| io_err("restore healthy blob", e))?;
-        Ok(!healthy.map_err(|e| io_err("read blob", e))?)
+        self.settle(digest, &taken)
     }
 
     fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
@@ -458,6 +498,86 @@ mod tests {
         // A restore is a normal put_keyed and lands the blob again.
         cas.put_keyed(&d, &mut &b"suspect"[..]).unwrap();
         assert!(cas.has(&d).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn leave_taken(root: &std::path::Path, d: &Digest, n: u32) -> PathBuf {
+        let hex = d.to_string().split_once(':').unwrap().1.to_owned();
+        let dir = root.join("reclaim").join(d.algo().name());
+        std::fs::create_dir_all(&dir).unwrap();
+        let taken = dir.join(format!("{hex}.{n}"));
+        std::fs::rename(blob_path(root, d), &taken).unwrap();
+        taken
+    }
+
+    /// #168 round 2 P1: a crash between taking a copy and settling it must not
+    /// strand a healthy blob; reopening restores it.
+    #[test]
+    fn open_restores_a_healthy_copy_a_crash_left_in_reclaim() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"acked"[..]).unwrap();
+        leave_taken(&root, &d, 0);
+        assert!(!cas.has(&d).unwrap());
+        let cas = DiskCas::open(&root).unwrap();
+        let mut back = Vec::new();
+        cas.get(&d).unwrap().read_to_end(&mut back).unwrap();
+        assert_eq!(back, b"acked");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_drops_a_corrupt_copy_a_crash_left_in_reclaim_and_keeps_a_newer_one() {
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"fresh"[..]).unwrap();
+        std::fs::write(blob_path(&root, &d), b"rot").unwrap();
+        let rotten = leave_taken(&root, &d, 0);
+        cas.put_keyed(&d, &mut &b"fresh"[..]).unwrap(); // the repair
+        let cas = DiskCas::open(&root).unwrap();
+        assert!(!rotten.exists());
+        assert!(cas.has(&d).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An unreadable taken copy is not a verdict: it goes back, and the error surfaces.
+    #[test]
+    fn settle_restores_the_copy_when_it_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"unreadable"[..]).unwrap();
+        let taken = leave_taken(&root, &d, 0);
+        std::fs::set_permissions(&taken, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&taken).is_ok() {
+            return; // running as root: permissions do not bind
+        }
+        assert!(cas.settle(&d, &taken).is_err());
+        std::fs::set_permissions(blob_path(&root, &d), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert!(cas.has(&d).unwrap(), "not deleted on a read error");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A corrupt copy that cannot be deleted is an error, not a reclaim.
+    #[test]
+    fn settle_errors_when_the_corrupt_copy_cannot_be_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fresh();
+        let cas = DiskCas::open(&root).unwrap();
+        let d = cas.put(&mut &b"rotting"[..]).unwrap();
+        std::fs::write(blob_path(&root, &d), b"rot").unwrap();
+        let taken = leave_taken(&root, &d, 0);
+        let dir = taken.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let probe = dir.join("probe");
+        let bound = std::fs::write(&probe, b"x").is_err();
+        let result = cas.settle(&d, &taken);
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if bound {
+            assert!(result.is_err(), "failed delete must not report a reclaim");
+            assert!(taken.exists());
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
