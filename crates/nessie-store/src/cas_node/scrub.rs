@@ -160,8 +160,9 @@ impl CasNode {
         let _pins = self.lock_pins();
         match self.store.verify_local(digest) {
             Ok(false) => {
-                self.store.reclaim_corrupt(digest)?;
-                report.reclaimed += 1;
+                super::refs::seam(self, "scrub-verified")
+                    .map_err(|e| BackendError::Internal(e.to_string()))?;
+                report.reclaimed += usize::from(self.store.reclaim_corrupt(digest)?);
             }
             Ok(true) | Err(BackendError::BlobNotFound(_)) => {} // repaired, or gone
             Err(e) => return Err(e),

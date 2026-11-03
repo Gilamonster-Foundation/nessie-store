@@ -97,14 +97,15 @@ impl<C: ReclaimableCas> CasStore<C> {
     }
 
     /// Drop a corrupt blob from a cache — it is refetched on the next read. Credits
-    /// what was charged. `Ok(false)` if it was not held.
+    /// what was charged. `Ok(false)` if it was not held or is healthy (a re-put may
+    /// have repaired it since the caller's verdict).
     ///
     /// # Errors
     ///
     /// As [`ReclaimableCas::reclaim`].
     pub fn reclaim_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
         let mut state = self.state();
-        if !self.inner.reclaim(digest)? {
+        if !self.inner.reclaim_if_corrupt(digest)? {
             return Ok(false);
         }
         let credit = state.accounted.remove(digest).unwrap_or(0);

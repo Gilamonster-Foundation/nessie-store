@@ -206,6 +206,23 @@ pub trait ReclaimableCas: CasBackend {
         self.get(digest).map(|_| true)
     }
 
+    /// Drop the local copy of `digest` only if the copy removed is corrupt: `Ok(true)`
+    /// if a corrupt copy was removed, `Ok(false)` if it was absent or healthy. A
+    /// healthy copy is never lost, even to a writer that replaces the file mid-call.
+    /// The default is verify-then-[`reclaim`](Self::reclaim), which is racy against such
+    /// a writer; a backend that can take the file atomically should override it.
+    ///
+    /// # Errors
+    ///
+    /// As [`verify`](Self::verify) and [`reclaim`](Self::reclaim).
+    fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
+        match self.verify(digest) {
+            Ok(false) => self.reclaim(digest),
+            Ok(true) | Err(BackendError::BlobNotFound(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Move the local copy of `digest` aside, to be neither served nor listed by
     /// [`iter_local`](Self::iter_local), but **not deleted** — the evidence stays,
     /// and an earlier quarantined copy of the same digest is never replaced.
@@ -278,6 +295,10 @@ impl<T: ReclaimableCas + ?Sized> ReclaimableCas for Box<T> {
 
     fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
         (**self).verify(digest)
+    }
+
+    fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
+        (**self).reclaim_if_corrupt(digest)
     }
 
     fn quarantine(&self, digest: &Digest) -> Result<Option<QuarantinedBlob>, BackendError> {

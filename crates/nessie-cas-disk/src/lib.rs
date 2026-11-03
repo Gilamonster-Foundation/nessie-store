@@ -233,6 +233,38 @@ impl ReclaimableCas for DiskCas {
         }
     }
 
+    /// Rename the file out of the store first, then verify *that* file: a writer that
+    /// replaced the path after the caller's verdict is never deleted, because what is
+    /// removed is exactly what was checked. A healthy copy is linked back unless a
+    /// newer one has already landed (`hard_link` never overwrites).
+    fn reclaim_if_corrupt(&self, digest: &Digest) -> Result<bool, BackendError> {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let path = self.path(digest);
+        let taken = path.with_extension(format!("reclaim{}", N.fetch_add(1, Ordering::Relaxed)));
+        match fs::rename(&path, &taken) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(io_err("reclaim", e)),
+        }
+        let healthy = fs::read(&taken).map(|b| digest.verify(&b));
+        let restored = match healthy {
+            Ok(true) => fs::hard_link(&taken, &path).or_else(|e| {
+                // A newer copy at `path` is fine; anything else must not lose the blob.
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }),
+            _ => Ok(()),
+        };
+        if restored.is_ok() {
+            let _ = fs::remove_file(&taken);
+        }
+        restored.map_err(|e| io_err("restore healthy blob", e))?;
+        Ok(!healthy.map_err(|e| io_err("read blob", e))?)
+    }
+
     fn verify(&self, digest: &Digest) -> Result<bool, BackendError> {
         match fs::read(self.path(digest)) {
             Ok(bytes) => Ok(digest.verify(&bytes)),
