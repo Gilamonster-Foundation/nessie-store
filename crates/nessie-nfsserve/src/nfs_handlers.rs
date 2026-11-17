@@ -1039,8 +1039,12 @@ pub async fn nfsproc3_readdir(
     let mut ctr = 0;
     match context
         .vfs
-        .readdir_simple(dirid, estimated_max_results as usize)
+        // Resume after the client's cookie (#171): `readdir_simple` takes no
+        // cookie and restarts at the first entry, so a directory larger than
+        // one reply was listed forever.
+        .readdir(dirid, args.cookie, estimated_max_results as usize)
         .await
+        .map(|r| crate::vfs::ReadDirSimpleResult::from_readdir_result(&r))
     {
         Ok(result) => {
             // we count dir_count seperately as it is just a subset of fields
@@ -2516,7 +2520,7 @@ mod link_rpc_tests {
         }
     }
 
-    fn ctx(vfs: Arc<LinkVfs>) -> RPCContext {
+    pub(super) fn ctx<V: NFSFileSystem + Send + Sync + 'static>(vfs: Arc<V>) -> RPCContext {
         RPCContext {
             local_port: 0,
             client_addr: String::new(),
@@ -2528,7 +2532,7 @@ mod link_rpc_tests {
         }
     }
 
-    fn call(proc: u32) -> call_body {
+    pub(super) fn call(proc: u32) -> call_body {
         call_body {
             rpcvers: 2,
             prog: nfs::PROGRAM,
@@ -2541,7 +2545,7 @@ mod link_rpc_tests {
 
     /// Run `proc` with XDR `args`; return the reply with the RPC header
     /// consumed, ready to read the NFS status.
-    async fn dispatch(c: &RPCContext, proc: u32, args: &[u8]) -> Cursor<Vec<u8>> {
+    pub(super) async fn dispatch(c: &RPCContext, proc: u32, args: &[u8]) -> Cursor<Vec<u8>> {
         let mut out = Vec::new();
         handle_nfs(7, call(proc), &mut Cursor::new(args.to_vec()), &mut out, c)
             .await
@@ -2565,7 +2569,7 @@ mod link_rpc_tests {
     }
 
     /// The NFS status word (an XDR u32).
-    fn status(r: &mut Cursor<Vec<u8>>) -> u32 {
+    pub(super) fn status(r: &mut Cursor<Vec<u8>>) -> u32 {
         let mut s = 0u32;
         s.deserialize(r).unwrap();
         s
@@ -2627,5 +2631,176 @@ mod link_rpc_tests {
         let mut info = nfs::fsinfo3::default();
         info.deserialize(&mut r).unwrap();
         assert_ne!(info.properties & nfs::FSF_LINK, 0, "FSINFO lacks FSF_LINK");
+    }
+}
+
+#[cfg(test)]
+mod readdir_rpc_tests {
+    //! Pages a directory through `NFSPROC3_READDIR` the way a client does:
+    //! each call resumes after the last cookie of the previous reply.
+    use std::collections::BTreeSet;
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+
+    use super::link_rpc_tests::{dispatch, status};
+    use super::*;
+    use crate::nfs::{fattr3, fileid3, filename3, nfspath3, nfsstat3, sattr3};
+    use crate::vfs::{DirEntry, NFSFileSystem, ReadDirResult};
+
+    /// Entries in the test directory: several READDIR replies' worth.
+    const ENTRIES: u64 = 300;
+
+    /// A root directory of `f0`..`f299` (fileid `100 + i`, cookie `i + 1`),
+    /// recording the `start_after` of every `readdir`.
+    #[derive(Default)]
+    struct DirVfs {
+        starts: Mutex<Vec<u64>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NFSFileSystem for DirVfs {
+        fn capabilities(&self) -> VFSCapabilities {
+            VFSCapabilities::ReadOnly
+        }
+        fn root_dir(&self) -> fileid3 {
+            1
+        }
+        async fn lookup(&self, _: fileid3, _: &filename3) -> Result<fileid3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn getattr(&self, _: fileid3) -> Result<fattr3, nfsstat3> {
+            Ok(fattr3::default())
+        }
+        async fn setattr(&self, _: fileid3, _: sattr3) -> Result<fattr3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn read(&self, _: fileid3, _: u64, _: u32) -> Result<(Vec<u8>, bool), nfsstat3> {
+            unimplemented!()
+        }
+        async fn write(&self, _: fileid3, _: u64, _: &[u8]) -> Result<fattr3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn create(
+            &self,
+            _: fileid3,
+            _: &filename3,
+            _: sattr3,
+        ) -> Result<(fileid3, fattr3), nfsstat3> {
+            unimplemented!()
+        }
+        async fn create_exclusive(&self, _: fileid3, _: &filename3) -> Result<fileid3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn mkdir(&self, _: fileid3, _: &filename3) -> Result<(fileid3, fattr3), nfsstat3> {
+            unimplemented!()
+        }
+        async fn remove(&self, _: fileid3, _: &filename3) -> Result<(), nfsstat3> {
+            unimplemented!()
+        }
+        async fn rename(
+            &self,
+            _: fileid3,
+            _: &filename3,
+            _: fileid3,
+            _: &filename3,
+        ) -> Result<(), nfsstat3> {
+            unimplemented!()
+        }
+        async fn readdir(
+            &self,
+            _: fileid3,
+            start_after: u64,
+            max_entries: usize,
+        ) -> Result<ReadDirResult, nfsstat3> {
+            self.starts.lock().unwrap().push(start_after);
+            let entries: Vec<DirEntry> = (start_after..ENTRIES)
+                .take(max_entries)
+                .map(|i| DirEntry {
+                    fileid: 100 + i,
+                    cookie: i + 1,
+                    name: format!("f{i}").as_bytes().into(),
+                    attr: fattr3::default(),
+                })
+                .collect();
+            let end = entries.last().is_none_or(|e| e.cookie == ENTRIES);
+            Ok(ReadDirResult { entries, end })
+        }
+        async fn symlink(
+            &self,
+            _: fileid3,
+            _: &filename3,
+            _: &nfspath3,
+            _: &sattr3,
+        ) -> Result<(fileid3, fattr3), nfsstat3> {
+            unimplemented!()
+        }
+        async fn readlink(&self, _: fileid3) -> Result<nfspath3, nfsstat3> {
+            unimplemented!()
+        }
+        async fn link(&self, _: fileid3, _: fileid3, _: &filename3) -> Result<fattr3, nfsstat3> {
+            unimplemented!()
+        }
+    }
+
+    /// One READDIR reply: its entries as (name, cookie), and eof.
+    fn page(r: &mut Cursor<Vec<u8>>) -> (Vec<(String, u64)>, bool) {
+        assert_eq!(status(r), nfsstat3::NFS3_OK as u32);
+        let mut attr = nfs::post_op_attr::default();
+        attr.deserialize(r).unwrap();
+        let mut verf = nfs::cookieverf3::default();
+        verf.deserialize(r).unwrap();
+        let mut entries = Vec::new();
+        loop {
+            let mut more = false;
+            more.deserialize(r).unwrap();
+            if !more {
+                break;
+            }
+            let mut e = entry3::default();
+            e.deserialize(r).unwrap();
+            entries.push((String::from_utf8(e.name.0.clone()).unwrap(), e.cookie));
+        }
+        let mut eof = false;
+        eof.deserialize(r).unwrap();
+        (entries, eof)
+    }
+
+    #[tokio::test]
+    async fn readdir_resumes_after_the_client_cookie() {
+        // Regression (#171): READDIR ignored `cookie` and restarted at the first
+        // entry, so a directory larger than one reply was listed forever.
+        let vfs = Arc::new(DirVfs::default());
+        let c = super::link_rpc_tests::ctx(vfs.clone());
+        let mut names = BTreeSet::new();
+        let mut cookie = 0;
+        let mut replies = 0;
+        loop {
+            let args = READDIR3args {
+                dir: vfs.id_to_fh(1),
+                cookie,
+                cookieverf: nfs::cookieverf3::default(),
+                // Small replies: the listing takes several of them.
+                dircount: 1024,
+            };
+            let mut b = Vec::new();
+            args.serialize(&mut b).unwrap();
+            let (entries, eof) = page(&mut dispatch(&c, 16, &b).await);
+            replies += 1;
+            assert!(replies < 100, "READDIR never reached eof");
+            for (name, next) in entries {
+                assert!(next > cookie, "cookie went from {cookie} to {next}");
+                assert!(names.insert(name.clone()), "{name} listed twice");
+                cookie = next;
+            }
+            if eof {
+                break;
+            }
+        }
+        assert_eq!(names.len() as u64, ENTRIES);
+        assert!(replies > 1, "the test needs a listing of several replies");
+        assert!(
+            vfs.starts.lock().unwrap().iter().any(|&s| s > 0),
+            "the client's cookie never reached readdir"
+        );
     }
 }
