@@ -37,7 +37,7 @@ pub struct ReadDirResult {
 }
 
 impl ReadDirSimpleResult {
-    fn from_readdir_result(result: &ReadDirResult) -> ReadDirSimpleResult {
+    pub(crate) fn from_readdir_result(result: &ReadDirResult) -> ReadDirSimpleResult {
         let entries: Vec<DirEntrySimple> = result
             .entries
             .iter()

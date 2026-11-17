@@ -6,6 +6,15 @@ All notable changes to nessie-store are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **nessie-nfsserve: READDIR resumes after the client's cookie** (#171).
+  `NFSPROC3_READDIR` called `readdir_simple`, which takes no cookie and
+  restarts at the first entry, so a directory larger than one reply was
+  listed forever by clients that page with READDIR (the Linux client does,
+  after its first READDIRPLUS). It now calls `readdir(dir, cookie, n)`.
+  Regression test: `readdir_resumes_after_the_client_cookie`.
+
 ## [0.4.4] — 2026-11-02
 
 Pins survive a restart and S3 writes can pin; S3 `ListObjectsV2`; NFS hard links; Trident discovery fixes.
